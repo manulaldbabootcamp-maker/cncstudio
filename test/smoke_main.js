@@ -172,6 +172,44 @@ app.whenReady().then(async () => {
     const sl = await run('CNC.worldLoop(CNC.job.shapes[0]).length');
     ok(sl > 10, 'spline flattens to many segments', String(sl));
 
+    console.log('centre marks + distance tool');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:900,name:'c1',kind:'circle',x:5,y:5,rot:0,r:1,op:'outside',toolId:1,climb:false,open:false});
+      CNC.job.shapes.push({id:901,name:'c2',kind:'circle',x:9,y:7,rot:0,r:0.5,op:'outside',toolId:1,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const cm = JSON.parse(await run('JSON.stringify(CNC.centresOf(CNC.job.shapes[0]))'));
+    ok(cm.length === 1 && cm[0].p.x === 5 && cm[0].p.y === 5, 'a circle reports its centre for the centre mark');
+
+    // extentAlong must be exactly +/- r for a circle - this is what makes edge maths exact
+    const ex = JSON.parse(await run(`JSON.stringify(CNC.extentAlong(CNC.job.shapes[0], {x:1,y:0}))`));
+    ok(Math.abs(ex.hi - 1) < 1e-4 && Math.abs(ex.lo + 1) < 1e-4, 'circle extent along X is exactly +/- its radius', JSON.stringify(ex));
+    const ex2 = JSON.parse(await run(`JSON.stringify(CNC.extentAlong(CNC.job.shapes[1], {x:0,y:1}))`));
+    ok(Math.abs(ex2.hi - 0.5) < 1e-4, 'second circle extent matches its radius', JSON.stringify(ex2));
+
+    // centre-to-centre 4in horizontally, centres aligned
+    await run(`(() => { const A=CNC.job.shapes[0], B=CNC.job.shapes[1];
+      const cA=CNC.refPoint(A); B.x = cA.x + 4; B.y = cA.y; return true; })()`);
+    const d1 = await run('CNC.G.dist(CNC.refPoint(CNC.job.shapes[0]), CNC.refPoint(CNC.job.shapes[1]))');
+    ok(Math.abs(d1 - 4) < 1e-9, 'centre-to-centre 4 in places centres exactly 4 in apart', String(d1));
+
+    // edge gap 0.25: centres must end up r1 + gap + r2 = 1 + 0.25 + 0.5 = 1.75 apart
+    await run(`(() => { const A=CNC.job.shapes[0], B=CNC.job.shapes[1];
+      const u={x:1,y:0}; const eA=CNC.extentAlong(A,u), eB=CNC.extentAlong(B,u);
+      const cc = eA.hi + 0.25 - eB.lo; const cA=CNC.refPoint(A);
+      B.x = cA.x + cc; B.y = cA.y; return true; })()`);
+    const d2 = await run('CNC.G.dist(CNC.refPoint(CNC.job.shapes[0]), CNC.refPoint(CNC.job.shapes[1]))');
+    ok(Math.abs(d2 - 1.75) < 1e-4, 'edge gap 0.25 gives centres 1.75 in apart (1 + 0.25 + 0.5)', String(d2));
+
+    // and the real geometric gap between the two outlines must be 0.25
+    const realGap = await run(`(() => {
+      const a = CNC.worldLoop(CNC.job.shapes[0]), b = CNC.worldLoop(CNC.job.shapes[1]);
+      let best = Infinity;
+      for (const s of a) for (const p of CNC.G.samplePts(s, 0.01))
+        for (const t of b) for (const q of CNC.G.samplePts(t, 0.01))
+          { const d = CNC.G.dist(p,q); if (d < best) best = d; }
+      return best; })()`);
+    ok(Math.abs(realGap - 0.25) < 0.01, 'the measured gap between the two outlines really is 0.25 in', String(realGap));
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

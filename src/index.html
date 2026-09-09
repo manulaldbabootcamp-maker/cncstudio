@@ -103,6 +103,7 @@
     <button id="btnPolyDims" class="ico" data-icon="dimension" title="New polygon from side lengths and angles"></button>
     <span class="sep"></span>
     <button id="btnMoveBy" class="ico" data-icon="move" title="Move selection by an exact distance (G)"></button>
+    <button id="btnDist" class="ico" data-icon="dimension" title="Set the distance between two parts — centre to centre, edge gap, or centre to edge"></button>
     <button id="btnScale" class="ico" data-icon="scale" title="Scale selection by factor or to a target size"></button>
     <button id="btnOffset" class="ico" data-icon="offset" title="Offset — parallel outline at a distance"></button>
     <button id="btnArray" class="ico" data-icon="array" title="Array — rows/columns or a bolt circle"></button>
@@ -137,6 +138,7 @@
     <div class="row"><label>Cut-through</label><input type="number" id="inCutThrough" step="0.005" value="0"> in</div>
     <div class="row"><label>Snap</label><select id="selSnap"><option value="0">off</option><option value="0.0625">1/16</option><option value="0.125" selected>1/8</option><option value="0.25">1/4</option><option value="0.5">1/2</option><option value="1">1</option></select></div>
     <div class="row"><label><input type="checkbox" id="chkPaths" checked> Toolpaths</label><label><input type="checkbox" id="chkKerf"> Kerf</label></div>
+    <div class="row"><label><input type="checkbox" id="chkCentres" checked> Centre marks</label></div>
     <h3>Parts <span id="partCount" class="muted"></span></h3>
     <div id="shapeList" class="list"></div>
     <div class="row" style="margin-top:8px">

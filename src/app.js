@@ -239,7 +239,8 @@
         dimLabel({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, `${fmtIn(Math.hypot(dx, dy))}  ${fmtAng(a, b)}  Δ${fmtIn(dx)},${fmtIn(dy)}`);
       }
     }
-    // dimensions (annotation only - never posted to the TAP)
+    // centre marks, then dimensions (both annotation only - never posted)
+    drawCentreMarks();
     drawDims();
     // grips on a single selected shape
     drawGrips();
@@ -1135,6 +1136,172 @@
   }
   $('#btnTrim').onclick = openTrimJoin;
 
+  // ---------- centre marks ----------
+  /* Permanent centre crosses on anything round, so a centre is visible without
+     having to hover it. The snap marker is a hover hint; this is a drawing aid. */
+  function centresOf(sh) {
+    const out = [];
+    if (sh.kind === 'circle' || sh.kind === 'ellipse') { out.push({ p: { x: sh.x, y: sh.y }, r: sh.kind === 'circle' ? sh.r : Math.max(sh.rx, sh.ry) }); return out; }
+    let loop;
+    try { loop = worldLoop(sh); } catch (e) { return out; }
+    for (const s of loop) {
+      if (s.type !== 'arc') continue;
+      if (out.some(o => G.same(o.p, s.c, 1e-7))) continue;
+      out.push({ p: { x: s.c.x, y: s.c.y }, r: G.radius(s) });
+    }
+    return out;
+  }
+  function drawCentreMarks() {
+    const el = $('#chkCentres');
+    if (el && !el.checked) return;
+    const dpr = devicePixelRatio;
+    ctx.save();
+    ctx.strokeStyle = '#7fd8a0'; ctx.lineWidth = 1.1 * dpr; ctx.setLineDash([]);
+    for (const sh of job.shapes) {
+      for (const c of centresOf(sh)) {
+        const p = W2S(c.p);
+        // cross scaled to the feature, clamped so it stays readable at any zoom
+        const k = Math.max(4 * dpr, Math.min(11 * dpr, (c.r || 0.25) * view.scale * 0.28));
+        ctx.beginPath();
+        ctx.moveTo(p.x - k, p.y); ctx.lineTo(p.x + k, p.y);
+        ctx.moveTo(p.x, p.y - k); ctx.lineTo(p.x, p.y + k);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+  const chkC = $('#chkCentres'); if (chkC) chkC.addEventListener('change', draw);
+
+  // ---------- distance between two parts ----------
+  /* Extent of a shape along a direction: how far its geometry reaches from its
+     own reference point, forward and back along u. For a circle that is
+     exactly +/- r; for anything else it is the real silhouette, sampled from
+     the loop, so "edge" means the actual edge and not a bounding box. */
+  function extentAlong(sh, u) {
+    const c = refPoint(sh);
+    let lo = 0, hi = 0, got = false;
+    let loop;
+    try { loop = worldLoop(sh); } catch (e) { return { lo: 0, hi: 0 }; }
+    for (const s of loop) {
+      for (const q of G.samplePts(s, 0.02)) {
+        const d = (q.x - c.x) * u.x + (q.y - c.y) * u.y;
+        if (!got) { lo = hi = d; got = true; }
+        else { if (d < lo) lo = d; if (d > hi) hi = d; }
+      }
+    }
+    return { lo, hi };
+  }
+  // the point a distance is measured from: a circle's true centre, else the bbox centre
+  function refPoint(sh) {
+    if (sh.kind === 'circle' || sh.kind === 'ellipse') return { x: sh.x, y: sh.y };
+    const b = shapeBBox(sh);
+    return { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 };
+  }
+  function openDistance() {
+    const shs = selInOrder();
+    if (shs.length !== 2) return toast('Select exactly two parts — the first stays put, the second moves');
+    const [A, B] = shs;
+    const cA = refPoint(A), cB = refPoint(B);
+    const dx0 = cB.x - cA.x, dy0 = cB.y - cA.y;
+    const curAng = Math.atan2(dy0, dx0) * 180 / Math.PI;
+    const isRound = (s) => s.kind === 'circle' || s.kind === 'ellipse';
+    const rTxt = (s) => s.kind === 'circle' ? ` (r ${fmtIn(s.r)})` : '';
+
+    modal(`<h3>Distance between two parts</h3>
+      <p class="muted"><b>${esc(A.name)}</b>${rTxt(A)} stays put · <b>${esc(B.name)}</b>${rTxt(B)} moves</p>
+      <div class="row"><label>Measure</label><select id="dsMode" style="flex:1">
+        <option value="cc">Centre to centre</option>
+        <option value="gap">Gap between edges</option>
+        <option value="ce">First centre to second edge</option>
+        <option value="ec">First edge to second centre</option>
+        <option value="ff">Far edge to far edge (overall)</option>
+      </select></div>
+      <div class="row"><label>Distance</label><input type="number" step="0.125" id="dsD" value="1"> in</div>
+      <div class="row"><label>Direction</label><select id="dsDir" style="flex:1">
+        <option value="x">Horizontal — second part to the right</option>
+        <option value="x-">Horizontal — second part to the left</option>
+        <option value="y">Vertical — second part above</option>
+        <option value="y-">Vertical — second part below</option>
+        <option value="keep">Keep the current direction (${curAng.toFixed(1)}°)</option>
+        <option value="ang">Custom angle…</option>
+      </select></div>
+      <div class="row" id="dsAngRow" style="display:none"><label>Angle</label><input type="number" step="15" id="dsAng" value="${(+curAng.toFixed(2))}"> °</div>
+      <div class="row"><label><input type="checkbox" id="dsAlign" checked> Line the centres up across that direction</label></div>
+      <p class="muted" id="dsNote" style="font-size:11px"></p>
+      <div class="row" style="margin-top:10px"><button class="primary" id="dsOk">Apply</button><button id="dsCancel">Cancel</button></div>`,
+      (ov, close) => {
+        const MODE = ov.querySelector('#dsMode'), DIR = ov.querySelector('#dsDir'), NOTE = ov.querySelector('#dsNote');
+        const dirVec = () => {
+          const v = DIR.value;
+          if (v === 'x') return { x: 1, y: 0 };
+          if (v === 'x-') return { x: -1, y: 0 };
+          if (v === 'y') return { x: 0, y: 1 };
+          if (v === 'y-') return { x: 0, y: -1 };
+          if (v === 'ang') { const a = (parseFloat(ov.querySelector('#dsAng').value) || 0) * Math.PI / 180; return { x: Math.cos(a), y: Math.sin(a) }; }
+          const L = Math.hypot(dx0, dy0) || 1;
+          return { x: dx0 / L, y: dy0 / L };
+        };
+        const describe = () => {
+          const u = dirVec();
+          const eA = extentAlong(A, u), eB = extentAlong(B, u);
+          const m = MODE.value;
+          const txt = {
+            cc: 'Distance between the two centres.',
+            gap: `Clear space between the facing edges — a ${fmtIn(0)} gap means they touch. Uses the real silhouette, so it is exact for circles.`,
+            ce: 'From the first part’s centre to the near edge of the second.',
+            ec: 'From the first part’s near edge to the second part’s centre.',
+            ff: 'Overall size across both parts, outside edge to outside edge.',
+          }[m];
+          // show what the equivalent centre-to-centre works out to
+          const d = parseFloat(ov.querySelector('#dsD').value);
+          let cc = null;
+          if (isFinite(d)) cc = ccFor(m, d, eA, eB);
+          NOTE.innerHTML = txt + (cc != null ? `<br>That puts the centres <b>${fmtIn(cc)}"</b> apart.` : '');
+          ov.querySelector('#dsAngRow').style.display = DIR.value === 'ang' ? '' : 'none';
+        };
+        // convert the chosen measurement into a centre-to-centre distance along u
+        const ccFor = (mode, d, eA, eB) => {
+          if (mode === 'cc') return d;
+          if (mode === 'gap') return eA.hi + d - eB.lo;
+          if (mode === 'ce') return d - eB.lo;
+          if (mode === 'ec') return eA.hi + d;
+          if (mode === 'ff') return d + eA.lo - eB.hi;
+          return d;
+        };
+        MODE.onchange = describe; DIR.onchange = describe;
+        ov.querySelector('#dsD').addEventListener('input', describe);
+        ov.querySelector('#dsAng').addEventListener('input', describe);
+        describe();
+        ov.querySelector('#dsCancel').onclick = close;
+        ov.querySelector('#dsOk').onclick = () => {
+          const d = parseFloat(ov.querySelector('#dsD').value);
+          if (!isFinite(d)) return toast('Enter a distance');
+          const u = dirVec();
+          const eA = extentAlong(A, u), eB = extentAlong(B, u);
+          const cc = ccFor(MODE.value, d, eA, eB);
+          if (MODE.value === 'gap' && cc < eA.hi - eB.lo - 1e-9 && d < 0) toast('Negative gap — the parts will overlap');
+          // target centre for B
+          const perp = { x: -u.y, y: u.x };
+          const align = ov.querySelector('#dsAlign').checked;
+          const perpNow = (cB.x - cA.x) * perp.x + (cB.y - cA.y) * perp.y;
+          const keepPerp = align ? 0 : perpNow;
+          const target = {
+            x: cA.x + u.x * cc + perp.x * keepPerp,
+            y: cA.y + u.y * cc + perp.y * keepPerp,
+          };
+          snapshot();
+          const move = { x: target.x - cB.x, y: target.y - cB.y };
+          const grp = B.group ? job.shapes.filter(s => s.group === B.group) : [B];
+          for (const s of grp) { s.x += move.x; s.y += move.y; }
+          const label = { cc: 'centre to centre', gap: 'edge gap', ce: 'centre to edge', ec: 'edge to centre', ff: 'overall' }[MODE.value];
+          LOG.action(`Set ${label} = ${fmtIn(d)} in between "${A.name}" and "${B.name}" (centres ${fmtIn(cc)} in apart)`);
+          close(); refresh();
+        };
+      });
+  }
+  $('#btnDist').onclick = openDistance;
+
+
   // ================= PUSH 3: text, groups, curves =================
 
   // ---------- groups ----------
@@ -1826,5 +1993,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   ICONS.apply(document);
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, gripsOf, buildText, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, gripsOf, buildText, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();

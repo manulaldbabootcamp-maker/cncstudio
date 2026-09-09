@@ -5,6 +5,39 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Centre marks and the distance tool
+
+### Added
+- **Permanent centre marks.** Circles, ellipses and any arc now draw a green
+  centre cross all the time, sized to the feature and clamped so it stays
+  readable at any zoom. Toggle with **Centre marks** in the left panel.
+  Previously a centre was only visible as a *snap marker*, which appears only
+  while the cursor is within about 11 px of it and only when the Centre snap is
+  enabled — fine as a hover hint, useless as a drawing aid.
+- **Distance between two parts.** Select two parts (the first stays put, the
+  second moves) and set the spacing directly, instead of working out
+  `X2 = X1 + r1 + gap + r2` by hand:
+  - centre to centre
+  - **gap between edges** (0 means touching)
+  - first centre to second edge
+  - first edge to second centre
+  - far edge to far edge (overall size across both)
+
+  Direction can be horizontal, vertical, the current line between the parts, or
+  a typed angle, with an option to line the centres up across that direction.
+  The dialog shows the equivalent centre-to-centre distance live, so the number
+  is visible before it is applied.
+  Edge distances use the **real silhouette** sampled from the outline, not a
+  bounding box, so they are exact for circles and correct for arbitrary shapes.
+  If the moved part is grouped, the whole group moves with it.
+
+### Tests
+- Smoke test now 42 assertions. Beyond checking the arithmetic, it measures the
+  **actual closest distance between the two outlines** after applying a 0.25 in
+  edge gap and confirms it really is 0.25 in.
+
+---
+
 ## Push 3 — Text, groups, ellipse and spline
 
 ### Added
