@@ -5,6 +5,49 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Trace a paper template from measured offsets
+
+For the job where a customer brings in a paper cut-out — a car window with
+curves that differ car to car — and it has to be reproduced exactly.
+
+### Added
+- **Trace from measurements** (`T`, or the ruler icon next to Dims…). The shop
+  method, made native: lay the cut-out with one square corner on 0,0 and the
+  second square corner along the baseline, step along at a fixed interval and
+  measure straight up to the curved edge at each station. Type or paste those
+  numbers in and the curve is rebuilt through every one of them.
+  - Station step is adjustable (1 in default); lines can also be entered as
+    `station,offset` pairs where the spacing is not uniform — useful for
+    tightening up stations only where the curve bends hard.
+  - Baseline can run along X or Y.
+  - Ends either close square onto the baseline into a cut-out part, or stay
+    open to cut on the line.
+  - The curve passes **through** every measured point (Catmull-Rom), which is
+    what an operator expects from measured data — a B-spline would not.
+  - Optional arc fitting with a tolerance box, so the cut runs G2/G3 rather
+    than thousands of tiny moves; same refit used for boolean results.
+
+### Accuracy, measured
+Reconstructing a known 30 in-radius arc over a 24 in baseline, measurements
+rounded to 0.001 in as a ruler would give:
+
+| Station step | Worst error |
+|---|---|
+| 0.5 in | 0.0006 in |
+| **1 in** | **0.0028 in** |
+| 2 in | 0.0107 in |
+| 3 in | 0.0239 in |
+
+So 1 in stations land about **five times inside 1/64 in**, and 3 in stations
+fall outside it — worth knowing where a curve tightens.
+
+### Tests
+- Smoke test now 158 assertions, including the full workflow against that known
+  arc: the part spans the baseline, sits on y = 0, closes square, stays within
+  0.010 in of the true curve everywhere, and posts to a real program.
+
+---
+
 ## Match the machine's real EnRoute configuration
 
 Driven by three production jobs (`17K_*.tap` + their `.rou` sources) and the

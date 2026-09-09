@@ -764,6 +764,7 @@
     if (e.key.toLowerCase() === 'e') setTool('ellipse');
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') { e.shiftKey ? ungroupSel() : groupSel(); e.preventDefault(); }
     if (e.key.toLowerCase() === 'm') setTool('measure');
+    if (e.key.toLowerCase() === 't' && !sel.size) { openOffsetTrace(); e.preventDefault(); }
     if (e.key.toLowerCase() === 'k') { setTool('trim'); toast('Click the edge you want to remove'); }
     if (e.key.toLowerCase() === 'j' && sel.size > 1) { mergeSelected(trimTol()); e.preventDefault(); }
     if (e.key.toLowerCase() === 'd' && !e.ctrlKey && !e.metaKey) setTool('dim');
@@ -944,6 +945,141 @@
     render();
   }
   $('#btnPolyDims').onclick = () => openPolyBuilder(null);
+
+  // ================= trace a paper template from offsets =================
+  /* The shop method: lay the cut-out down with one square corner on 0,0 and the
+     second square corner along X. That distance is the baseline. Then step
+     along it at a fixed interval - 1 in - and measure the perpendicular
+     distance up to the curved edge at each station. Type those numbers in and
+     the curve is rebuilt exactly.
+     No camera, no perspective error, and the accuracy is whatever your ruler
+     and square give you. */
+  function openOffsetTrace() {
+    modal(`<h3>Trace a template from measurements</h3>
+      <p class="muted">Lay the cut-out with one square corner on <b>0,0</b> and the second square corner along the baseline.
+      Step along the baseline and measure straight up to the curved edge at each station.</p>
+      <div class="row"><label>Station step</label><input type="number" step="0.25" id="otStep" value="1"> in
+        <label style="min-width:0"><input type="checkbox" id="otPairs"> lines are <code>station,offset</code></label></div>
+      <div class="row"><label>Baseline runs</label><select id="otDir" style="flex:1">
+        <option value="x">Along X — measure offsets in Y (square corner at 0,0, second along X)</option>
+        <option value="y">Along Y — measure offsets in X</option>
+      </select></div>
+      <div class="row"><label style="align-self:flex-start">Offsets</label>
+        <textarea id="otVals" style="flex:1;min-height:120px" placeholder="One measurement per line, starting at the corner:&#10;0&#10;0.42&#10;0.95&#10;1.6&#10;2.3&#10;..."></textarea></div>
+      <div class="row"><label>Ends</label><select id="otClose" style="flex:1">
+        <option value="square">Close with square corners back to the baseline</option>
+        <option value="open">Leave the curve open (cut on the line)</option>
+      </select></div>
+      <div class="row"><label>Curve fit</label><select id="otFit" style="flex:1">
+        <option value="arc">Fit arcs where they match — smoother, faster cut</option>
+        <option value="poly">Keep every measured point as straight segments</option>
+      </select>
+        <input type="number" step="0.001" id="otTol" value="0.01" style="width:74px"> in tol</div>
+      <p class="muted" id="otNote" style="font-size:11px"></p>
+      <div class="row" style="margin-top:10px"><button class="primary" id="otOk">Create part</button><button id="otCancel">Cancel</button></div>`,
+      (ov, close) => {
+        const V = ov.querySelector('#otVals'), NOTE = ov.querySelector('#otNote');
+        const parse = () => {
+          const step = parseFloat(ov.querySelector('#otStep').value) || 1;
+          const pairs = ov.querySelector('#otPairs').checked;
+          const pts = [];
+          const bad = [];
+          V.value.split(/[\n;]+/).forEach((raw, i) => {
+            const t = raw.trim();
+            if (!t) return;
+            if (pairs) {
+              const m = t.split(/[,\s]+/).map(Number);
+              if (m.length < 2 || !isFinite(m[0]) || !isFinite(m[1])) { bad.push(t); return; }
+              pts.push({ s: m[0], o: m[1] });
+            } else {
+              const v = Number(t.replace(/"$/, ''));
+              if (!isFinite(v)) { bad.push(t); return; }
+              pts.push({ s: pts.length * step, o: v });
+            }
+          });
+          return { pts, bad, step };
+        };
+        const refresh2 = () => {
+          const { pts, bad } = parse();
+          const span = pts.length ? (pts[pts.length - 1].s - pts[0].s) : 0;
+          NOTE.innerHTML = pts.length
+            ? `${pts.length} stations over a ${fmtIn(span)} in baseline` + (bad.length ? ` · <span style="color:var(--warn)">ignoring ${bad.length} unreadable line(s): ${esc(bad.slice(0, 3).join(', '))}</span>` : '')
+            : 'Paste or type one measurement per line.';
+        };
+        V.addEventListener('input', refresh2);
+        ov.querySelector('#otStep').addEventListener('input', refresh2);
+        ov.querySelector('#otPairs').addEventListener('change', refresh2);
+        refresh2();
+        ov.querySelector('#otCancel').onclick = close;
+        ov.querySelector('#otOk').onclick = () => {
+          const { pts } = parse();
+          if (pts.length < 2) { toast('Enter at least two measurements'); return; }
+          const alongY = ov.querySelector('#otDir').value === 'y';
+          const closeIt = ov.querySelector('#otClose').value === 'square';
+          const fitArcs = ov.querySelector('#otFit').value === 'arc';
+          const tol = parseFloat(ov.querySelector('#otTol').value) || 0.01;
+          const made = buildFromOffsets(pts, { alongY, closeIt, fitArcs, tol });
+          if (made) close();
+        };
+      });
+  }
+
+  function buildFromOffsets(pts, opts) {
+    // station/offset -> world points, in the chosen orientation
+    const P = pts.map(p => opts.alongY ? { x: p.o, y: p.s } : { x: p.s, y: p.o });
+    // a spline passes THROUGH every measured point, which is the whole point here
+    let curve = G.splineLoop(P, false, 12);
+    if (!curve.length) { toast('Those measurements do not make a curve'); return 0; }
+
+    if (opts.fitArcs) {
+      // resample the spline and refit arcs, so the cut runs G2/G3 rather than
+      // thousands of tiny moves - same treatment the boolean results get
+      const poly = [];
+      for (const sg of curve) poly.push({ x: sg.a.x, y: sg.a.y });
+      const last = curve[curve.length - 1].b;
+      poly.push({ x: last.x, y: last.y });
+      try {
+        const fitted = BOOL.refit(poly, opts.tol);
+        // refit closes the ring; keep only the run that spans our open curve
+        if (fitted && fitted.length) {
+          const open = [];
+          for (const sg of fitted) {
+            open.push(sg);
+            if (G.same(sg.b, last, 1e-6)) break;
+          }
+          if (open.length) curve = open;
+        }
+      } catch (e) { LOG.warn('Arc fitting failed on the traced curve, keeping segments', e); }
+    }
+
+    const a0 = curve[0].a, a1 = curve[curve.length - 1].b;
+    let loop = curve;
+    if (opts.closeIt) {
+      // drop square onto the baseline at both ends and close along it
+      const base0 = opts.alongY ? { x: 0, y: a0.y } : { x: a0.x, y: 0 };
+      const base1 = opts.alongY ? { x: 0, y: a1.y } : { x: a1.x, y: 0 };
+      const segs = curve.slice();
+      if (G.dist(a1, base1) > 1e-6) segs.push(G.line(G.P(a1.x, a1.y), G.P(base1.x, base1.y)));
+      if (G.dist(base1, base0) > 1e-6) segs.push(G.line(G.P(base1.x, base1.y), G.P(base0.x, base0.y)));
+      if (G.dist(base0, a0) > 1e-6) segs.push(G.line(G.P(base0.x, base0.y), G.P(a0.x, a0.y)));
+      loop = segs;
+    }
+    snapshot();
+    const sh = pathShape(loop, {
+      name: 'template', open: !opts.closeIt,
+      op: opts.closeIt ? 'outside' : 'on',
+    });
+    job.shapes.push(sh);
+    sel.clear(); sel.add(sh.id);
+    const arcs = loop.filter(s => s.type === 'arc').length;
+    LOG.action(`Template traced from ${pts.length} measurements — ${loop.length} segments`
+      + (arcs ? `, ${arcs} fitted as arcs` : '') + (opts.closeIt ? ', closed to the baseline' : ', left open'));
+    toast(`Traced ${pts.length} points into ${loop.length} segments${arcs ? ` (${arcs} arcs)` : ''}`);
+    refresh(); fitBed(); draw();
+    return loop.length;
+  }
+  $('#btnOffsetTrace').onclick = openOffsetTrace;
+
 
   // ---------- modal helper ----------
   function modal(html, wire) {
@@ -2859,5 +2995,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();

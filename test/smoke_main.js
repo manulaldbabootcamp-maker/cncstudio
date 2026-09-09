@@ -743,6 +743,55 @@ app.whenReady().then(async () => {
     const sqNow = leftover.find(x => x.n === 'sq');
     ok(!!sqNow && sqNow.segs === 5, 'deleting one side of the closed square leaves 5 segments', JSON.stringify(leftover));
 
+    { // scoped: this file is one long function and const names collide
+    console.log('trace a paper template from measured offsets');
+    /* Simulate the shop workflow against a curve whose true shape is known: a
+       circular arc of radius 30 sagging over a 24 in baseline. Measure it every
+       1 in the way an operator would, feed those numbers in, and check how far
+       the rebuilt curve strays from the real one. */
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = []; CNC.refresh(); return true; })()`);
+    const R = 30, half = 12;
+    const trueY = (x) => 8 + (Math.sqrt(R*R - (x-half)*(x-half)) - Math.sqrt(R*R - half*half));
+    const measured = [];
+    for (let x = 0; x <= 24; x += 1) measured.push({ s: x, o: +trueY(x).toFixed(3) });  // ruler-accurate to 0.001
+    const built = await run(`CNC.buildFromOffsets(${JSON.stringify(measured)}, {alongY:false, closeIt:true, fitArcs:true, tol:0.01})`);
+    ok(typeof built === 'number' && built > 0, 'a part is built from the measurements', String(built));
+    ok((await run('CNC.job.shapes.length')) === 1, 'exactly one part is created');
+    ok((await run('CNC.job.shapes[0].open')) === false, 'closed back to the baseline with square corners');
+
+    const bb = JSON.parse(await run(`JSON.stringify(CNC.G.bbox(CNC.worldLoop(CNC.job.shapes[0])))`));
+    ok(Math.abs(bb.w - 24) < 1e-3, 'the part spans the 24 in baseline', JSON.stringify(bb));
+    ok(Math.abs(bb.y0) < 1e-6, 'it sits on the baseline at y = 0', String(bb.y0));
+
+    // how faithful is the rebuilt curve? sample it and compare to the true arc
+    const err = await run(`(() => {
+      const loop = CNC.worldLoop(CNC.job.shapes[0]);
+      const R = 30, half = 12;
+      const trueY = (x) => 8 + (Math.sqrt(R*R-(x-half)*(x-half)) - Math.sqrt(R*R-half*half));
+      let worst = 0;
+      for (const sg of loop) {
+        for (const q of CNC.G.samplePts(sg, 0.05)) {
+          if (q.y < 1 || q.x < 0.05 || q.x > 23.95) continue;   // skip the straight sides/baseline
+          worst = Math.max(worst, Math.abs(q.y - trueY(q.x)));
+        }
+      }
+      return worst; })()`);
+    ok(err < 0.01, 'rebuilt curve is within 0.010 in of the real arc everywhere', 'worst = ' + Number(err).toFixed(5) + ' in');
+    ok(err < 1/64, 'comfortably inside 1/64 in', 'worst = ' + Number(err).toFixed(5));
+
+    console.log('the traced curve posts to TAP');
+    const tracedTap = await run(`(() => { const j={shapes:CNC.job.shapes.map(s=>({loop:CNC.worldLoop(s),op:s.op,toolId:2,open:s.open})),
+      tools:CNC.S.tools, material:{thickness:0.1875}, cutThrough:0, machine:CNC.S.machine};
+      return CNC.PO.generate(j).gcode.length; })()`);
+    ok(typeof tracedTap === 'number' && tracedTap > 200, 'the traced template generates a real program', String(tracedTap));
+
+    console.log('offsets can run along Y instead');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.refresh(); return true; })()`);
+    await run(`CNC.buildFromOffsets([{s:0,o:0},{s:1,o:1},{s:2,o:1.8},{s:3,o:2.2}], {alongY:true, closeIt:true, fitArcs:false, tol:0.01})`);
+    const bb2 = JSON.parse(await run(`JSON.stringify(CNC.G.bbox(CNC.worldLoop(CNC.job.shapes[0])))`));
+    ok(Math.abs(bb2.h - 3) < 1e-3, 'a Y-baseline template spans the stations in Y', JSON.stringify(bb2));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
