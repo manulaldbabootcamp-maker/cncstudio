@@ -507,6 +507,50 @@ app.whenReady().then(async () => {
     const totalAfter = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s => CNC.worldLoop(s).length))`));
     ok(totalAfter.reduce((a, b) => a + b, 0) === 4, 'deleting one of the 5 sides leaves 4 segments', JSON.stringify(totalAfter));
 
+    console.log('bbox of an open path (was collapsing to a point)');
+    const obb = JSON.parse(await run(`JSON.stringify(CNC.G.bbox([CNC.G.line({x:0,y:0},{x:4,y:10})]))`));
+    ok(obb.w === 4 && obb.h === 10, 'a single-segment open path reports its real bbox', JSON.stringify(obb));
+    const rbb = JSON.parse(await run(`JSON.stringify(CNC.G.bbox(CNC.G.rectLoop(0,0,10,6)))`));
+    ok(rbb.w === 10 && rbb.h === 6, 'closed shapes are unaffected', JSON.stringify(rbb));
+    const ar = await run(`CNC.G.signedArea(CNC.G.rectLoop(0,0,10,6))`);
+    ok(Math.abs(ar - 60) < 1e-9, 'area is unchanged by the bbox fix', String(ar));
+
+    console.log('segment/box test catches a line crossing right through');
+    const thru = await run(`CNC.segTouchesBox(CNC.G.line({x:-5,y:5},{x:15,y:5}), {x0:0,x1:10,y0:0,y1:10})`);
+    ok(thru === true, 'a line crossing the box with BOTH ends outside is detected', String(thru));
+    const miss = await run(`CNC.segTouchesBox(CNC.G.line({x:-5,y:50},{x:15,y:50}), {x0:0,x1:10,y0:0,y1:10})`);
+    ok(miss === false, 'a line well clear of the box is not', String(miss));
+
+    console.log('box-select spanning TWO parts');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:1100,name:'C',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:0,y:10},{x:10,y:10},{x:10,y:0}]});
+      CNC.job.shapes.push({id:1101,name:'tie',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:4,y:10}]});
+      CNC.refresh(); return true; })()`);
+    await run(`(() => { CNC.doMarquee(-1,-1,6,6); return true; })()`);
+    const spans = JSON.parse(await run('JSON.stringify(CNC.getSelEdges())'));
+    const partIds = Array.from(new Set(spans.map(e => e.id))).sort();
+    ok(partIds.length === 2, 'a box crossing both objects selects sides on BOTH', JSON.stringify(spans));
+    ok(partIds.join(',') === '1100,1101', 'and they are the C and the tie line', partIds.join(','));
+
+    console.log('split at intersections makes each piece selectable');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      // one long horizontal line, crossed by a vertical one at x=5
+      CNC.job.shapes.push({id:1110,name:'h',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:5},{x:10,y:5}]});
+      CNC.job.shapes.push({id:1111,name:'v',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:5,y:0},{x:5,y:10}]});
+      CNC.refresh(); return true; })()`);
+    ok((await run('CNC.worldLoop(CNC.job.shapes[0]).length')) === 1, 'the horizontal line starts as one segment');
+    const nsplit = await run(`CNC.splitAtIntersections(CNC.job.shapes.slice(), 0.125)`);
+    ok(nsplit >= 2, 'splitting reports crossings found', String(nsplit));
+    const counts = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s => CNC.worldLoop(s).length))`));
+    ok(counts.every(n => n === 2), 'each line is now two separately selectable pieces', JSON.stringify(counts));
+    // and the halves are the right halves
+    const halves = JSON.parse(await run(`JSON.stringify(CNC.worldLoop(CNC.job.shapes[0]).map(g => [g.a.x, g.b.x]))`));
+    ok(Math.abs(halves[0][1] - 5) < 1e-6, 'the horizontal line is split exactly at the crossing (x=5)', JSON.stringify(halves));
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

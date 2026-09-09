@@ -5,6 +5,41 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Box-select across parts, split at intersections, and a bbox bug
+
+### Fixed
+- **`bbox()` was wrong for every open path.** `loopPts` skipped each segment's
+  end point (correct for a closed loop, where the next segment repeats it) but
+  never added the final one back for an open path — so a single-segment open
+  path measured as a **zero-size box at its start point**. That is why a box
+  selection spanning two parts appeared to ignore one of them: a line looked
+  like a dot that fell entirely inside the box, so it was treated as wholly
+  selected instead of having its side picked.
+  This had been quietly wrong for anything measuring an open path — nesting,
+  bed-limit warnings, scale, group bounds and the distance tool.
+- **The segment/box test missed lines crossing straight through.** It sampled
+  points, and a straight segment samples to just its two endpoints, so a line
+  passing through a box with both ends outside was never detected. It now tests
+  the endpoints and then the segment against the four sides of the box, which
+  is exact for both lines and arcs.
+- **Box-select now genuinely spans parts** — a box crossing two objects selects
+  sides on both, which is what these two bugs had been preventing.
+
+### Added
+- **Split at intersections** (Trim dialog). Turns every crossing into a real
+  vertex, so each piece becomes its own selectable side: a line crossed by
+  another becomes two lines that can be picked and deleted separately. Handles
+  both true crossings and an endpoint that merely touches partway along.
+  Runs on the selection, or on the whole job if nothing is selected.
+
+### Tests
+- Smoke test now 114 assertions: an open path reports its real bounding box
+  while closed shapes and areas are unchanged; a line crossing a box with both
+  ends outside is detected; a box crossing two objects selects sides on both;
+  and two crossing lines split into four pieces cut exactly at the crossing.
+
+---
+
 ## Box-select sides, and merging a line that lands partway along another
 
 ### Fixed

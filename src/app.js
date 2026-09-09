@@ -1201,6 +1201,7 @@
       <p class="muted">Selected: ${shs.length} part${shs.length === 1 ? '' : 's'} (${opens.length} open path${opens.length === 1 ? '' : 's'}).</p>
       <div class="row"><button class="small" id="tjErase">Delete an edge</button><span class="muted">then click a side to remove it — e.g. drop one side of a rectangle to leave a C</span></div>
       <div class="row"><button class="small" id="tjJoin">Join open paths</button><span class="muted">chain touching <b>ends</b> into one path; closes it if the ends meet</span></div>
+      <div class="row"><button class="small" id="tjSplit">Split at intersections</button><span class="muted">turn every crossing into a vertex, so each piece is its own selectable side</span></div>
       <div class="row"><button class="small" id="tjMerge">Merge into one part</button><span class="muted">also handles a line landing <b>partway along</b> another side: splits it there so the new line becomes a numbered side</span></div>
       <div class="row"><button class="small" id="tjClose">Force close</button><span class="muted">connect the two ends of one open path with a straight segment</span></div>
       <div class="row"><button class="small" id="tjTrim">Trim tool</button><span class="muted">then click the piece of an open path to remove, between its crossings</span></div>
@@ -1216,6 +1217,7 @@
         ov.querySelector('#tjHeal').onclick = () => { S.snap.trimTol = tol(); saveSettings(); healSelection(tol()); close(); };
         ov.querySelector('#tjErase').onclick = () => { setTool('trim'); close(); toast('Click the edge you want to remove'); };
         ov.querySelector('#tjJoin').onclick = () => { joinSelected(tol()); close(); };
+        ov.querySelector('#tjSplit').onclick = () => { S.snap.trimTol = tol(); saveSettings(); splitAtIntersectionsCmd(); close(); };
         ov.querySelector('#tjMerge').onclick = () => { S.snap.trimTol = tol(); saveSettings(); mergeSelected(tol()); close(); };
         ov.querySelector('#tjClose').onclick = () => { forceClose(); close(); };
         ov.querySelector('#tjTrim').onclick = () => { setTool('trim'); close(); toast('Click the part of a path to remove'); };
@@ -1239,11 +1241,23 @@
   function soleEdge() { return selEdges.length === 1 ? selEdges[0] : null; }
   function selEdgeShape() { const e = soleEdge(); return e ? job.shapes.find(s => s.id === e.id) : null; }
 
-  // does any part of this segment fall inside the box?
+  /* Does any part of this segment fall inside the box?
+     Sampling alone is not enough: a straight segment samples to just its two
+     endpoints, so a line crossing the box with both ends outside would be
+     missed. Test the endpoints, then the segment against the four box sides. */
   function segTouchesBox(sg, box) {
-    for (const q of G.samplePts(sg, 0.02)) {
-      if (q.x >= box.x0 && q.x <= box.x1 && q.y >= box.y0 && q.y <= box.y1) return true;
+    const inBox = (q) => q.x >= box.x0 && q.x <= box.x1 && q.y >= box.y0 && q.y <= box.y1;
+    if (inBox(sg.a) || inBox(sg.b)) return true;
+    if (sg.type === 'arc') {
+      for (const q of G.samplePts(sg, Math.max(0.02, Math.min(box.x1 - box.x0, box.y1 - box.y0) / 8))) if (inBox(q)) return true;
     }
+    const c = [
+      G.line(G.P(box.x0, box.y0), G.P(box.x1, box.y0)),
+      G.line(G.P(box.x1, box.y0), G.P(box.x1, box.y1)),
+      G.line(G.P(box.x1, box.y1), G.P(box.x0, box.y1)),
+      G.line(G.P(box.x0, box.y1), G.P(box.x0, box.y0)),
+    ];
+    for (const side of c) if (SNAP.segSegPoints(sg, side).length) return true;
     return false;
   }
 
@@ -1984,6 +1998,70 @@
     return out;
   }
 
+  /* Split every path where it meets another, so each crossing becomes a real
+     vertex and each piece is its own selectable side. This is what makes a
+     junction behave like two lines instead of one long one. */
+  function splitAtIntersections(shapes, tol) {
+    const targets = shapes.length ? shapes : job.shapes.slice();
+    if (!targets.length) return 0;
+    const all = job.shapes.map(sh => { try { return { id: sh.id, loop: worldLoop(sh) }; } catch (e) { return { id: sh.id, loop: [] }; } });
+    let total = 0;
+    for (const sh of targets) {
+      let loop;
+      try { loop = worldLoop(sh); } catch (e) { continue; }
+      if (!loop.length) continue;
+      const out = [];
+      let splits = 0;
+      loop.forEach((sg) => {
+        const ts = [];
+        for (const other of all) {
+          if (other.id === sh.id) continue;
+          for (const t of other.loop) {
+            // real crossings
+            for (const q of SNAP.segSegPoints(sg, t)) {
+              const u = paramOn(sg, q);
+              if (u > 1e-4 && u < 1 - 1e-4) ts.push(u);
+            }
+            // and touching ends, which are not crossings but should still split
+            for (const endPt of [t.a, t.b]) {
+              const q = SNAP.nearestOnSeg(sg, endPt);
+              if (G.dist(q, endPt) > tol) continue;
+              const u = paramOn(sg, q);
+              if (u > 1e-4 && u < 1 - 1e-4) ts.push(u);
+            }
+          }
+        }
+        if (!ts.length) { out.push(sg); return; }
+        ts.sort((a, b) => a - b);
+        let from = 0;
+        for (const u of ts) {
+          if (u - from < 1e-6) continue;
+          const piece = subSeg(sg, from, u);
+          if (piece) { out.push(piece); splits++; }
+          from = u;
+        }
+        const tail = subSeg(sg, from, 1);
+        if (tail) out.push(tail);
+      });
+      if (!splits) continue;
+      total += splits;
+      const ns = pathShape(out, { name: sh.name, open: sh.open, op: sh.op, toolId: sh.toolId, climb: sh.climb, group: sh.group });
+      const k = job.shapes.findIndex(x => x.id === sh.id);
+      if (k >= 0) job.shapes.splice(k, 1, ns); else job.shapes.push(ns);
+      makeEditable(ns);
+    }
+    return total;
+  }
+  function splitAtIntersectionsCmd() {
+    const shs = selInOrder();
+    snapshot();
+    const n = splitAtIntersections(shs, trimTol());
+    if (!n) { toast('Nothing crosses anything here'); LOG.info('Split at intersections: no crossings found'); refresh(); return; }
+    LOG.action('Split ' + n + ' side(s) at crossings' + (shs.length ? ' on ' + shs.length + ' selected part(s)' : ' across the job'));
+    toast('Split into ' + n + ' extra side(s) at the crossings');
+    clearEdge(); invalidateLoops(); refresh();
+  }
+
   function mergeSelected(tol) {
     const shs = selInOrder().filter(s => s.open);
     if (shs.length < 2) return toast('Select two or more open paths to merge');
@@ -2655,5 +2733,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();

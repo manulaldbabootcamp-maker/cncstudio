@@ -43,9 +43,19 @@ const GEOM = (() => {
     for (let i = 0; i <= n; i++) out.push(pointAt(s, i / n));
     return out;
   }
+  /* Sample a loop to points. Each segment contributes its start plus interior
+     samples; its end is the next segment's start, so it is skipped to avoid
+     duplicates. On an OPEN path there is no next segment for the last one, so
+     its endpoint must be added explicitly - without it bbox() collapsed a
+     single-segment open path to a point, which broke nesting, bed-limit
+     warnings and anything else measuring an open path. */
   function loopPts(loop, maxSeg = 0.02) {
     const pts = [];
     for (const s of loop) { const p = samplePts(s, maxSeg); for (let i = 0; i < p.length - 1; i++) pts.push(p[i]); }
+    if (loop.length) {
+      const end = loop[loop.length - 1].b;
+      if (!pts.length || !same(pts[0], end, 1e-9)) pts.push(end);
+    }
     return pts;
   }
   function signedArea(loop) {
