@@ -5,6 +5,57 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Match the machine's real EnRoute configuration
+
+Driven by three production jobs (`17K_*.tap` + their `.rou` sources) and the
+Wincnc15 driver dialogs supplied by the operator. **The generator now reproduces
+a real EnRoute program byte for byte.**
+
+### What the reference material showed
+- **Z Lift is 0.100 in** — safe Z is a height *above the material*, not an
+  absolute Z. 0.375 stock gives 0.475, 0.25 stock gives 0.35. The old absolute
+  1.1875 was simply that job's thickness + a 1.0 Z Lift.
+- **Every lead-in is a 1.000 in ramp**, run backwards along the toolpath: rapid
+  to a point 1 in back along the path, feed down to the material surface, then
+  ramp to full depth over that inch. All 120 lead-ins across the three files are
+  exactly 1.000 in. We were plunging straight down, which is hard on a bit in
+  acrylic.
+- **Header carries M5**; the tool block is `[name] / T## / S##### / M3` with the
+  spindle speed *inside* it, not emitted at the first plunge.
+- **A `[Creation Date: 9/2/2026 - 10:48:38 AM]` line** leads the file.
+- Machine resolution **1000 steps/in** (0.001 in), **arc tolerance 0.0004 in**,
+  arcs enabled, **drill cycles disabled**, feed default 300 / max 1200, plunge
+  default 50 / max 400.
+- The real turret: 1 = 3/8" Upspiral, 2 = 1/4" Upspiral, 3 = 1/2" Straight,
+  4 = 3/16" straight, 5 = 1/8" straight cutter, 7 = 1/16" Straight Cutter
+  (6 and 8 empty).
+
+### Added
+- Machine options: `zLift`, `leadIn`, `creationDate`, `spindleInToolChange`,
+  and an **ENROUTE_CURRENT preset** matching the shop's present setup — now the
+  default for new jobs. The legacy preset is kept for the older configuration.
+  Both are selectable in Settings, with Z Lift, ramp length and the two format
+  switches editable directly.
+- Ramp-on lead-in in the post-processor. It walks backwards along the closed
+  path, splitting a segment where needed, and interpolates Z across the ramp.
+  Skipped automatically on open paths and on paths too short to ramp on.
+- Default tool table replaced with the actual turret, with slot 2's real
+  feeds and speeds (S17000, F217 cut, F20 plunge) taken from the files.
+
+### Tests
+- **`test/enroute_test.js`, 16 assertions** against `17K_3-8in pcs_drop.tap`.
+  The part geometry is recovered from the file itself (two 22 x 8 rectangles,
+  since the 0.775..23.025 toolpath is a 22 x 8 offset outward by the 0.125 tool
+  radius). It checks the frame, safe Z, ramp distances, feed placement and pass
+  depths — and finishes with the strongest available assertion: **the generated
+  program is byte-identical to the EnRoute reference, all 113 lines.**
+- `verify.js` now pins the legacy config explicitly instead of reading the live
+  defaults. It was silently coupled to them, so correcting the defaults to match
+  the shop broke a golden file that should never have depended on them.
+- `npm test` runs both golden files plus the three unit suites.
+
+---
+
 ## The segmentation rule, locked down
 
 No behaviour change — the rule was already implemented. These tests state it

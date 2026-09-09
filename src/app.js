@@ -2725,6 +2725,20 @@
   const bindSetting = (id, fn) => $(id).addEventListener('change', () => { fn($(id)); saveSettings(); refresh(); });
   bindSetting('#mBedW', el => S.machine.bedW = parseFloat(el.value)); bindSetting('#mBedH', el => S.machine.bedH = parseFloat(el.value));
   bindSetting('#mSafeZ', el => S.machine.safeZ = parseFloat(el.value)); bindSetting('#mDec', el => S.machine.decimals = parseInt(el.value, 10)); bindSetting('#mEol', el => S.machine.eol = el.value);
+  bindSetting('#mZLift', el => S.machine.zLift = el.value === '' ? null : parseFloat(el.value));
+  bindSetting('#mLeadIn', el => S.machine.leadIn = parseFloat(el.value) || 0);
+  bindSetting('#mCreationDate', el => S.machine.creationDate = el.checked);
+  bindSetting('#mSpindleTC', el => S.machine.spindleInToolChange = el.checked);
+  $('#mApplyPreset').onclick = () => {
+    const which = $('#mPreset').value;
+    const src = which === 'enroute' ? PO.ENROUTE_CURRENT : PO.DEFAULT_MACHINE;
+    // keep bed size and line ending; the preset owns the program format
+    const { bedW, bedH, eol } = S.machine;
+    S.machine = { ...src, bedW, bedH, eol };
+    saveSettings(); renderSettings(); updateStats();
+    LOG.action('Machine preset applied: ' + src.name);
+    toast('Applied preset: ' + src.name);
+  };
   bindSetting('#mHeader', el => S.machine.header = el.value); bindSetting('#mToolChange', el => S.machine.toolChange = el.value); bindSetting('#mFooter', el => S.machine.footer = el.value);
   bindSetting('#nGap', el => S.nest.gap = parseFloat(el.value)); bindSetting('#nMargin', el => S.nest.margin = parseFloat(el.value)); bindSetting('#nRotate', el => S.nest.rotate = el.checked);
   bindSetting('#aiKey', el => S.ai.key = el.value.trim()); bindSetting('#aiModel', el => S.ai.model = el.value.trim());

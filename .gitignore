@@ -11,3 +11,7 @@ test/parts.json
 test/regen.tap
 
 *.log
+
+# operator-supplied reference material (kept out of the repo)
+electron/email attachments/
+Screenshot*.png

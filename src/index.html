@@ -200,7 +200,14 @@
         <div class="card">
           <h3>Machine</h3>
           <div class="row"><label>Bed W × H</label><input type="number" id="mBedW" step="1"> × <input type="number" id="mBedH" step="1"> in</div>
-          <div class="row"><label>Safe Z</label><input type="number" id="mSafeZ" step="0.0625"> in</div>
+          <div class="row"><label>Preset</label><select id="mPreset" style="flex:1">
+            <option value="enroute">EnRoute current — Z Lift, ramp lead-in</option>
+            <option value="legacy">Legacy — absolute safe Z, straight plunge</option>
+          </select><button class="small" id="mApplyPreset">Apply</button></div>
+          <div class="row"><label>Z Lift</label><input type="number" id="mZLift" step="0.05" placeholder="blank = absolute"> in <span class="muted">above material</span></div>
+          <div class="row"><label>Safe Z (abs)</label><input type="number" id="mSafeZ" step="0.0625"> in <span class="muted">used when Z Lift is blank</span></div>
+          <div class="row"><label>Lead-in ramp</label><input type="number" id="mLeadIn" step="0.25"> in <span class="muted">0 = plunge straight down</span></div>
+          <div class="row"><label></label><label><input type="checkbox" id="mCreationDate"> Creation-date line</label><label><input type="checkbox" id="mSpindleTC"> S in tool block</label></div>
           <div class="row"><label>Decimals</label><input type="number" id="mDec" step="1" min="2" max="6"></div>
           <div class="row"><label>Line ending</label><select id="mEol"><option value="crlf">CRLF (Windows)</option><option value="lf">LF</option></select></div>
           <div class="row"><label>Header</label></div><textarea id="mHeader"></textarea>

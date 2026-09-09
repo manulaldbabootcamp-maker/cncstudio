@@ -30,7 +30,16 @@ console.log('part 0 segs:', shapes[0].loop.length, 'area', G.signedArea(shapes[0
 console.log('part 1 segs:', shapes[1].loop.length, 'area', G.signedArea(shapes[1].loop).toFixed(4));
 shapes[0].loop.forEach(s => console.log(s.type, s.a.x.toFixed(4), s.a.y.toFixed(4), '->', s.b.x.toFixed(4), s.b.y.toFixed(4), s.type === 'arc' ? 'R' + G.radius(s).toFixed(4) + (s.ccw ? ' ccw' : ' cw') : ''));
 
-const job = { shapes, tools: POST.DEFAULT_TOOLS, material: { thickness: 0.1875 }, cutThrough: 0 };
+/* Pin the config this reference file was actually cut with, instead of reading
+   the app defaults. Sides_manav.tap predates the machine's current EnRoute
+   setup: no creation-date stamp, no ramp-on lead-in, an absolute 1.1875 safe Z
+   (Z Lift was 1.0 then, not 0.1), S emitted at the first plunge, and a 3/8"
+   tool at 23000 rpm / F180 / 0.09375 per pass. Tracking the live defaults made
+   this test fail the moment the defaults were corrected to match the shop's
+   present configuration - which is exactly backwards for a golden file. */
+const LEGACY_TOOL = { id: 1, slot: 1, name: '3/8" Upspiral', dia: 0.375, rpm: 23000, feed: 180, plunge: 20, passDepth: 0.09375, type: 'endmill' };
+const LEGACY_MACHINE = { safeZ: 1.1875, zLift: null, leadIn: 0, creationDate: false, spindleInToolChange: false };
+const job = { shapes, tools: [LEGACY_TOOL], machine: LEGACY_MACHINE, material: { thickness: 0.1875 }, cutThrough: 0 };
 const out = POST.generate(job);
 fs.writeFileSync(__dirname + '/regen.tap', out.gcode);
 const a = src.split('\r\n'), b = out.gcode.split('\r\n');
