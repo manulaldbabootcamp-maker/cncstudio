@@ -21,6 +21,30 @@
   button.tool.active { background:var(--accent); color:#0b1520; }
   button.small { padding:2px 6px; font-size:12px; }
   input[type=number] { width:84px; }
+  /* icon buttons: square, glyph inherits currentColor from the button */
+  button.ico { display:inline-flex; align-items:center; justify-content:center; width:30px; height:28px; padding:0; }
+  button.ico svg { display:block; }
+  button.ico.active, button.tool.ico.active { background:var(--accent); color:#0b1520; border-color:var(--accent); }
+  button.primary[data-icon] { display:inline-flex; align-items:center; gap:5px; }
+  header .sep { width:1px; height:20px; background:var(--border); margin:0 3px; }
+  /* snap settings popover */
+  .popover { position:absolute; z-index:60; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 12px; box-shadow:0 8px 24px rgba(0,0,0,.5); min-width:210px; }
+  .popover label { display:flex; align-items:center; gap:6px; min-width:0; color:var(--text); margin:3px 0; cursor:pointer; }
+  .popover h4 { margin:0 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  /* activity log */
+  #logBody { max-height:420px; overflow:auto; background:#111318; border:1px solid var(--border); border-radius:6px; }
+  #logBody table { font: 11.5px ui-monospace, Consolas, monospace; }
+  #logBody td { border-bottom:1px solid #1c2027; vertical-align:top; padding:3px 6px; }
+  #logBody td.lv { width:58px; font-weight:700; }
+  #logBody td.ts { width:78px; color:var(--muted); }
+  #logBody tr.error td.lv { color:var(--err); }
+  #logBody tr.warn  td.lv { color:var(--warn); }
+  #logBody tr.action td.lv { color:var(--accent); }
+  #logBody tr.info  td.lv { color:var(--muted); }
+  #logBody .detail { color:var(--muted); white-space:pre-wrap; display:block; margin-top:2px; }
+  .badge { display:inline-block; min-width:16px; text-align:center; padding:0 5px; border-radius:9px; font-size:11px; background:var(--panel2); color:var(--muted); }
+  .badge.err { background:var(--err); color:#2a0000; }
+  .badge.warn { background:var(--warn); color:#2a1a00; }
   #left, #right { background:var(--panel); border-right:1px solid var(--border); overflow:auto; padding:8px; }
   #right { border-right:none; border-left:1px solid var(--border); }
   #center { position:relative; overflow:hidden; background:#15171b; }
@@ -62,20 +86,28 @@
 <div id="app">
   <header>
     <span class="brand">CNC Studio</span>
-    <button id="btnNew" title="New job">New</button>
-    <button id="btnOpen" title="Open project / DXF / TAP">Open…</button>
-    <button id="btnSave" title="Save project (.cncjob)">Save</button>
-    <span style="width:8px"></span>
-    <button class="tool active" data-tool="select" title="Select (V)">Select</button>
-    <button class="tool" data-tool="rect" title="Rectangle (R)">Rect</button>
-    <button class="tool" data-tool="circle" title="Circle (C)">Circle</button>
-    <button class="tool" data-tool="poly" title="Polygon (P) — click points, Enter/double-click to close">Polygon</button>
-    <button class="tool" data-tool="pline" title="Open polyline for on-line cuts (L)">Line</button>
-    <button id="btnPolyDims" title="New polygon from side lengths and angles">Dims…</button>
-    <span style="width:8px"></span>
-    <button id="btnNest" title="Auto-arrange all parts from bottom-left">Nest</button>
-    <button id="btnDxf" title="Export DXF">DXF ↓</button>
-    <button id="btnTap" class="primary" title="Generate and export .TAP">Export TAP</button>
+    <button id="btnNew" class="ico" data-icon="new" title="New job"></button>
+    <button id="btnOpen" class="ico" data-icon="open" title="Open project / DXF / TAP"></button>
+    <button id="btnSave" class="ico" data-icon="save" title="Save project (.cncjob) — Ctrl+S"></button>
+    <span class="sep"></span>
+    <button class="tool ico active" data-tool="select" data-icon="select" title="Select (V)"></button>
+    <button class="tool ico" data-tool="rect" data-icon="rect" title="Rectangle (R)"></button>
+    <button class="tool ico" data-tool="circle" data-icon="circle" title="Circle (C)"></button>
+    <button class="tool ico" data-tool="arc" data-icon="arc" title="Arc (A) — 3 points: start, end, then a point on the arc"></button>
+    <button class="tool ico" data-tool="poly" data-icon="poly" title="Polygon (P) — click points, Enter/double-click to close"></button>
+    <button class="tool ico" data-tool="pline" data-icon="pline" title="Open polyline for on-line cuts (L)"></button>
+    <button class="tool ico" data-tool="measure" data-icon="measure" title="Measure (M) — click two points for distance and angle"></button>
+    <button id="btnPolyDims" class="ico" data-icon="dimension" title="New polygon from side lengths and angles"></button>
+    <span class="sep"></span>
+    <button id="btnMoveBy" class="ico" data-icon="move" title="Move selection by an exact distance (G)"></button>
+    <button id="btnScale" class="ico" data-icon="scale" title="Scale selection by factor or to a target size"></button>
+    <span class="sep"></span>
+    <button id="btnSnapMenu" class="ico" data-icon="snap" title="Object snap settings"></button>
+    <button id="btnOrtho" class="ico" data-icon="ortho" title="Ortho lock — constrain to 0/90° (hold Shift for temporary lock)"></button>
+    <span class="sep"></span>
+    <button id="btnNest" class="ico" data-icon="nest" title="Auto-arrange all parts from bottom-left"></button>
+    <button id="btnDxf" class="ico" data-icon="dxf" title="Export DXF"></button>
+    <button id="btnTap" class="primary" data-icon="tap" title="Generate and export .TAP">TAP</button>
     <div class="tabs">
       <div class="tab active" data-page="design">Design</div>
       <div class="tab" data-page="sim">Simulate</div>
@@ -166,6 +198,24 @@
         <table id="toolTable"><thead><tr><th>Slot</th><th>Name</th><th>Type</th><th>Dia (in)</th><th>RPM</th><th>Feed (ipm)</th><th>Plunge (ipm)</th><th>Pass depth</th><th></th></tr></thead><tbody></tbody></table>
         <div class="row" style="margin-top:6px"><button class="small" id="toolAdd">+ Add tool</button><button class="small" id="setExport">Export settings</button><button class="small" id="setImport">Import settings</button><button class="small" id="setReset">Reset defaults</button></div>
       </div>
+
+      <div class="card">
+        <h3>Activity log <span id="logCounts" class="muted"></span></h3>
+        <p class="muted">Everything the app did, plus any warning or error it hit — including
+          errors that would otherwise only appear in the developer console. Kept across restarts,
+          so if something misbehaves you can close the app and the record is still here.</p>
+        <div class="row">
+          <label><input type="checkbox" class="logFilter" value="error" checked> Errors</label>
+          <label><input type="checkbox" class="logFilter" value="warn" checked> Warnings</label>
+          <label><input type="checkbox" class="logFilter" value="action" checked> Actions</label>
+          <label><input type="checkbox" class="logFilter" value="info" checked> Info</label>
+          <span style="flex:1"></span>
+          <button class="small" id="logCopy">Copy all</button>
+          <button class="small" id="logSave">Save .log</button>
+          <button class="small" id="logClear">Clear</button>
+        </div>
+        <div id="logBody"><table><tbody></tbody></table></div>
+      </div>
     </div>
   </div>
 
@@ -181,6 +231,7 @@
 
   <footer>
     <span>X <b id="stX">0.0000</b></span><span>Y <b id="stY">0.0000</b></span>
+    <span id="stSnap" style="color:var(--accent)"></span>
     <span id="stTool"></span>
     <span id="stMsg" style="margin-left:auto"></span>
   </footer>

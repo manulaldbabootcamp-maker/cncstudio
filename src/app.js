@@ -11,10 +11,18 @@
     materials: PO.DEFAULT_MATERIALS.map(m => ({ ...m })),
     nest: { gap: 0.5, margin: 0.375, rotate: false },
     ai: { key: '', model: 'claude-sonnet-4-5' },
+    snap: { on: true, ortho: false, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
   };
   let S = loadSettings();
   function loadSettings() {
-    try { const j = JSON.parse(localStorage.getItem('cncstudio.settings') || 'null'); if (j) return { ...DEFAULT_SETTINGS, ...j, machine: { ...DEFAULT_SETTINGS.machine, ...(j.machine || {}) } }; } catch (e) { }
+    try {
+      const j = JSON.parse(localStorage.getItem('cncstudio.settings') || 'null');
+      if (j) return {
+        ...DEFAULT_SETTINGS, ...j,
+        machine: { ...DEFAULT_SETTINGS.machine, ...(j.machine || {}) },
+        snap: { ...DEFAULT_SETTINGS.snap, ...(j.snap || {}), types: { ...DEFAULT_SETTINGS.snap.types, ...((j.snap || {}).types || {}) } },
+      };
+    } catch (e) { LOG.warn('Could not read saved settings, using defaults', e); }
     return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   }
   function saveSettings() { try { localStorage.setItem('cncstudio.settings', JSON.stringify(S)); } catch (e) { } }
@@ -41,7 +49,23 @@
     if (sh.kind === 'path') return sh.loop;
     return [];
   }
-  function polyOpen(pts) { const s = []; for (let i = 0; i + 1 < pts.length; i++) s.push(G.line(G.P(pts[i].x, pts[i].y), G.P(pts[i + 1].x, pts[i + 1].y))); return s; }
+  // open polyline; an edge with arcR bows into an arc (same convention as polyLoop)
+  function polyOpen(pts) {
+    const s = [];
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = G.P(pts[i].x, pts[i].y), b = G.P(pts[i + 1].x, pts[i + 1].y);
+      const chord = G.dist(a, b);
+      if (chord < 1e-9) continue;
+      const R = pts[i].arcR || 0;
+      if (Math.abs(R) > 1e-9) {
+        const RR = Math.max(Math.abs(R), chord / 2);
+        const theta = 2 * Math.asin(Math.min(1, chord / (2 * RR)));
+        const mag = Math.tan(theta / 4);
+        s.push(G.bulgeArc(a, b, R > 0 ? mag : -mag));
+      } else s.push(G.line(a, b));
+    }
+    return s;
+  }
   function worldLoop(sh) {
     let l = localLoop(sh);
     if (sh.rot) l = G.rotateLoop(l, sh.rot * Math.PI / 180, G.P(0, 0));
@@ -63,6 +87,8 @@
   let drawing = null; // in-progress drawing state
   let drag = null;
   let spaceDown = false;
+  let measure = null;   // {a, b, cur} measure-tool state
+  let hoverGrip = null; // grip under the cursor, for highlight + cursor shape
   function W2S(p) { return { x: view.ox + p.x * view.scale, y: cv.height - view.oy - p.y * view.scale }; }
   function S2W(p) { return { x: (p.x - view.ox) / view.scale, y: (cv.height - view.oy - p.y) / view.scale }; }
   function fitBed() {
@@ -81,7 +107,62 @@
   window.addEventListener('resize', resize);
 
   function snapV() { return parseFloat($('#selSnap').value) || 0; }
+
+  // ---------- object snapping ----------
+  let lastSnap = null;          // {p,type} of the most recent snap, for the marker + status
+  let orthoTemp = false;        // Shift held: temporary ortho lock
+  const SNAP_PX = 11;           // pick radius in screen px
+
+  /* World loops of every shape, for the snap engine.
+     Cached: this runs on every mousemove, and rebuilding polyLoop for 30+ parts
+     at cursor rate is enough to make dragging feel sticky. Invalidated by
+     invalidateLoops() wherever geometry changes. */
+  let loopCache = null;
+  function invalidateLoops() { loopCache = null; }
+  function snapLoops(excludeIds) {
+    if (!loopCache) {
+      loopCache = [];
+      for (const sh of job.shapes) {
+        try { loopCache.push({ id: sh.id, loop: worldLoop(sh) }); }
+        catch (e) { LOG.warn(`Snap: could not build geometry for "${sh.name}"`, e); }
+      }
+    }
+    return excludeIds ? loopCache.filter(l => !excludeIds.has(l.id)) : loopCache;
+  }
+
+  /* Resolve a raw world point to a snapped one.
+     opts.from    : anchor for ortho (the previous click), or null to skip ortho
+     opts.exclude : Set of shape ids to ignore (e.g. the one being dragged)
+     Ortho is applied FIRST so the axis lock wins, then object snaps refine
+     along it - that matches how AutoCAD behaves and avoids the lock fighting
+     a nearby endpoint. */
+  function resolvePoint(w, opts = {}) {
+    let p = w;
+    const orthoOn = (S.snap.ortho || orthoTemp) && opts.from;
+    if (orthoOn) p = SNAP.ortho(opts.from, w, !!opts.polar).p;
+    lastSnap = null;
+    if (S.snap.on) {
+      const tol = SNAP_PX * devicePixelRatio / view.scale;
+      const hit = SNAP.snapPoint(p, snapLoops(opts.exclude), tol, {
+        enabled: { ...S.snap.types, grid: S.snap.types.grid && snapV() > 0 },
+        gridStep: snapV(),
+        exclude: opts.exclude,
+        extra: opts.extra,
+      });
+      if (hit) {
+        // under ortho, only accept a snap that stays on the locked axis
+        if (!orthoOn || Math.abs(G.cross(G.norm(G.sub(p, opts.from)), G.sub(hit.p, opts.from))) < 1e-6) {
+          lastSnap = hit; return hit.p;
+        }
+      }
+    }
+    if (!orthoOn) { const s = snapV(); if (s) return { x: Math.round(p.x / s) * s, y: Math.round(p.y / s) * s }; }
+    return p;
+  }
+  // legacy grid-only snap, still used where there is no anchor context
   function snap(p) { const s = snapV(); if (!s) return p; return { x: Math.round(p.x / s) * s, y: Math.round(p.y / s) * s }; }
+  const SNAP_COLOR = { endpoint: '#41c77a', midpoint: '#4da3ff', center: '#ffb84d', quadrant: '#d38cff', intersection: '#ff5c5c', on: '#9aa3ad', grid: '#5a6473' };
+  const SNAP_LABEL = { endpoint: 'endpoint', midpoint: 'midpoint', center: 'centre', quadrant: 'quadrant', intersection: 'intersection', on: 'on edge', grid: 'grid' };
 
   function draw() {
     const m = S.machine; const dpr = devicePixelRatio;
@@ -133,12 +214,179 @@
       ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([5 * dpr, 4 * dpr]);
       if (drawing.kind === 'rect') { const a = W2S(drawing.a), b = W2S(drawing.b); ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y)); dimLabel(drawing.b, `${fmtIn(Math.abs(drawing.b.x - drawing.a.x))} × ${fmtIn(Math.abs(drawing.b.y - drawing.a.y))}`); }
       if (drawing.kind === 'circle') { const c = W2S(drawing.a); const r = G.dist(drawing.a, drawing.b) * view.scale; ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.stroke(); dimLabel(drawing.b, `R ${fmtIn(G.dist(drawing.a, drawing.b))}  Ø ${fmtIn(2 * G.dist(drawing.a, drawing.b))}`); }
-      if (drawing.kind === 'poly' || drawing.kind === 'pline') { ctx.beginPath(); drawing.pts.forEach((p, i) => { const s = W2S(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); const s = W2S(drawing.cur); ctx.lineTo(s.x, s.y); ctx.stroke(); if (drawing.pts.length) dimLabel(drawing.cur, `${fmtIn(G.dist(drawing.pts[drawing.pts.length - 1], drawing.cur))}`); }
+      if (drawing.kind === 'poly' || drawing.kind === 'pline') { ctx.beginPath(); drawing.pts.forEach((p, i) => { const s = W2S(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); const s = W2S(drawing.cur); ctx.lineTo(s.x, s.y); ctx.stroke(); if (drawing.pts.length) { const prev = drawing.pts[drawing.pts.length - 1]; dimLabel(drawing.cur, `${fmtIn(G.dist(prev, drawing.cur))}  ${fmtAng(prev, drawing.cur)}`); } }
+      if (drawing.kind === 'arc') {
+        const a = drawing.a, b = drawing.b, cur = drawing.cur;
+        ctx.beginPath();
+        if (drawing.stage === 1) { const p = W2S(a), q = W2S(cur); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke(); dimLabel(cur, `chord ${fmtIn(G.dist(a, cur))}`); }
+        else { const arcSeg = arcThrough(a, b, cur); if (arcSeg) { tracePath([arcSeg], true); ctx.stroke(); dimLabel(cur, `R ${fmtIn(G.radius(arcSeg))}  bulge ${fmtIn(sagitta(a, b, cur))}`); } }
+      }
       ctx.setLineDash([]);
     }
+    // measure
+    if (measure) {
+      const a = measure.a, b = measure.b || measure.cur;
+      if (a && b) {
+        const p = W2S(a), q = W2S(b);
+        ctx.strokeStyle = '#ffb84d'; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([6 * dpr, 4 * dpr]);
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke(); ctx.setLineDash([]);
+        for (const t of [p, q]) { ctx.beginPath(); ctx.arc(t.x, t.y, 4 * dpr, 0, Math.PI * 2); ctx.fillStyle = '#ffb84d'; ctx.fill(); }
+        const dx = b.x - a.x, dy = b.y - a.y;
+        dimLabel({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, `${fmtIn(Math.hypot(dx, dy))}  ${fmtAng(a, b)}  Δ${fmtIn(dx)},${fmtIn(dy)}`);
+      }
+    }
+    // grips on a single selected shape
+    drawGrips();
+    // snap marker last, so it sits on top of everything
+    if (lastSnap && !drag) drawSnapMarker(lastSnap);
     if (drag && drag.kind === 'marquee') { const a = W2S(drag.a), b = W2S(drag.cur); ctx.strokeStyle = '#4da3ff'; ctx.setLineDash([3, 3]); ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y)); ctx.setLineDash([]); }
   }
-  function dimLabel(wp, text) { const p = W2S(wp); ctx.fillStyle = '#4da3ff'; ctx.font = `${12 * devicePixelRatio}px ui-monospace, monospace`; ctx.fillText(text, p.x + 10, p.y - 10); }
+  function dimLabel(wp, text) {
+    const p = W2S(wp), dpr = devicePixelRatio;
+    ctx.font = `${12 * dpr}px ui-monospace, monospace`;
+    const w = ctx.measureText(text).width;
+    ctx.fillStyle = 'rgba(20,22,26,.82)'; ctx.fillRect(p.x + 8, p.y - 24 * dpr, w + 8, 17 * dpr);
+    ctx.fillStyle = '#4da3ff'; ctx.fillText(text, p.x + 12, p.y - 11 * dpr);
+  }
+  const fmtAng = (a, b) => `${(((Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI) % 360 + 360) % 360).toFixed(2)}°`;
+
+  // sagitta: perpendicular distance from the chord a-b to the point p.
+  // This is the "bulge distance" the operator actually measures on the part.
+  function sagitta(a, b, p) {
+    const d = G.sub(b, a), L = G.len(d);
+    if (L < 1e-9) return 0;
+    return G.cross(G.norm(d), G.sub(p, a));      // signed: + is left of a->b
+  }
+  // arc through 3 points (start, end, and a point on it). null if collinear.
+  function arcThrough(a, b, p) {
+    const s = sagitta(a, b, p);
+    if (Math.abs(s) < 1e-6) return null;
+    const chord = G.dist(a, b);
+    if (chord < 1e-9) return null;
+    return G.bulgeArc(a, b, (2 * s) / chord);    // bulge = tan(theta/4) = 2*sagitta/chord
+  }
+  // build an arc from a chord and a known bulge distance (sagitta)
+  function arcFromSagitta(a, b, s) {
+    const chord = G.dist(a, b);
+    if (chord < 1e-9 || Math.abs(s) < 1e-9) return null;
+    return G.bulgeArc(a, b, (2 * s) / chord);
+  }
+
+  function drawSnapMarker(hit) {
+    const dpr = devicePixelRatio, p = W2S(hit.p), r = 6 * dpr;
+    ctx.save();
+    ctx.strokeStyle = SNAP_COLOR[hit.type] || '#4da3ff'; ctx.lineWidth = 2 * dpr; ctx.setLineDash([]);
+    ctx.beginPath();
+    // conventional CAD marker shapes so the type is readable at a glance
+    if (hit.type === 'endpoint') ctx.rect(p.x - r, p.y - r, r * 2, r * 2);
+    else if (hit.type === 'midpoint') { ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x + r, p.y + r); ctx.lineTo(p.x - r, p.y + r); ctx.closePath(); }
+    else if (hit.type === 'center') ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    else if (hit.type === 'quadrant') { ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x + r, p.y); ctx.lineTo(p.x, p.y + r); ctx.lineTo(p.x - r, p.y); ctx.closePath(); }
+    else if (hit.type === 'intersection') { ctx.moveTo(p.x - r, p.y - r); ctx.lineTo(p.x + r, p.y + r); ctx.moveTo(p.x + r, p.y - r); ctx.lineTo(p.x - r, p.y + r); }
+    else if (hit.type === 'on') { ctx.moveTo(p.x - r, p.y + r); ctx.lineTo(p.x + r, p.y + r); ctx.moveTo(p.x - r, p.y - r); ctx.lineTo(p.x + r, p.y - r); }
+    else ctx.rect(p.x - r * .7, p.y - r * .7, r * 1.4, r * 1.4);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /* ---------- grips ----------
+     A single selected shape shows draggable grips:
+       - a square at each polygon vertex / rect corner  -> move that point
+       - a round grip at each edge midpoint             -> bow the edge into an
+         arc; the bulge distance (sagitta) is what you read and can type.
+     This is the "grab the middle of a line and pull it to a known distance"
+     workflow, instead of computing a radius by hand. */
+  function gripShape() {
+    if (sel.size !== 1) return null;
+    const sh = job.shapes.find(s => sel.has(s.id));
+    if (!sh) return null;
+    if (sh.kind === 'poly' || sh.kind === 'rect') return sh;
+    return null;
+  }
+  // world-space grips for a shape: [{kind:'vertex'|'edge', i, p}]
+  function gripsOf(sh) {
+    const out = [];
+    if (!sh) return out;
+    const pts = gripPts(sh);
+    const n = pts.length;
+    if (n < 2) return out;
+    const toW = (p) => localToWorld(sh, p);
+    const closed = !sh.open;
+    for (let i = 0; i < n; i++) out.push({ kind: 'vertex', i, p: toW(pts[i]) });
+    const edges = closed ? n : n - 1;
+    for (let i = 0; i < edges; i++) {
+      const a = pts[i], b = pts[(i + 1) % n];
+      // the grip sits on the current curve, so a bowed edge keeps its handle
+      const s = pts[i].arcR ? null : null;
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const sag = edgeSagitta(sh, i);
+      const d = G.sub(b, a), L = G.len(d) || 1;
+      const nrm = { x: -d.y / L, y: d.x / L };
+      out.push({ kind: 'edge', i, p: toW({ x: mid.x + nrm.x * sag, y: mid.y + nrm.y * sag }) });
+    }
+    return out;
+  }
+  // local points of a grip-able shape (rect is expanded to 4 corners)
+  function gripPts(sh) {
+    if (sh.kind === 'rect') return [{ x: 0, y: 0 }, { x: sh.w, y: 0 }, { x: sh.w, y: sh.h }, { x: 0, y: sh.h }];
+    return sh.pts || [];
+  }
+  // current bulge distance of edge i, in local units
+  function edgeSagitta(sh, i) {
+    const pts = gripPts(sh), n = pts.length;
+    const R = pts[i] && pts[i].arcR;
+    if (!R) return 0;
+    const a = pts[i], b = pts[(i + 1) % n];
+    const chord = G.dist(a, b);
+    if (chord < 1e-9) return 0;
+    const RR = Math.max(Math.abs(R), chord / 2);
+    const h = Math.sqrt(Math.max(0, RR * RR - (chord / 2) * (chord / 2)));
+    const sag = RR - h;
+    return R > 0 ? sag : -sag;
+  }
+  // sagitta -> arcR (the radius the geometry layer stores)
+  function sagittaToArcR(chord, sag) {
+    const s = Math.abs(sag);
+    if (s < 1e-7 || chord < 1e-9) return 0;
+    const R = (s / 2) + (chord * chord) / (8 * s);
+    return sag > 0 ? R : -R;
+  }
+  function localToWorld(sh, p) {
+    const c = Math.cos((sh.rot || 0) * Math.PI / 180), s = Math.sin((sh.rot || 0) * Math.PI / 180);
+    return { x: sh.x + p.x * c - p.y * s, y: sh.y + p.x * s + p.y * c };
+  }
+  function worldToLocal(sh, p) {
+    const a = -(sh.rot || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    const dx = p.x - sh.x, dy = p.y - sh.y;
+    return { x: dx * c - dy * s, y: dx * s + dy * c };
+  }
+  function drawGrips() {
+    const sh = gripShape();
+    if (!sh) return;
+    const dpr = devicePixelRatio, r = 4.5 * dpr;
+    for (const g of gripsOf(sh)) {
+      const p = W2S(g.p);
+      const hot = hoverGrip && hoverGrip.kind === g.kind && hoverGrip.i === g.i;
+      ctx.beginPath();
+      if (g.kind === 'vertex') ctx.rect(p.x - r, p.y - r, r * 2, r * 2);
+      else ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = hot ? '#ffb84d' : (g.kind === 'edge' ? '#4da3ff' : '#8cc4ff');
+      ctx.fill();
+      ctx.strokeStyle = '#0b1520'; ctx.lineWidth = 1.2 * dpr; ctx.stroke();
+    }
+  }
+  function hitGrip(wp) {
+    const sh = gripShape();
+    if (!sh) return null;
+    const tol = 8 * devicePixelRatio / view.scale;
+    let best = null;
+    for (const g of gripsOf(sh)) {
+      const d = G.dist(g.p, wp);
+      // vertices win ties so a straight edge's midpoint grip can't block a corner
+      if (d < tol && (!best || d < best.d - 1e-9 || (Math.abs(d - best.d) < 1e-9 && g.kind === 'vertex'))) best = { ...g, d, sh };
+    }
+    return best;
+  }
   function tracePath(loop, open) {
     ctx.beginPath();
     loop.forEach((s, i) => {
@@ -172,8 +420,20 @@
   cv.addEventListener('mousedown', e => {
     const { s, w } = evPos(e); mouse.down = true;
     if (e.button === 1 || e.button === 2 || spaceDown) { drag = { kind: 'pan', sx: s.x, sy: s.y, ox: view.ox, oy: view.oy }; return; }
-    const ws = snap(w);
+    const ws = resolvePoint(w, { from: drawAnchor(), polar: e.altKey });
+    if (tool === 'measure') {
+      if (!measure || measure.b) measure = { a: ws, b: null, cur: ws };
+      else { measure.b = ws; LOG.action(`Measured ${fmtIn(G.dist(measure.a, measure.b))} in at ${fmtAng(measure.a, measure.b)}`); }
+      draw(); return;
+    }
     if (tool === 'select') {
+      // a grip under the cursor takes precedence over selecting/moving the shape
+      const g = hitGrip(w);
+      if (g) {
+        snapshot();
+        drag = { kind: 'grip', grip: g, sh: g.sh, moved: false };
+        draw(); return;
+      }
       const hit = hitShape(w);
       if (hit) {
         if (e.shiftKey) { sel.has(hit.id) ? sel.delete(hit.id) : sel.add(hit.id); }
@@ -183,36 +443,122 @@
       refreshList(); refreshProps(); draw();
     } else if (tool === 'rect' || tool === 'circle') {
       drawing = { kind: tool, a: ws, b: ws };
+    } else if (tool === 'arc') {
+      // 3 clicks: start, end, then a point the arc passes through
+      if (!drawing) drawing = { kind: 'arc', stage: 1, a: ws, b: null, cur: ws };
+      else if (drawing.stage === 1) { drawing.b = ws; drawing.stage = 2; drawing.cur = ws; }
+      else finishArc(ws);
+      draw();
     } else if (tool === 'poly' || tool === 'pline') {
       if (!drawing) drawing = { kind: tool, pts: [ws], cur: ws };
       else { if (G.dist(ws, drawing.pts[0]) < 4 / view.scale && drawing.pts.length > 2 && tool === 'poly') finishPoly(); else drawing.pts.push(ws); }
       draw();
     }
   });
+  // the point ortho measures from: the last placed point of whatever is in progress
+  function drawAnchor() {
+    if (drawing) {
+      if (drawing.kind === 'poly' || drawing.kind === 'pline') return drawing.pts[drawing.pts.length - 1];
+      if (drawing.kind === 'arc') return drawing.stage === 1 ? drawing.a : null;
+      return drawing.a;
+    }
+    if (tool === 'measure' && measure && !measure.b) return measure.a;
+    return null;
+  }
+  function finishArc(p3) {
+    const d = drawing; drawing = null;
+    if (!d || !d.b) { draw(); return; }
+    const seg = arcThrough(d.a, d.b, p3);
+    if (!seg) { toast('Those three points are in a straight line'); LOG.warn('Arc rejected: collinear points'); draw(); return; }
+    // stored as a 2-point open poly whose single edge carries the bulge
+    const x0 = Math.min(d.a.x, d.b.x), y0 = Math.min(d.a.y, d.b.y);
+    const sag = sagitta(d.a, d.b, p3);
+    const sh = makeShape('poly', {
+      name: 'arc', x: x0, y: y0, open: true, op: 'on',
+      pts: [{ x: d.a.x - x0, y: d.a.y - y0, r: 0, arcR: sagittaToArcR(G.dist(d.a, d.b), sag) },
+            { x: d.b.x - x0, y: d.b.y - y0, r: 0, arcR: 0 }],
+    });
+    LOG.action(`Arc added: R ${fmtIn(G.radius(seg))}, bulge ${fmtIn(sag)}`);
+    addShape(sh);
+  }
   cv.addEventListener('dblclick', e => { if (drawing && (drawing.kind === 'poly' || drawing.kind === 'pline')) { drawing.pts.pop(); finishPoly(); } });
   cv.addEventListener('mousemove', e => {
     const { s, w } = evPos(e); mouse = { ...mouse, x: s.x, y: s.y, wx: w.x, wy: w.y };
-    const ws = snap(w);
+    const excl = drag && drag.kind === 'grip' ? new Set([drag.sh.id]) : undefined;
+    const ws = resolvePoint(w, { from: drawAnchor(), polar: e.altKey, exclude: excl });
     $('#stX').textContent = ws.x.toFixed(4); $('#stY').textContent = ws.y.toFixed(4);
-    const tag = $('#cursorTag'); tag.style.display = 'block'; tag.style.left = (s.x / devicePixelRatio + 16) + 'px'; tag.style.top = (s.y / devicePixelRatio + 16) + 'px'; tag.textContent = `${ws.x.toFixed(3)}, ${ws.y.toFixed(3)}`;
+    const tag = $('#cursorTag'); tag.style.display = 'block'; tag.style.left = (s.x / devicePixelRatio + 16) + 'px'; tag.style.top = (s.y / devicePixelRatio + 16) + 'px';
+    tag.textContent = `${ws.x.toFixed(3)}, ${ws.y.toFixed(3)}` + (lastSnap && lastSnap.type !== 'grid' ? `  ${SNAP_LABEL[lastSnap.type]}` : '');
+    $('#stSnap').textContent = (S.snap.ortho || orthoTemp ? 'ORTHO ' : '') + (lastSnap ? SNAP_LABEL[lastSnap.type] : '');
     if (drag) {
       if (drag.kind === 'pan') { view.ox = drag.ox + (s.x - drag.sx); view.oy = drag.oy - (s.y - drag.sy); }
       else if (drag.kind === 'move') {
         if (!drag.moved) { snapshot(); drag.moved = true; }
-        let dx = w.x - drag.start.x, dy = w.y - drag.start.y; const sv = snapV(); if (sv) { dx = Math.round(dx / sv) * sv; dy = Math.round(dy / sv) * sv; }
+        let dx = w.x - drag.start.x, dy = w.y - drag.start.y;
+        if (S.snap.ortho || orthoTemp) { const o = SNAP.ortho({ x: 0, y: 0 }, { x: dx, y: dy }, e.altKey); dx = o.p.x; dy = o.p.y; }
+        const sv = snapV(); if (sv) { dx = Math.round(dx / sv) * sv; dy = Math.round(dy / sv) * sv; }
         for (const o of drag.orig) { const sh = job.shapes.find(x => x.id === o.id); sh.x = o.x + dx; sh.y = o.y + dy; }
         refreshProps();
-      } else if (drag.kind === 'marquee') drag.cur = w;
+      } else if (drag.kind === 'grip') { dragGrip(drag, ws); drag.moved = true; refreshProps(); }
+      else if (drag.kind === 'marquee') drag.cur = w;
       draw(); return;
     }
-    if (drawing) { if (drawing.kind === 'rect' || drawing.kind === 'circle') drawing.b = ws; else drawing.cur = ws; draw(); }
+    hoverGrip = tool === 'select' ? hitGrip(w) : null;
+    cv.style.cursor = hoverGrip ? (hoverGrip.kind === 'edge' ? 'ns-resize' : 'move') : 'crosshair';
+    if (measure && !measure.b) measure.cur = ws;
+    if (drawing) { if (drawing.kind === 'rect' || drawing.kind === 'circle') drawing.b = ws; else drawing.cur = ws; }
+    draw();
   });
+
+  /* Drag a grip.
+     vertex -> move that point.
+     edge   -> bow the edge; the perpendicular offset from the chord IS the
+               bulge distance, converted to the radius the geometry stores. */
+  function dragGrip(d, wp) {
+    const sh = d.sh, g = d.grip;
+    invalidateLoops();
+    const local = worldToLocal(sh, wp);
+    if (sh.kind === 'rect') convertRectToPoly(sh);
+    const pts = sh.pts, n = pts.length;
+    if (g.kind === 'vertex') {
+      pts[g.i].x = local.x; pts[g.i].y = local.y;
+    } else {
+      const a = pts[g.i], b = pts[(g.i + 1) % n];
+      const sag = sagitta(a, b, local);
+      pts[g.i].arcR = sagittaToArcR(G.dist(a, b), sag);
+      d.lastSag = sag;
+    }
+    // keep the local origin at the min corner so X/Y stay meaningful
+    const x0 = Math.min(...pts.map(t => t.x)), y0 = Math.min(...pts.map(t => t.y));
+    if (Math.abs(x0) > 1e-9 || Math.abs(y0) > 1e-9) {
+      pts.forEach(t => { t.x -= x0; t.y -= y0; });
+      const c = Math.cos((sh.rot || 0) * Math.PI / 180), sn = Math.sin((sh.rot || 0) * Math.PI / 180);
+      sh.x += x0 * c - y0 * sn; sh.y += x0 * sn + y0 * c;
+    }
+    delete sh.startPt;
+  }
+  // a rect has no editable vertex list; promote it in place the first time a grip moves
+  function convertRectToPoly(sh) {
+    const rc = sh.rc || [];
+    const r = sh.r || 0;
+    sh.pts = [{ x: 0, y: 0 }, { x: sh.w, y: 0 }, { x: sh.w, y: sh.h }, { x: 0, y: sh.h }]
+      .map((p, i) => ({ ...p, r: rc[i] != null ? rc[i] : r, arcR: 0 }));
+    sh.kind = 'poly';
+    delete sh.w; delete sh.h; delete sh.rc;
+    LOG.info(`Rect "${sh.name}" converted to a polygon so its points can be edited`);
+  }
   cv.addEventListener('mouseleave', () => { $('#cursorTag').style.display = 'none'; });
   window.addEventListener('mouseup', e => {
     mouse.down = false;
     if (drag) {
       if (drag.kind === 'marquee') { const a = drag.a, b = drag.cur; const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y); if (x1 - x0 > 0.01) for (const sh of job.shapes) { const bb = shapeBBox(sh); if (bb.x0 >= x0 && bb.x1 <= x1 && bb.y0 >= y0 && bb.y1 <= y1) sel.add(sh.id); } }
-      if (drag.kind === 'move' && drag.moved) updateStats();
+      if (drag.kind === 'move' && drag.moved) { updateStats(); LOG.action(`Moved ${drag.orig.length} part(s)`); }
+      if (drag.kind === 'grip' && drag.moved) {
+        const g = drag.grip;
+        if (g.kind === 'edge') LOG.action(`Bowed edge ${g.i + 1} of "${drag.sh.name}" to bulge ${fmtIn(drag.lastSag || 0)} in`);
+        else LOG.action(`Moved point ${g.i + 1} of "${drag.sh.name}"`);
+        updateStats();
+      }
       drag = null; refreshList(); refreshProps(); draw(); return;
     }
     if (drawing && (drawing.kind === 'rect' || drawing.kind === 'circle')) {
@@ -234,7 +580,8 @@
   window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
-    if (e.key === 'Escape') { drawing = null; setTool('select'); draw(); }
+    if (e.key === 'Shift') { orthoTemp = true; draw(); }
+    if (e.key === 'Escape') { drawing = null; measure = null; setTool('select'); draw(); }
     if (e.key === 'Enter' && drawing) finishPoly();
     if (e.key === 'Delete' || e.key === 'Backspace') deleteSel();
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.shiftKey ? redo() : undo(); e.preventDefault(); }
@@ -251,9 +598,18 @@
       if (e.key === '[' || e.key === ']') { rotateSel((e.key === ']' ? -1 : 1) * (e.shiftKey ? 1 : 15)); e.preventDefault(); return; }
     }
     if (e.key.toLowerCase() === 'v') setTool('select'); if (e.key.toLowerCase() === 'r') setTool('rect'); if (e.key.toLowerCase() === 'c') setTool('circle'); if (e.key.toLowerCase() === 'p') setTool('poly'); if (e.key.toLowerCase() === 'l') setTool('pline');
+    if (e.key.toLowerCase() === 'a') setTool('arc');
+    if (e.key.toLowerCase() === 'm') setTool('measure');
+    if (e.key.toLowerCase() === 'g' && sel.size) { openMoveBy(); e.preventDefault(); }
+    if (e.key === 'F8') { S.snap.ortho = !S.snap.ortho; saveSettings(); syncSnapUI(); toast('Ortho ' + (S.snap.ortho ? 'on' : 'off')); e.preventDefault(); }
+    if (e.key === 'F3') { S.snap.on = !S.snap.on; saveSettings(); syncSnapUI(); toast('Object snap ' + (S.snap.on ? 'on' : 'off')); e.preventDefault(); }
     if (e.key.startsWith('Arrow') && sel.size) { const st = e.shiftKey ? 1 : (snapV() || 0.125); const dx = e.key === 'ArrowRight' ? st : e.key === 'ArrowLeft' ? -st : 0, dy = e.key === 'ArrowUp' ? st : e.key === 'ArrowDown' ? -st : 0; snapshot(); for (const sh of job.shapes) if (sel.has(sh.id)) { sh.x += dx; sh.y += dy; } refresh(); e.preventDefault(); }
   });
-  window.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = false; });
+  window.addEventListener('keyup', e => {
+    if (e.code === 'Space') spaceDown = false;
+    if (e.key === 'Shift') { orthoTemp = false; draw(); }
+  });
+  window.addEventListener('blur', () => { orthoTemp = false; spaceDown = false; });
   function setTool(t) { tool = t; $$('button.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t)); $('#stTool').textContent = t === 'select' ? '' : `Tool: ${t}`; }
   $$('button.tool').forEach(b => b.addEventListener('click', () => { drawing = null; setTool(b.dataset.tool); draw(); }));
 
@@ -276,7 +632,7 @@
   $('#btnDel').onclick = deleteSel; $('#btnDup').onclick = duplicateSel; $('#btnUndo').onclick = undo;
 
   // ---------- panels ----------
-  function refresh() { refreshList(); refreshProps(); updateStats(); draw(); }
+  function refresh() { invalidateLoops(); refreshList(); refreshProps(); updateStats(); draw(); }
   function refreshList() {
     const el = $('#shapeList'); el.innerHTML = '';
     $('#partCount').textContent = job.shapes.length ? `(${job.shapes.length})` : '';
@@ -341,20 +697,21 @@
   const deg = (r) => r * 180 / Math.PI, rad = (d) => d * Math.PI / 180;
   function polyTable(sh) {
     const pts = sh.pts, n = pts.length; const closed = !sh.open;
-    let h = `<h3>Points &amp; edges <span class="muted">(from part origin)</span></h3><div style="overflow:auto;max-height:320px"><table style="font-size:11px"><thead><tr><th>#</th><th>X</th><th>Y</th><th>Fillet R</th><th>Angle</th></tr><tr><th></th><th>edge len</th><th>dir °</th><th>arc R</th><th></th></tr></thead><tbody>`;
+    let h = `<h3>Points &amp; edges <span class="muted">(from part origin)</span></h3><div style="overflow:auto;max-height:320px"><table style="font-size:11px"><thead><tr><th>#</th><th>X</th><th>Y</th><th>Fillet R</th><th>Angle</th></tr><tr><th></th><th>edge len</th><th>dir °</th><th>arc R</th><th>bulge</th></tr></thead><tbody>`;
     for (let i = 0; i < n; i++) {
       const p = pts[i], q = pts[(i + 1) % n];
       let ia = '';
       if (closed || (i > 0 && i < n - 1)) { const a = pts[(i - 1 + n) % n]; const d1 = G.norm(G.sub(a, p)), d2 = G.norm(G.sub(q, p)); const ang = deg(Math.acos(Math.max(-1, Math.min(1, G.dot(d1, d2))))); const cr = G.cross(d1, d2); ia = (cr < 0 ? ang : 360 - ang).toFixed(1) + '°'; }
       h += `<tr><td>P${i + 1}</td><td><input type="number" step="0.125" data-pv="x" data-i="${i}" value="${fmtIn(p.x)}"></td><td><input type="number" step="0.125" data-pv="y" data-i="${i}" value="${fmtIn(p.y)}"></td><td>${closed ? `<input type="number" step="0.0625" data-pv="r" data-i="${i}" value="${fmtIn(p.r || 0)}">` : ''}</td><td class="muted">${ia}</td></tr>`;
-      if (closed || i < n - 1) { const L = G.dist(p, q), A = deg(Math.atan2(q.y - p.y, q.x - p.x)); h += `<tr style="color:var(--muted)"><td>→P${(i + 1) % n + 1}</td><td><input type="number" step="0.125" data-pv="len" data-i="${i}" value="${fmtIn(L)}"></td><td><input type="number" step="1" data-pv="ang" data-i="${i}" value="${(+A.toFixed(2))}"></td><td><input type="number" step="0.125" data-pv="arcR" data-i="${i}" value="${p.arcR ? fmtIn(p.arcR) : ''}" placeholder="0"></td><td></td></tr>`; }
+      if (closed || i < n - 1) { const L = G.dist(p, q), A = deg(Math.atan2(q.y - p.y, q.x - p.x)); const sg = edgeSagitta(sh, i); h += `<tr style="color:var(--muted)"><td>→P${(i + 1) % n + 1}</td><td><input type="number" step="0.125" data-pv="len" data-i="${i}" value="${fmtIn(L)}"></td><td><input type="number" step="1" data-pv="ang" data-i="${i}" value="${(+A.toFixed(2))}"></td><td><input type="number" step="0.125" data-pv="arcR" data-i="${i}" value="${p.arcR ? fmtIn(p.arcR) : ''}" placeholder="0"></td><td><input type="number" step="0.0625" data-pv="sag" data-i="${i}" value="${sg ? fmtIn(sg) : ''}" placeholder="0"></td></tr>`; }
     }
-    h += `</tbody></table></div><div class="row"><button class="small" id="btnPolyBuild">Edit by lengths &amp; angles…</button></div><p class="muted" style="font-size:11px">Edge dir: 0° = right, 90° = up. Arc R: + bulges out, − bulges in. Angle column = inside angle at the point.</p>`;
+    h += `</tbody></table></div><div class="row"><button class="small" id="btnPolyBuild">Edit by lengths &amp; angles…</button></div><p class="muted" style="font-size:11px">Edge dir: 0° = right, 90° = up. Angle column = inside angle at the point.<br><b>Bulge</b> is how far the edge bows out from its straight chord — the distance you can measure on the part. Type it here, or drag the round grip at the middle of the edge. <b>Arc R</b> is the same curve expressed as a radius. + bulges out, − bulges in.</p>`;
     return h;
   }
   function polyEdit(sh, k, i, v) {
     const pts = sh.pts, n = pts.length; const p = pts[i], q = pts[(i + 1) % n];
     if (k === 'x') p.x = v; else if (k === 'y') p.y = v; else if (k === 'r') p.r = Math.max(0, v || 0); else if (k === 'arcR') p.arcR = isNaN(v) ? 0 : v;
+    else if (k === 'sag') p.arcR = isNaN(v) ? 0 : sagittaToArcR(G.dist(p, q), v);
     else if (k === 'len' || k === 'ang') { const L = k === 'len' ? v : G.dist(p, q); const A = k === 'ang' ? rad(v) : Math.atan2(q.y - p.y, q.x - p.x); q.x = p.x + L * Math.cos(A); q.y = p.y + L * Math.sin(A); }
     // keep local origin at the min corner
     const x0 = Math.min(...pts.map(t => t.x)), y0 = Math.min(...pts.map(t => t.y));
@@ -408,6 +765,157 @@
     render();
   }
   $('#btnPolyDims').onclick = () => openPolyBuilder(null);
+
+  // ---------- modal helper ----------
+  function modal(html, wire) {
+    const ov = document.createElement('div'); ov.className = 'overlay';
+    ov.innerHTML = `<div class="dialog">${html}</div>`;
+    document.body.appendChild(ov);
+    const close = () => ov.remove();
+    ov.addEventListener('mousedown', e => { if (e.target === ov) close(); });
+    const esc = (e) => { if (e.key === 'Escape') { close(); window.removeEventListener('keydown', esc, true); } };
+    window.addEventListener('keydown', esc, true);
+    wire(ov, close);
+    const first = ov.querySelector('input,select'); if (first) { first.focus(); if (first.select) first.select(); }
+    return ov;
+  }
+  const selShapes = () => job.shapes.filter(s => sel.has(s.id));
+
+  // ---------- move by an exact distance ----------
+  function openMoveBy() {
+    if (!sel.size) return toast('Select something first');
+    modal(`<h3>Move ${sel.size} part${sel.size > 1 ? 's' : ''} by</h3>
+      <div class="row"><label>ΔX</label><input type="number" step="0.125" id="mvX" value="0"> in</div>
+      <div class="row"><label>ΔY</label><input type="number" step="0.125" id="mvY" value="0"> in</div>
+      <p class="muted">— or by distance and direction (0° = right, 90° = up) —</p>
+      <div class="row"><label>Distance</label><input type="number" step="0.125" id="mvD" value=""> in</div>
+      <div class="row"><label>Angle</label><input type="number" step="15" id="mvA" value="0"> °</div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="mvOk">Move</button><button id="mvCancel">Cancel</button></div>`,
+      (ov, close) => {
+        ov.querySelector('#mvCancel').onclick = close;
+        const go = () => {
+          const d = parseFloat(ov.querySelector('#mvD').value);
+          let dx, dy;
+          if (!isNaN(d) && d !== 0) { const a = (parseFloat(ov.querySelector('#mvA').value) || 0) * Math.PI / 180; dx = d * Math.cos(a); dy = d * Math.sin(a); }
+          else { dx = parseFloat(ov.querySelector('#mvX').value) || 0; dy = parseFloat(ov.querySelector('#mvY').value) || 0; }
+          if (!dx && !dy) return close();
+          snapshot();
+          for (const sh of selShapes()) { sh.x += dx; sh.y += dy; }
+          LOG.action(`Moved ${sel.size} part(s) by ${fmtIn(dx)}, ${fmtIn(dy)} in`);
+          close(); refresh();
+        };
+        ov.querySelector('#mvOk').onclick = go;
+        ov.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') go(); }));
+      });
+  }
+
+  // ---------- scale ----------
+  function openScale() {
+    if (!sel.size) return toast('Select something first');
+    const shs = selShapes();
+    const bb0 = groupBBox(shs);
+    modal(`<h3>Scale ${shs.length} part${shs.length > 1 ? 's' : ''}</h3>
+      <p class="muted">Current size ${fmtIn(bb0.w)} × ${fmtIn(bb0.h)} in</p>
+      <div class="row"><label>Factor</label><input type="number" step="0.1" id="scF" value="1"></div>
+      <p class="muted">— or scale to a target size —</p>
+      <div class="row"><label>Width</label><input type="number" step="0.125" id="scW" value="${fmtIn(bb0.w)}"> in</div>
+      <div class="row"><label>Height</label><input type="number" step="0.125" id="scH" value="${fmtIn(bb0.h)}"> in</div>
+      <div class="row"><label><input type="checkbox" id="scLock" checked> Keep proportions</label></div>
+      <p class="muted" style="font-size:11px">Scaling changes part geometry, not tool diameters. Fillet and arc radii scale with the part.</p>
+      <div class="row" style="margin-top:10px"><button class="primary" id="scOk">Scale</button><button id="scCancel">Cancel</button></div>`,
+      (ov, close) => {
+        const F = ov.querySelector('#scF'), W = ov.querySelector('#scW'), H = ov.querySelector('#scH'), L = ov.querySelector('#scLock');
+        F.addEventListener('input', () => { const f = parseFloat(F.value) || 1; W.value = fmtIn(bb0.w * f); H.value = fmtIn(bb0.h * f); });
+        W.addEventListener('input', () => { const f = (parseFloat(W.value) || bb0.w) / (bb0.w || 1); F.value = +f.toFixed(6); if (L.checked) H.value = fmtIn(bb0.h * f); });
+        H.addEventListener('input', () => { const f = (parseFloat(H.value) || bb0.h) / (bb0.h || 1); if (L.checked) { F.value = +f.toFixed(6); W.value = fmtIn(bb0.w * f); } });
+        ov.querySelector('#scCancel').onclick = close;
+        ov.querySelector('#scOk').onclick = () => {
+          const sx = (parseFloat(W.value) || bb0.w) / (bb0.w || 1);
+          const sy = L.checked ? sx : (parseFloat(H.value) || bb0.h) / (bb0.h || 1);
+          if (!isFinite(sx) || !isFinite(sy) || sx <= 0 || sy <= 0) { toast('Scale must be positive'); return; }
+          if (Math.abs(sx - sy) > 1e-9) {
+            // non-uniform scaling cannot preserve circular arcs - they would become ellipses
+            const curvy = shs.some(sh => sh.kind === 'circle' || (sh.pts || []).some(p => p.r || p.arcR));
+            if (curvy && !confirm('Non-uniform scale on parts with arcs or fillets will distort them into non-circular shapes, which this app cannot cut exactly.\n\nScale proportionally instead?\n\nOK = scale anyway, Cancel = stop')) return;
+          }
+          snapshot();
+          for (const sh of shs) scaleShape(sh, sx, sy, bb0);
+          LOG.action(`Scaled ${shs.length} part(s) by ${(+sx.toFixed(4))}${Math.abs(sx - sy) > 1e-9 ? ' × ' + (+sy.toFixed(4)) : ''}`);
+          close(); refresh();
+        };
+      });
+  }
+  function groupBBox(shs) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const sh of shs) { const b = shapeBBox(sh); x0 = Math.min(x0, b.x0); y0 = Math.min(y0, b.y0); x1 = Math.max(x1, b.x1); y1 = Math.max(y1, b.y1); }
+    if (!isFinite(x0)) return { x0: 0, y0: 0, x1: 0, y1: 0, w: 0, h: 0 };
+    return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 };
+  }
+  function scaleShape(sh, sx, sy, about) {
+    sh.x = about.x0 + (sh.x - about.x0) * sx;
+    sh.y = about.y0 + (sh.y - about.y0) * sy;
+    const uni = Math.abs(sx - sy) < 1e-9 ? sx : Math.sqrt(Math.abs(sx * sy));
+    if (sh.kind === 'rect') { sh.w *= sx; sh.h *= sy; sh.r = (sh.r || 0) * uni; if (sh.rc) sh.rc = sh.rc.map(v => v == null ? null : v * uni); }
+    else if (sh.kind === 'circle') sh.r *= uni;
+    else if (sh.kind === 'poly' && sh.pts) sh.pts = sh.pts.map(p => ({ ...p, x: p.x * sx, y: p.y * sy, r: (p.r || 0) * uni, arcR: (p.arcR || 0) * uni }));
+    else if (sh.kind === 'path' && sh.loop) sh.loop = G.transformLoop(sh.loop, p => G.P(p.x * sx, p.y * sy));
+    delete sh.startPt;
+  }
+  $('#btnMoveBy').onclick = openMoveBy;
+  $('#btnScale').onclick = openScale;
+
+  // ---------- object snap settings ----------
+  function syncSnapUI() {
+    $('#btnSnapMenu').classList.toggle('active', !!S.snap.on);
+    $('#btnOrtho').classList.toggle('active', !!S.snap.ortho);
+  }
+  $('#btnOrtho').onclick = () => { S.snap.ortho = !S.snap.ortho; saveSettings(); syncSnapUI(); draw(); };
+  $('#btnSnapMenu').onclick = (e) => {
+    const existing = document.querySelector('.popover');
+    if (existing) { existing.remove(); return; }
+    const pop = document.createElement('div'); pop.className = 'popover';
+    const r = e.currentTarget.getBoundingClientRect();
+    pop.style.left = r.left + 'px'; pop.style.top = (r.bottom + 4) + 'px';
+    const T = S.snap.types;
+    pop.innerHTML = `<h4>Object snap <span class="muted">(F3)</span></h4>
+      <label><input type="checkbox" data-s="on" ${S.snap.on ? 'checked' : ''}> <b>Snapping on</b></label>
+      <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
+      ${[['endpoint', 'Endpoint'], ['midpoint', 'Midpoint'], ['center', 'Centre'], ['quadrant', 'Quadrant'], ['intersection', 'Intersection'], ['on', 'Nearest on edge'], ['grid', 'Grid']]
+        .map(([k, l]) => `<label><input type="checkbox" data-t="${k}" ${T[k] ? 'checked' : ''}> ${l}</label>`).join('')}
+      <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
+      <label><input type="checkbox" data-s="ortho" ${S.snap.ortho ? 'checked' : ''}> Ortho lock <span class="muted">(F8)</span></label>
+      <p class="muted" style="font-size:11px;margin:6px 0 0">Hold <b>Shift</b> for a temporary ortho lock, <b>Alt</b> for 45° polar.</p>`;
+    document.body.appendChild(pop);
+    pop.querySelectorAll('[data-t]').forEach(i => i.onchange = () => { S.snap.types[i.dataset.t] = i.checked; saveSettings(); });
+    pop.querySelectorAll('[data-s]').forEach(i => i.onchange = () => { S.snap[i.dataset.s] = i.checked; saveSettings(); syncSnapUI(); draw(); });
+    const off = (ev) => { if (!pop.contains(ev.target) && ev.target !== e.currentTarget) { pop.remove(); document.removeEventListener('mousedown', off); } };
+    setTimeout(() => document.addEventListener('mousedown', off), 0);
+  };
+
+  // ---------- activity log panel ----------
+  function renderLog() {
+    const body = $('#logBody'); if (!body) return;
+    const tb = body.querySelector('tbody');
+    const want = new Set(Array.from(document.querySelectorAll('.logFilter')).filter(c => c.checked).map(c => c.value));
+    const rows = LOG.entries().filter(e => want.has(e.level)).slice(-400).reverse();
+    tb.innerHTML = rows.map(e => {
+      const t = new Date(e.t);
+      const hh = String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0') + ':' + String(t.getSeconds()).padStart(2, '0');
+      return `<tr class="${e.level}"><td class="ts">${hh}</td><td class="lv">${e.level}</td><td>${esc(e.msg)}${e.detail ? `<span class="detail">${esc(e.detail)}</span>` : ''}</td></tr>`;
+    }).join('') || '<tr><td class="muted" style="padding:8px">Nothing logged yet.</td></tr>';
+    const c = LOG.counts();
+    const badge = (n, cls) => n ? `<span class="badge ${cls}">${n}</span>` : '';
+    $('#logCounts').innerHTML = `${badge(c.error, 'err')} ${badge(c.warn, 'warn')} <span class="badge">${LOG.entries().length}</span>`;
+  }
+  document.querySelectorAll('.logFilter').forEach(c => c.addEventListener('change', renderLog));
+  $('#logClear').onclick = () => { LOG.clear(); LOG.info('Log cleared'); renderLog(); };
+  $('#logCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText(LOG.toText()); toast('Log copied'); }
+    catch (err) { toast('Could not copy: ' + err.message); }
+  };
+  $('#logSave').onclick = () => download(`cncstudio-${new Date().toISOString().slice(0, 10)}.log`, LOG.toText());
+  // live-update the panel, but only while it is actually visible
+  LOG.subscribe(() => { if ($('#pageSettings').classList.contains('active')) renderLog(); });
 
   // ---------- job stats / gcode ----------
   function buildJob() {
@@ -507,7 +1015,7 @@
   function showPage(p) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.page === p));
     $('#pageSim').classList.toggle('active', p === 'sim'); $('#pageAi').classList.toggle('active', p === 'ai'); $('#pageSettings').classList.toggle('active', p === 'settings');
-    if (p === 'settings') renderSettings(); if (p === 'sim') simResize();
+    if (p === 'settings') { renderSettings(); renderLog(); } if (p === 'sim') simResize();
   }
 
   // ---------- settings UI ----------
@@ -653,6 +1161,8 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   };
 
   // ---------- init ----------
-  syncMaterialUI(); resize(); refresh();
-  window.CNC = { get job() { return job; }, S, G, PO, NE, worldLoop, importDXF, refresh, W2S, S2W };
+  ICONS.apply(document);
+  syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
+  LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
+  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, gripsOf, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();
