@@ -5,6 +5,39 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Fix TAP export, and square-lock the measure tool
+
+### Fixed
+- **Export TAP did nothing.** It asked for a filename with `window.prompt()`,
+  which Electron's renderer does not implement — it throws *"prompt() is not
+  supported"*, so the export died before writing anything. Save project hit the
+  same wall. Both now use the app's own dialog.
+  `confirm()` (New job, Reset settings, the non-uniform scale warning) is
+  replaced too: it works in Electron but blocks the renderer and looks nothing
+  like the rest of the app.
+- Export now reports failures instead of failing silently: an empty post says
+  so and logs a warning, and a write error is caught, logged and shown.
+- Exports and saves are recorded in the activity log with the filename, line
+  count and part count.
+- Saved projects now carry the machine config and tool table alongside the
+  material, so a job reopened later posts the same way it did originally.
+
+### Added
+- **The measure tool locks square.** Within **10°** of 0/90/180/270 the second
+  point is projected onto that axis, so a couple of degrees of mouse drift no
+  longer quietly reports the hypotenuse instead of the run. The readout is
+  tagged `[90° locked]` when it happens, so a locked reading can never be
+  mistaken for a raw one, and **Alt** measures a true diagonal.
+
+### Tests
+- Smoke test now 168 assertions. `window.prompt`/`confirm`/`alert` are trapped
+  and the export, save and new-job buttons driven — if any of them ever reaches
+  for a browser dialog again the test fails. The export is then run end to end
+  with a typed filename and the produced `.tap` checked, along with the lock at
+  5°, 95°, 180°, a real 31° diagonal, and the Alt bypass.
+
+---
+
 ## Trace a paper template from measured offsets
 
 For the job where a customer brings in a paper cut-out — a car window with

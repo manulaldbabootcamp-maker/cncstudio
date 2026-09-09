@@ -265,7 +265,8 @@
         ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke(); ctx.setLineDash([]);
         for (const t of [p, q]) { ctx.beginPath(); ctx.arc(t.x, t.y, 4 * dpr, 0, Math.PI * 2); ctx.fillStyle = '#ffb84d'; ctx.fill(); }
         const dx = b.x - a.x, dy = b.y - a.y;
-        dimLabel({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, `${fmtIn(Math.hypot(dx, dy))}  ${fmtAng(a, b)}  Δ${fmtIn(dx)},${fmtIn(dy)}`);
+        const lockTag = (b.locked !== undefined) ? `  [${b.locked}° locked]` : '';
+        dimLabel({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, `${fmtIn(Math.hypot(dx, dy))}  ${fmtAng(a, b)}${lockTag}  Δ${fmtIn(dx)},${fmtIn(dy)}`);
       }
     }
     // centre marks, then dimensions (both annotation only - never posted)
@@ -287,6 +288,27 @@
     ctx.fillStyle = 'rgba(20,22,26,.82)'; ctx.fillRect(p.x + 8, p.y - 24 * dpr, w + 8, 17 * dpr);
     ctx.fillStyle = '#4da3ff'; ctx.fillText(text, p.x + 12, p.y - 11 * dpr);
   }
+  /* Measuring is nearly always along a straight edge, so a reading a couple of
+     degrees off square is a slip of the mouse rather than a real angle. Within
+     MEASURE_LOCK_DEG of an axis the second point is projected square onto it,
+     which keeps the distance honest instead of quietly reporting the hypotenuse.
+     Hold Alt to measure a genuine diagonal. */
+  const MEASURE_LOCK_DEG = 10;
+  function axisLock(from, to, bypass) {
+    if (bypass || !from) return to;
+    const dx = to.x - from.x, dy = to.y - from.y;
+    if (Math.abs(dx) < 1e-12 && Math.abs(dy) < 1e-12) return to;
+    const deg = ((Math.atan2(dy, dx) * 180 / Math.PI) % 360 + 360) % 360;
+    for (const axis of [0, 90, 180, 270, 360]) {
+      if (Math.abs(deg - axis) <= MEASURE_LOCK_DEG) {
+        const a = (axis % 360) * Math.PI / 180;
+        const L = dx * Math.cos(a) + dy * Math.sin(a);       // project onto the axis
+        return { x: from.x + L * Math.cos(a), y: from.y + L * Math.sin(a), locked: axis % 360 };
+      }
+    }
+    return to;
+  }
+
   const fmtAng = (a, b) => `${(((Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI) % 360 + 360) % 360).toFixed(2)}°`;
 
   // sagitta: perpendicular distance from the chord a-b to the point p.
@@ -491,7 +513,10 @@
     const ws = resolvePoint(w, { from: drawAnchor(), polar: e.altKey });
     if (tool === 'measure') {
       if (!measure || measure.b) measure = { a: ws, b: null, cur: ws };
-      else { measure.b = ws; LOG.action(`Measured ${fmtIn(G.dist(measure.a, measure.b))} in at ${fmtAng(measure.a, measure.b)}`); }
+      else {
+        measure.b = axisLock(measure.a, ws, e.altKey);
+        LOG.action(`Measured ${fmtIn(G.dist(measure.a, measure.b))} in at ${fmtAng(measure.a, measure.b)}`);
+      }
       draw(); return;
     }
     if (tool === 'trim') { trimAt(w); return; }
@@ -623,7 +648,7 @@
       if (hs) { const i = edgeIndexAt(hs, w); if (i >= 0) hoverEdge = { id: hs.id, i }; }
     }
     cv.style.cursor = hoverGrip ? (hoverGrip.kind === 'edge' ? 'ns-resize' : 'move') : 'crosshair';
-    if (measure && !measure.b) measure.cur = ws;
+    if (measure && !measure.b) measure.cur = axisLock(measure.a, ws, e.altKey);
     if (dimDraft && dimDraft.b) { const d = dimDraft, dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1; d.off = ((ws.x - d.a.x) * (-dy / L)) + ((ws.y - d.a.y) * (dx / L)); }
     else if (dimDraft) dimDraft.b = null;
     if (drawing) { if (drawing.kind === 'rect' || drawing.kind === 'circle' || drawing.kind === 'ellipse') drawing.b = ws; else drawing.cur = ws; }
@@ -1144,14 +1169,15 @@
         W.addEventListener('input', () => { const f = (parseFloat(W.value) || bb0.w) / (bb0.w || 1); F.value = +f.toFixed(6); if (L.checked) H.value = fmtIn(bb0.h * f); });
         H.addEventListener('input', () => { const f = (parseFloat(H.value) || bb0.h) / (bb0.h || 1); if (L.checked) { F.value = +f.toFixed(6); W.value = fmtIn(bb0.w * f); } });
         ov.querySelector('#scCancel').onclick = close;
-        ov.querySelector('#scOk').onclick = () => {
+        ov.querySelector('#scOk').onclick = async () => {
           const sx = (parseFloat(W.value) || bb0.w) / (bb0.w || 1);
           const sy = L.checked ? sx : (parseFloat(H.value) || bb0.h) / (bb0.h || 1);
           if (!isFinite(sx) || !isFinite(sy) || sx <= 0 || sy <= 0) { toast('Scale must be positive'); return; }
           if (Math.abs(sx - sy) > 1e-9) {
             // non-uniform scaling cannot preserve circular arcs - they would become ellipses
             const curvy = shs.some(sh => sh.kind === 'circle' || (sh.pts || []).some(p => p.r || p.arcR));
-            if (curvy && !confirm('Non-uniform scale on parts with arcs or fillets will distort them into non-circular shapes, which this app cannot cut exactly.\n\nScale proportionally instead?\n\nOK = scale anyway, Cancel = stop')) return;
+            if (curvy && !(await askConfirm('Non-uniform scale',
+              'These parts contain arcs or fillets. Scaling width and height by different amounts turns those into ellipses, which this app cannot cut exactly.\n\nScale anyway?', 'Scale anyway'))) return;
           }
           snapshot();
           for (const sh of shs) scaleShape(sh, sx, sy, bb0);
@@ -1885,7 +1911,7 @@
     poly: 'Click corners · type a <b>length</b> then <span class="k">Tab</span> for the angle · <span class="k">Enter</span> or double-click to close',
     pline: 'Click points · type a <b>length</b> then <span class="k">Tab</span> for the angle · <span class="k">Enter</span>, double-click or right-click to finish',
     spline: 'Click points · <span class="k">Enter</span> to finish · click the first point to close',
-    measure: 'Click two points',
+    measure: 'Click two points · snaps square within 10° · hold <span class="k">Alt</span> for a true diagonal',
     dim: 'Click two points, then a third to place the line',
     trim: 'Click an <b>edge to delete it</b> — or, where paths cross, the span to trim away',
     extend: 'Click near the end of a path to extend it',
@@ -2753,16 +2779,65 @@
     } catch (e) { el.innerHTML = `<span class="warnbox">Toolpath error: ${esc(e.message)}</span>`; console.error(e); }
   }
 
+  /* ---------- dialogs ----------
+     Electron's renderer has no window.prompt() - calling it throws
+     "prompt() is not supported", which is what was killing the TAP export
+     before it produced anything. confirm() and alert() survive but block the
+     renderer and look nothing like the rest of the app, so all three are
+     replaced with the same modal used everywhere else. */
+  function askText(title, label, value, okLabel) {
+    return new Promise(resolve => {
+      let done = false;
+      modal(`<h3>${esc(title)}</h3>
+        <div class="row"><label>${esc(label)}</label><input type="text" id="akVal" value="${esc(value || '')}" style="flex:1"></div>
+        <div class="row" style="margin-top:10px"><button class="primary" id="akOk">${esc(okLabel || 'OK')}</button><button id="akCancel">Cancel</button></div>`,
+        (ov, close) => {
+          const inp = ov.querySelector('#akVal');
+          const finish = (v) => { if (done) return; done = true; close(); resolve(v); };
+          ov.querySelector('#akOk').onclick = () => finish(inp.value);
+          ov.querySelector('#akCancel').onclick = () => finish(null);
+          inp.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); finish(inp.value); } });
+          ov.addEventListener('mousedown', e => { if (e.target === ov) finish(null); });
+        });
+    });
+  }
+  function askConfirm(title, message, okLabel) {
+    return new Promise(resolve => {
+      let done = false;
+      modal(`<h3>${esc(title)}</h3>
+        <p style="white-space:pre-wrap">${esc(message)}</p>
+        <div class="row" style="margin-top:10px"><button class="primary" id="acOk">${esc(okLabel || 'OK')}</button><button id="acCancel">Cancel</button></div>`,
+        (ov, close) => {
+          const finish = (v) => { if (done) return; done = true; close(); resolve(v); };
+          ov.querySelector('#acOk').onclick = () => finish(true);
+          ov.querySelector('#acCancel').onclick = () => finish(false);
+          ov.addEventListener('mousedown', e => { if (e.target === ov) finish(false); });
+        });
+    });
+  }
+
   // ---------- file I/O ----------
   function download(name, text, mime = 'text/plain') {
     const blob = new Blob([text], { type: mime }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
   function jobName() { return (job.name || 'job').replace(/[^\w\- ]+/g, '_'); }
-  $('#btnTap').onclick = () => {
+  $('#btnTap').onclick = async () => {
     if (!job.shapes.length) return toast('Nothing to cut');
-    updateStats(); if (!lastGcode) return;
-    const name = prompt('File name for the TAP file:', jobName()); if (name === null) return; job.name = name;
-    download(name.replace(/\.tap$/i, '') + '.tap', lastGcode); toast('TAP exported');
+    updateStats();
+    if (!lastGcode) { toast('Nothing to post — check the parts have a cut operation set'); LOG.warn('Export TAP: no G-code was generated'); return; }
+    const name = await askText('Export TAP', 'File name', jobName());
+    if (name === null) return;
+    const file = (name.trim() || jobName()).replace(/\.tap$/i, '') + '.tap';
+    job.name = name.trim() || jobName();
+    try {
+      download(file, lastGcode);
+      const lines = lastGcode.split(/\r?\n/).length;
+      LOG.action(`Exported ${file} — ${lines} lines, ${job.shapes.length} part(s)`);
+      toast('TAP exported: ' + file);
+    } catch (err) {
+      LOG.error('TAP export failed', err);
+      toast('Could not save the TAP file: ' + err.message);
+    }
     $('#gcodePreview').style.display = 'block'; $('#gcodePreview').textContent = lastGcode;
   };
   $('#btnDxf').onclick = () => {
@@ -2772,8 +2847,22 @@
     download(jobName() + '.dxf', G.writeDXF(loops, opens), 'application/dxf'); toast('DXF exported');
   };
   $('#btnSave').onclick = saveProject;
-  function saveProject() { const name = prompt('Project name:', jobName()); if (name === null) return; job.name = name; download(name + '.cncjob', JSON.stringify({ version: 1, job, settingsSnapshot: { material: job.material } }, null, 1), 'application/json'); toast('Project saved'); }
-  $('#btnNew').onclick = () => { if (job.shapes.length && !confirm('Clear current job?')) return; job = newJob(); sel.clear(); undoStack = []; syncMaterialUI(); refresh(); };
+  async function saveProject() {
+    const name = await askText('Save project', 'Project name', jobName());
+    if (name === null) return;
+    job.name = name.trim() || jobName();
+    const file = job.name.replace(/\.cncjob$/i, '') + '.cncjob';
+    try {
+      download(file, JSON.stringify({ version: 1, job, settingsSnapshot: { material: job.material, machine: S.machine, tools: S.tools } }, null, 1), 'application/json');
+      LOG.action(`Saved project ${file} — ${job.shapes.length} part(s)`);
+      toast('Project saved: ' + file);
+    } catch (err) { LOG.error('Project save failed', err); toast('Could not save: ' + err.message); }
+  }
+  $('#btnNew').onclick = async () => {
+    if (job.shapes.length && !(await askConfirm('New job', `Clear the current job? ${job.shapes.length} part(s) will be discarded.`, 'Clear'))) return;
+    job = newJob(); sel.clear(); clearEdge(); undoStack = []; syncMaterialUI(); refresh();
+    LOG.action('New job started');
+  };
   $('#btnOpen').onclick = () => $('#fileIn').click();
   $('#fileIn').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return; e.target.value = '';
@@ -2883,7 +2972,7 @@
   $('#setExport').onclick = () => download('cncstudio-settings.json', JSON.stringify(S, null, 1), 'application/json');
   $('#setImport').onclick = () => $('#fileSet').click();
   $('#fileSet').addEventListener('change', async e => { const f = e.target.files[0]; if (!f) return; try { S = { ...DEFAULT_SETTINGS, ...JSON.parse(await f.text()) }; saveSettings(); renderSettings(); syncMaterialUI(); refresh(); toast('Settings imported'); } catch (err) { toast('Bad settings file'); } e.target.value = ''; });
-  $('#setReset').onclick = () => { if (!confirm('Reset all settings to defaults?')) return; S = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); saveSettings(); renderSettings(); syncMaterialUI(); refresh(); };
+  $('#setReset').onclick = async () => { if (!(await askConfirm('Reset settings', 'Reset machine, tools, materials and nesting back to defaults?', 'Reset'))) return; S = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); saveSettings(); renderSettings(); syncMaterialUI(); refresh(); };
 
   // material UI (left panel)
   function syncMaterialUI() {
@@ -2995,5 +3084,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();

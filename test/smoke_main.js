@@ -792,6 +792,73 @@ app.whenReady().then(async () => {
     ok(Math.abs(bb2.h - 3) < 1e-3, 'a Y-baseline template spans the stations in Y', JSON.stringify(bb2));
     }
 
+    { // scoped
+    console.log('no browser prompt/confirm anywhere (Electron has no prompt)');
+    /* window.prompt throws "prompt() is not supported" in Electron, which was
+       killing the TAP export before it wrote anything. Guard against it coming
+       back by making the real dialogs throw loudly if they are ever used. */
+    const trapped = await run(`(() => {
+      let hit = [];
+      const op = window.prompt, oc = window.confirm, oa = window.alert;
+      window.prompt = () => { hit.push('prompt'); throw new Error('prompt() is not supported'); };
+      window.confirm = () => { hit.push('confirm'); return true; };
+      window.alert = () => { hit.push('alert'); };
+      try {
+        document.querySelector('#btnTap').click();
+        document.querySelector('#btnSave').click();
+        document.querySelector('#btnNew').click();
+      } catch (e) { hit.push('threw: ' + e.message); }
+      window.prompt = op; window.confirm = oc; window.alert = oa;
+      // close whatever modal opened
+      document.querySelectorAll('.overlay').forEach(o => o.remove());
+      return JSON.stringify(hit);
+    })()`);
+    ok(trapped === '[]', 'Export TAP / Save / New use in-app dialogs, not window.prompt', trapped);
+
+    console.log('TAP export actually produces a file');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:1600,name:'p',kind:'rect',x:2,y:2,rot:0,w:10,h:6,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const dl = await run(`(() => {
+      let captured = null;
+      const realCreate = document.createElement.bind(document);
+      document.createElement = (t) => {
+        const el = realCreate(t);
+        if (t === 'a') { const rc = el.click.bind(el); el.click = () => { captured = { name: el.download, href: el.href }; }; }
+        return el;
+      };
+      document.querySelector('#btnTap').click();
+      const ov = document.querySelector('.overlay');
+      if (!ov) { document.createElement = realCreate; return 'no dialog'; }
+      ov.querySelector('#akVal').value = 'window-test';
+      ov.querySelector('#akOk').click();
+      return new Promise(r => setTimeout(() => {
+        document.createElement = realCreate;
+        r(JSON.stringify(captured));
+      }, 200));
+    })()`);
+    ok(/window-test\.tap/.test(dl || ''), 'the export writes a .tap file with the typed name', dl);
+    const logged = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>/Exported/.test(e.msg)).map(e=>e.msg))`);
+    ok(/Exported window-test\.tap/.test(logged), 'and the export is recorded in the activity log', logged);
+
+    console.log('measure locks square within 10 degrees');
+    const near = await run(`JSON.stringify(CNC.axisLock({x:0,y:0}, {x:10, y:0.9}, false))`);   // ~5.1 deg
+    const nv = JSON.parse(near);
+    ok(Math.abs(nv.y) < 1e-9, 'a 5 degree drift snaps flat to horizontal', near);
+    ok(Math.abs(nv.x - 10.04) < 0.05, 'and keeps the measured run, projected onto the axis', String(nv.x));
+    ok(nv.locked === 0, 'the reading is tagged as locked so it is not mistaken for raw', String(nv.locked));
+
+    const vert = JSON.parse(await run(`JSON.stringify(CNC.axisLock({x:0,y:0}, {x:-0.7, y:8}, false))`));  // ~95 deg
+    ok(Math.abs(vert.x) < 1e-9 && vert.locked === 90, 'near-vertical locks to 90', JSON.stringify(vert));
+    const back = JSON.parse(await run(`JSON.stringify(CNC.axisLock({x:0,y:0}, {x:-12, y:0.5}, false))`));
+    ok(Math.abs(back.y) < 1e-9 && back.locked === 180, 'leftward locks to 180', JSON.stringify(back));
+
+    const diag = JSON.parse(await run(`JSON.stringify(CNC.axisLock({x:0,y:0}, {x:10, y:6}, false))`));   // 31 deg
+    ok(diag.locked === undefined && Math.abs(diag.y - 6) < 1e-9, 'a real diagonal beyond 10 degrees is left alone', JSON.stringify(diag));
+    const bypass = JSON.parse(await run(`JSON.stringify(CNC.axisLock({x:0,y:0}, {x:10, y:0.9}, true))`));
+    ok(Math.abs(bypass.y - 0.9) < 1e-9, 'Alt bypasses the lock for a true diagonal', JSON.stringify(bypass));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
