@@ -49,6 +49,13 @@
   #right { border-right:none; border-left:1px solid var(--border); }
   #center { position:relative; overflow:hidden; background:#15171b; }
   canvas#cv { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; }
+  #toolHint { position:absolute; left:50%; top:8px; transform:translateX(-50%); pointer-events:none; background:rgba(38,42,49,.94); border:1px solid var(--border); padding:4px 12px; border-radius:6px; font-size:12px; color:var(--muted); display:none; white-space:nowrap; }
+  #toolHint b { color:var(--text); }
+  #toolHint .k { font: 11px ui-monospace, monospace; background:var(--panel2); padding:1px 5px; border-radius:3px; border:1px solid var(--border); color:var(--text); }
+  #dynIn { position:absolute; display:none; gap:4px; align-items:center; background:rgba(20,22,26,.95); border:1px solid var(--accent); padding:3px 6px; border-radius:5px; font: 12px ui-monospace, Consolas, monospace; z-index:20; }
+  #dynIn label { color:var(--muted); min-width:0; }
+  #dynIn input { width:66px; padding:1px 4px; font: 12px ui-monospace, Consolas, monospace; }
+  #dynIn .deg { color:var(--muted); }
   #cursorTag { position:absolute; pointer-events:none; background:rgba(20,22,26,.9); border:1px solid var(--border); padding:2px 6px; border-radius:4px; font: 12px ui-monospace, Consolas, monospace; color:var(--accent); display:none; }
   footer { grid-column: 1 / -1; display:flex; gap:18px; align-items:center; padding:0 10px; background:var(--panel); border-top:1px solid var(--border); font: 12px ui-monospace, Consolas, monospace; color:var(--muted); }
   footer b { color:var(--text); }
@@ -151,6 +158,11 @@
   <div id="center">
     <canvas id="cv"></canvas>
     <div id="cursorTag"></div>
+    <div id="toolHint"></div>
+    <div id="dynIn">
+      <label>len</label><input type="text" id="dynLen" autocomplete="off">
+      <label>ang</label><input type="text" id="dynAng" autocomplete="off"><span class="deg">°</span>
+    </div>
     <div id="pageSim" class="page">
       <div id="simWrap">
         <div class="row" style="margin-bottom:6px">

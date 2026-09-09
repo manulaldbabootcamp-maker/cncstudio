@@ -5,6 +5,46 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Centre marks on all shapes, tool hints, typed length/angle
+
+### Fixed
+- **Centre marks only appeared on circles.** A rectangle or polygon showed
+  none, because centres were collected from arc geometry only. Every closed
+  part now also reports its own centre, drawn as a dashed cross so it reads
+  apart from the solid crosses on true arc centres.
+- **A part's centre could not be snapped to.** The Centre snap only ever found
+  arc centres, so there was no way to put a hole in the middle of a plate.
+  Part centres are now fed to the snap engine as well.
+- **The Line tool looked broken.** It needs a second action to finish — Enter
+  or a double-click — and with no prompt on screen, two clicks produced nothing
+  visible and the tool appeared not to work. It was behaving correctly; nothing
+  said so.
+
+### Added
+- **Tool hints.** A line at the top of the canvas says what the current tool
+  expects and, crucially, what finishes it. Shown for every tool that needs
+  more than a single drag.
+- **Right-click finishes a path**, matching the convention in every other CAD
+  package. Middle-drag and space-drag still pan.
+- **Typed length and angle while drawing.** With a path started, type a number
+  and a small box appears at the anchor: enter the length, press Tab, enter the
+  angle, press Enter, and the point lands exactly there. This is how a corner
+  at a known angle gets drawn without arithmetic — two legs at 10 in and 6 in
+  with a 60° corner between them come out exact to floating-point precision.
+  The boxes track the cursor live until you start typing, so they double as a
+  readout.
+
+### Tests
+- Smoke test now 54 assertions. It draws a two-leg corner through the typed
+  entry path and checks both leg lengths, both absolute angles, and the
+  included angle are exact; confirms a rectangle centre is both reported and
+  snappable; and confirms the Line tool's hint actually mentions Enter.
+- A throwaway probe drove real synthetic mouse events through the canvas to
+  confirm the Line tool was working before any of this was changed, rather
+  than assuming a bug from the report.
+
+---
+
 ## Centre marks and the distance tool
 
 ### Added

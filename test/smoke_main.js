@@ -210,6 +210,56 @@ app.whenReady().then(async () => {
       return best; })()`);
     ok(Math.abs(realGap - 0.25) < 0.01, 'the measured gap between the two outlines really is 0.25 in', String(realGap));
 
+    console.log('centre marks on non-round shapes');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:950,name:'plate',kind:'rect',x:2,y:3,rot:0,w:10,h:6,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const rc = JSON.parse(await run('JSON.stringify(CNC.centresOf(CNC.job.shapes[0]))'));
+    ok(rc.length === 1 && rc[0].kind === 'part', 'a rectangle now reports a part centre', JSON.stringify(rc));
+    ok(Math.abs(rc[0].p.x - 7) < 1e-6 && Math.abs(rc[0].p.y - 6) < 1e-6, 'rectangle centre is at 7,6', JSON.stringify(rc[0].p));
+
+    // and it must be reachable by snapping, not just drawn
+    const csnap = await run(`(() => { CNC.resolvePoint({x:7.03,y:6.02}); return JSON.stringify(CNC.lastSnapInfo ? CNC.lastSnapInfo() : null); })()`);
+    ok(csnap && JSON.parse(csnap) && JSON.parse(csnap).type === 'center', 'cursor near a rectangle centre snaps to it', csnap);
+
+    console.log('typed length + angle (drawing a corner at an exact angle)');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.refresh(); return true; })()`);
+    const drew = await run(`(() => {
+      document.querySelector('button.tool[data-tool="pline"]').click();
+      CNC.commitPoint({x:0,y:0});
+      document.querySelector('#dynLen').value = '10';
+      document.querySelector('#dynAng').value = '0';
+      CNC.commitDyn();
+      document.querySelector('#dynLen').value = '6';
+      document.querySelector('#dynAng').value = '120';
+      CNC.commitDyn();
+      window.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true}));
+      return CNC.job.shapes.length;
+    })()`);
+    ok(drew === 1, 'typed entry produced one path', String(drew));
+    const seg = JSON.parse(await run(`JSON.stringify(CNC.worldLoop(CNC.job.shapes[0]).map(s => ({a:s.a,b:s.b})))`));
+    ok(seg.length === 2, 'two straight segments', String(seg.length));
+    if (seg.length === 2) {
+      const L1 = Math.hypot(seg[0].b.x-seg[0].a.x, seg[0].b.y-seg[0].a.y);
+      const L2 = Math.hypot(seg[1].b.x-seg[1].a.x, seg[1].b.y-seg[1].a.y);
+      ok(Math.abs(L1 - 10) < 1e-9, 'first leg is exactly 10 in', String(L1));
+      ok(Math.abs(L2 - 6) < 1e-9, 'second leg is exactly 6 in', String(L2));
+      const a1 = Math.atan2(seg[0].b.y-seg[0].a.y, seg[0].b.x-seg[0].a.x) * 180/Math.PI;
+      const a2 = Math.atan2(seg[1].b.y-seg[1].a.y, seg[1].b.x-seg[1].a.x) * 180/Math.PI;
+      ok(Math.abs(a1 - 0) < 1e-9, 'first leg is at exactly 0 deg', String(a1));
+      ok(Math.abs(a2 - 120) < 1e-9, 'second leg is at exactly 120 deg', String(a2));
+      // included angle between the two legs is what the operator actually cares about
+      const inc = 180 - Math.abs(a2 - a1);
+      ok(Math.abs(inc - 60) < 1e-9, 'the corner between them is exactly 60 deg', String(inc));
+    }
+
+    console.log('tool hints');
+    await run(`(() => { document.querySelector('button.tool[data-tool="pline"]').click(); return true; })()`);
+    const hint = await run(`document.querySelector('#toolHint').textContent`);
+    ok(/Enter/.test(hint), 'the Line tool tells you how to finish it', JSON.stringify(hint));
+    await run(`(() => { document.querySelector('button.tool[data-tool="select"]').click(); return true; })()`);
+    ok((await run(`document.querySelector('#toolHint').style.display`)) === 'none', 'no hint shown for the select tool');
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

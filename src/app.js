@@ -125,7 +125,7 @@
     if (!loopCache) {
       loopCache = [];
       for (const sh of job.shapes) {
-        try { loopCache.push({ id: sh.id, loop: worldLoop(sh) }); }
+        try { loopCache.push({ id: sh.id, loop: worldLoop(sh), centres: centresOf(sh).map(c => c.p) }); }
         catch (e) { LOG.warn(`Snap: could not build geometry for "${sh.name}"`, e); }
       }
     }
@@ -149,7 +149,11 @@
         enabled: { ...S.snap.types, grid: S.snap.types.grid && snapV() > 0 },
         gridStep: snapV(),
         exclude: opts.exclude,
-        extra: opts.extra,
+        // part centres (a rectangle's middle) are not arc centres, so feed them in
+        extra: (opts.extra || []).concat(
+          S.snap.types.center
+            ? snapLoops(opts.exclude).flatMap(l => (l.centres || []).map(p => ({ x: p.x, y: p.y, type: 'center', ref: l.id })))
+            : []),
       });
       if (hit) {
         // under ortho, only accept a snap that stays on the locked axis
@@ -426,6 +430,11 @@
 
   cv.addEventListener('mousedown', e => {
     const { s, w } = evPos(e); mouse.down = true;
+    if (e.button === 2 && drawing) {
+      // right-click finishes the current path (matches every other CAD tool)
+      if (drawing.kind === 'spline') finishSpline(); else finishPoly();
+      draw(); syncDyn(); return;
+    }
     if (e.button === 1 || e.button === 2 || spaceDown) { drag = { kind: 'pan', sx: s.x, sy: s.y, ox: view.ox, oy: view.oy }; return; }
     const ws = resolvePoint(w, { from: drawAnchor(), polar: e.altKey });
     if (tool === 'measure') {
@@ -520,7 +529,8 @@
     if (measure && !measure.b) measure.cur = ws;
     if (dimDraft && dimDraft.b) { const d = dimDraft, dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1; d.off = ((ws.x - d.a.x) * (-dy / L)) + ((ws.y - d.a.y) * (dx / L)); }
     else if (dimDraft) dimDraft.b = null;
-    if (drawing) { if (drawing.kind === 'rect' || drawing.kind === 'circle') drawing.b = ws; else drawing.cur = ws; }
+    if (drawing) { if (drawing.kind === 'rect' || drawing.kind === 'circle' || drawing.kind === 'ellipse') drawing.b = ws; else drawing.cur = ws; }
+    syncDyn();
     draw();
   });
 
@@ -584,7 +594,7 @@
     }
   });
   function finishPoly() {
-    const d = drawing; drawing = null; if (!d || d.pts.length < 2) { draw(); return; }
+    const d = drawing; drawing = null; showDyn(false); if (!d || d.pts.length < 2) { draw(); return; }
     const open = d.kind === 'pline'; if (!open && d.pts.length < 3) { draw(); return; }
     const x0 = Math.min(...d.pts.map(p => p.x)), y0 = Math.min(...d.pts.map(p => p.y));
     addShape(makeShape('poly', { x: x0, y: y0, pts: d.pts.map(p => ({ x: p.x - x0, y: p.y - y0, r: 0 })), open, op: open ? 'on' : 'outside' }));
@@ -594,9 +604,12 @@
 
   window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (drawAnchor() && /^[0-9.]$/.test(e.key)) {
+      const el = $('#dynLen'); if (el) { el.value = e.key; el.focus(); dynActive = true; e.preventDefault(); return; }
+    }
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
     if (e.key === 'Shift') { orthoTemp = true; draw(); }
-    if (e.key === 'Escape') { drawing = null; measure = null; dimDraft = null; setTool('select'); draw(); }
+    if (e.key === 'Escape') { drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
     if (e.key === 'Enter' && drawing) { if (drawing.kind === 'spline') finishSpline(); else finishPoly(); }
     if (e.key === 'Delete' || e.key === 'Backspace') { if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.shiftKey ? redo() : undo(); e.preventDefault(); }
@@ -628,7 +641,7 @@
     if (e.key === 'Shift') { orthoTemp = false; draw(); }
   });
   window.addEventListener('blur', () => { orthoTemp = false; spaceDown = false; });
-  function setTool(t) { tool = t; $$('button.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t)); $('#stTool').textContent = t === 'select' ? '' : `Tool: ${t}`; }
+  function setTool(t) { tool = t; $$('button.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t)); $('#stTool').textContent = t === 'select' ? '' : `Tool: ${t}`; updateHint(); syncDyn(); }
   $$('button.tool').forEach(b => b.addEventListener('click', () => { drawing = null; setTool(b.dataset.tool); draw(); }));
 
   function rotateSel(deg) {
@@ -1141,13 +1154,23 @@
      having to hover it. The snap marker is a hover hint; this is a drawing aid. */
   function centresOf(sh) {
     const out = [];
-    if (sh.kind === 'circle' || sh.kind === 'ellipse') { out.push({ p: { x: sh.x, y: sh.y }, r: sh.kind === 'circle' ? sh.r : Math.max(sh.rx, sh.ry) }); return out; }
+    if (sh.kind === 'circle' || sh.kind === 'ellipse') {
+      out.push({ p: { x: sh.x, y: sh.y }, r: sh.kind === 'circle' ? sh.r : Math.max(sh.rx, sh.ry), kind: 'arc' });
+      return out;
+    }
     let loop;
     try { loop = worldLoop(sh); } catch (e) { return out; }
+    // every distinct arc centre (fillets, bowed edges, holes)
     for (const s of loop) {
       if (s.type !== 'arc') continue;
       if (out.some(o => G.same(o.p, s.c, 1e-7))) continue;
-      out.push({ p: { x: s.c.x, y: s.c.y }, r: G.radius(s) });
+      out.push({ p: { x: s.c.x, y: s.c.y }, r: G.radius(s), kind: 'arc' });
+    }
+    // plus the part's own centre, so a rectangle or polygon has one too
+    if (!sh.open && loop.length) {
+      const b = G.bbox(loop);
+      const c = { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 };
+      if (!out.some(o => G.same(o.p, c, 1e-7))) out.push({ p: c, r: Math.max(b.w, b.h) / 2, kind: 'part' });
     }
     return out;
   }
@@ -1156,18 +1179,22 @@
     if (el && !el.checked) return;
     const dpr = devicePixelRatio;
     ctx.save();
-    ctx.strokeStyle = '#7fd8a0'; ctx.lineWidth = 1.1 * dpr; ctx.setLineDash([]);
+    ctx.lineWidth = 1.1 * dpr;
     for (const sh of job.shapes) {
       for (const c of centresOf(sh)) {
         const p = W2S(c.p);
         // cross scaled to the feature, clamped so it stays readable at any zoom
         const k = Math.max(4 * dpr, Math.min(11 * dpr, (c.r || 0.25) * view.scale * 0.28));
+        // arc centres solid green; a part's own centre dashed, so they read apart
+        ctx.strokeStyle = c.kind === 'part' ? '#5f9e78' : '#7fd8a0';
+        ctx.setLineDash(c.kind === 'part' ? [2 * dpr, 2 * dpr] : []);
         ctx.beginPath();
         ctx.moveTo(p.x - k, p.y); ctx.lineTo(p.x + k, p.y);
         ctx.moveTo(p.x, p.y - k); ctx.lineTo(p.x, p.y + k);
         ctx.stroke();
       }
     }
+    ctx.setLineDash([]);
     ctx.restore();
   }
   const chkC = $('#chkCentres'); if (chkC) chkC.addEventListener('change', draw);
@@ -1300,6 +1327,109 @@
       });
   }
   $('#btnDist').onclick = openDistance;
+
+  // ---------- tool hints ----------
+  /* Several tools need a second action to finish (Enter, double-click). With
+     no prompt, a line drawn with two clicks simply never appears and the tool
+     looks broken. Show what finishes the current tool, on screen. */
+  const TOOL_HINTS = {
+    select: '',
+    rect: 'Drag a rectangle. <span class="k">Shift</span> for ortho',
+    circle: 'Drag from the centre',
+    ellipse: 'Drag from the centre',
+    arc: 'Click <b>start</b>, then <b>end</b>, then a point <b>on the curve</b>',
+    poly: 'Click corners · type a <b>length</b> then <span class="k">Tab</span> for the angle · <span class="k">Enter</span> or double-click to close',
+    pline: 'Click points · type a <b>length</b> then <span class="k">Tab</span> for the angle · <span class="k">Enter</span>, double-click or right-click to finish',
+    spline: 'Click points · <span class="k">Enter</span> to finish · click the first point to close',
+    measure: 'Click two points',
+    dim: 'Click two points, then a third to place the line',
+    trim: 'Click the part of a path to remove',
+    extend: 'Click near the end of a path to extend it',
+  };
+  function updateHint() {
+    const el = $('#toolHint');
+    if (!el) return;
+    const h = TOOL_HINTS[tool] || '';
+    el.innerHTML = h;
+    el.style.display = h ? 'block' : 'none';
+  }
+
+  // ---------- dynamic length / angle entry ----------
+  /* Type an exact length and angle for the next point instead of clicking and
+     hoping. This is how a corner at a known angle actually gets drawn. */
+  const dynEl = () => $('#dynIn');
+  let dynActive = false;
+  function dynAnchor() { return drawAnchor(); }
+  function showDyn(show) {
+    const el = dynEl(); if (!el) return;
+    if (!show) { el.style.display = 'none'; dynActive = false; return; }
+    el.style.display = 'flex';
+  }
+  function placeDyn() {
+    const el = dynEl(), a = dynAnchor();
+    if (!el || !a) return;
+    const p = W2S(a);
+    el.style.left = Math.round(p.x / devicePixelRatio + 18) + 'px';
+    el.style.top = Math.round(p.y / devicePixelRatio - 34) + 'px';
+  }
+  function refreshDynValues() {
+    if (dynActive) return;                    // don't fight the operator's typing
+    const a = dynAnchor(); if (!a) return;
+    const cur = drawing ? (drawing.cur || drawing.b) : null;
+    if (!cur) return;
+    const L = G.dist(a, cur);
+    const A = ((Math.atan2(cur.y - a.y, cur.x - a.x) * 180 / Math.PI) % 360 + 360) % 360;
+    $('#dynLen').value = fmtIn(L);
+    $('#dynAng').value = (+A.toFixed(2)).toString();
+  }
+  function syncDyn() {
+    const a = dynAnchor();
+    const wants = !!a && ['poly', 'pline', 'spline', 'arc'].includes(tool);
+    if (!wants) { showDyn(false); return; }
+    showDyn(true); placeDyn(); refreshDynValues();
+  }
+  function commitDyn() {
+    const a = dynAnchor(); if (!a) return;
+    const L = parseFloat($('#dynLen').value);
+    const A = parseFloat($('#dynAng').value);
+    if (!isFinite(L) || !isFinite(A)) { toast('Enter a length and an angle'); return; }
+    const rad = A * Math.PI / 180;
+    const p = { x: a.x + L * Math.cos(rad), y: a.y + L * Math.sin(rad) };
+    dynActive = false;
+    $('#dynLen').blur();
+    commitPoint(p);
+    draw(); syncDyn();
+  }
+  // route a placed point to whichever click-sequence tool is active
+  function commitPoint(ws) {
+    if (tool === 'arc') {
+      if (!drawing) drawing = { kind: 'arc', stage: 1, a: ws, b: null, cur: ws };
+      else if (drawing.stage === 1) { drawing.b = ws; drawing.stage = 2; drawing.cur = ws; }
+      else finishArc(ws);
+      return;
+    }
+    if (tool === 'poly' || tool === 'pline' || tool === 'spline') {
+      if (!drawing) drawing = { kind: tool, pts: [ws], cur: ws };
+      else drawing.pts.push(ws);
+      if (drawing) drawing.cur = ws;
+      return;
+    }
+  }
+  (function wireDyn() {
+    const len = $('#dynLen'), ang = $('#dynAng');
+    if (!len || !ang) return;
+    for (const el of [len, ang]) {
+      el.addEventListener('focus', () => { dynActive = true; });
+      el.addEventListener('blur', () => { setTimeout(() => { if (document.activeElement !== len && document.activeElement !== ang) dynActive = false; }, 0); });
+      el.addEventListener('keydown', (e) => {
+        e.stopPropagation();                       // keep global shortcuts out of the box
+        if (e.key === 'Enter') { e.preventDefault(); commitDyn(); }
+        else if (e.key === 'Escape') { e.preventDefault(); dynActive = false; el.blur(); cv.focus(); }
+        else if (e.key === 'Tab') { e.preventDefault(); (el === len ? ang : len).focus(); (el === len ? ang : len).select(); }
+      });
+    }
+  })();
+
 
 
   // ================= PUSH 3: text, groups, curves =================
@@ -1482,7 +1612,7 @@
     LOG.action(`Ellipse added: ${fmtIn(rx * 2)} × ${fmtIn(ry * 2)} in`);
   }
   function finishSpline() {
-    const d = drawing; drawing = null;
+    const d = drawing; drawing = null; showDyn(false);
     if (!d || d.pts.length < 3) { draw(); return; }
     const x0 = Math.min(...d.pts.map(p => p.x)), y0 = Math.min(...d.pts.map(p => p.y));
     const closed = !!d.closeIt;
@@ -1991,7 +2121,8 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
 
   // ---------- init ----------
   ICONS.apply(document);
+  updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, gripsOf, buildText, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, lastSnapInfo: () => lastSnap, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();
