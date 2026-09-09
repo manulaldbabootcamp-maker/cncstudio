@@ -5,60 +5,60 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
-## Push 1 — Object snaps, grips, and the activity log
+## Push 1 — Object snaps, grips, and the activity log (`fe088ee`)
 
 ### Added
-- **Object snaps** (, new). Endpoint, midpoint, centre, quadrant,
+- **Object snaps** (`src/snap.js`, new). Endpoint, midpoint, centre, quadrant,
   intersection and nearest-on-edge, with a priority order so an endpoint under
   the cursor always beats the edge it sits on. Each type draws its own CAD
   marker (square / triangle / circle / diamond / cross / tramlines) and the
-  status bar names what you are locked to. Toggle the whole thing with **F3**,
-  pick types from the snap button in the toolbar.
+  status bar names what you are locked to. Toggle the whole thing with **F3**;
+  pick which types are active from the snap button in the toolbar.
   Intersections are computed *bounded* — segments are never extended to
   manufacture a crossing that is not really there.
 - **Ortho / polar lock.** **F8** to latch, or hold **Shift** for a temporary
-  lock while drawing or moving; **Alt** switches to 45° polar. Ortho is applied
+  lock while drawing or moving; **Alt** switches to 45° polar. Ortho resolves
   before object snaps, and a snap is only accepted if it stays on the locked
   axis, so the lock cannot be silently broken by a nearby point.
 - **Edge and corner grips.** A selected part shows a square grip at every
   vertex and a round grip at the middle of every edge. Drag a vertex to move
-  it; drag an edge grip to bow that edge into an arc. This is the workflow you
+  it; drag an edge grip to bow that edge into an arc. This is the workflow
   asked for: the **bulge distance is shown live at the cursor** and is typeable
   in the new *bulge* column of the points table, so a known bow can be entered
-  directly instead of being converted to a radius by hand. Arc R stays
-  available for when the radius is the number you have.
+  directly instead of being converted into a radius by hand. *Arc R* stays
+  available for when the radius is the number you already have.
   Dragging a grip on a rectangle promotes it to a polygon so its points become
-  editable (logged when it happens).
-- **Arc tool** (A) — three clicks: start, end, then a point the arc passes
-  through. Collinear picks are rejected with a warning rather than producing a
+  editable — logged when it happens, so the change is never silent.
+- **Arc tool** (`A`) — three clicks: start, end, then a point the arc passes
+  through. Collinear picks are rejected with a warning instead of producing a
   degenerate arc.
-- **Measure tool** (M) — click two points for distance, angle and ΔX/ΔY.
-- **Move by an exact distance** (G) — ΔX/ΔY, or distance + direction.
-- **Scale** — by factor or to a target width/height, with proportions locked by
+- **Measure tool** (`M`) — click two points for distance, angle and ΔX/ΔY.
+- **Move by an exact distance** (`G`) — ΔX/ΔY, or distance + direction.
+- **Scale** — by factor or to a target width/height, proportions locked by
   default. Warns before a non-uniform scale on parts containing arcs or
-  fillets, because that would turn true arcs into ellipses the post cannot cut.
-- **Activity log** (, new) in Settings. Captures actions, warnings
-  and errors, including , unhandled promise rejections and
-  anything routed to  /  — so a failure that would
-  otherwise only appear in devtools is visible in the app. Survives restarts,
-  filterable by level, and copyable or savable as a  file to paste back.
-- **Icon toolbar** (, new). CAD-conventional glyphs: the
+  fillets, because that turns true arcs into ellipses the post cannot cut.
+- **Activity log** (`src/log.js`, new) in Settings. Captures actions, warnings
+  and errors, including `window.onerror`, unhandled promise rejections, and
+  anything routed to `console.warn` / `console.error` — so a failure that would
+  otherwise only surface in devtools is visible inside the app. Survives
+  restarts, filters by level, and copies or saves as a `.log` file to paste
+  back into a conversation.
+- **Icon toolbar** (`src/icons.js`, new). CAD-conventional glyphs: the
   primitive itself for draw tools, dashed construction lines for modify tools.
-- **** (28 assertions) and ****, a
+- **`test/snap_test.js`** (28 assertions) and **`test/smoke_main.js`**, a
   headless Electron smoke test (19 assertions) that loads the real bundle,
-  fails on any console error, and drives the new tools through .
-  Run with  and .
+  fails on any console error, and drives the new tools through `window.CNC`.
+  Run with `npm test` and `npm run smoke` from `electron/`.
 
 ### Changed
--  now honours , so **open polylines can carry arcs**. They
+- `polyOpen` now honours `arcR`, so **open polylines can carry arcs**. It
   previously emitted straight lines only, which would have made the arc tool
-  draw nothing.
-- Snap geometry is cached and invalidated on edit; it is queried on every
-  mousemove and rebuilding every part's loop at cursor rate made dragging
-  sticky with a full sheet of parts.
-- Settings load merges the new  block over defaults, so an existing saved
-  settings object does not lose the new keys.
-
+  draw nothing at all.
+- Snap geometry is cached and invalidated on edit. It is queried on every
+  mousemove, and rebuilding every part's loop at cursor rate made dragging
+  visibly sticky with a full sheet of parts.
+- Settings loading merges the new `snap` block over the defaults, so an
+  existing saved settings object does not come back missing the new keys.
 
 ---
 
@@ -71,42 +71,43 @@ Each entry names the commit so anything here can be found in `git log`.
   back into source; the round-trip was verified byte-exact before installing.
 - **The build had two disconnected targets.** `node build.js` wrote `dist/`,
   while Electron loaded and packaged `electron/app/`. Nothing copied between
-  them, so `build.js` output was never what ran. `build.js` now writes
+  them, so `build.js` output was never what actually ran. `build.js` now writes
   `electron/app/CNCStudio.html` only — the file `main.js` loads and the file
   `electron-builder` packages.
-- **`test/verify.js` always exited 0**, even on total failure, making it
+- **`test/verify.js` always exited 0**, even on total failure, which made it
   useless as a regression guard. It now exits non-zero.
 
 ### Added
 - Git repository + private GitHub remote as the single source of truth.
 - `.gitattributes` marking `*.tap` / `*.dxf` as binary-ish (`-text`) so Git
-  cannot rewrite line endings. `Sides_manav.tap` is the golden reference and
-  the post-processor emits exact CRLF; normalization would corrupt the test.
+  cannot rewrite their line endings. `Sides_manav.tap` is the golden reference
+  and the post-processor emits exact CRLF; normalization would corrupt the test.
 - `npm start` / `npm run dev` now bundle before launching, so the build step
   cannot be forgotten. `npm test` runs the regression gate.
 - Pass/fail gate in `verify.js`: **61/61 pass-blocks within 3e-4 and a
-  byte-exact header/footer**. Deliberately *not* line-by-line identity — our
+  byte-exact header/footer**. Deliberately *not* line-by-line identity — the
   nearest-neighbour path ordering differs from EnRoute's by design, so ~1185
-  lines differ on a correct build. Confirmed the gate fails on an injected
-  1/16" safe-Z change and passes on the reconciled tree.
+  lines differ on a perfectly correct build. Confirmed the gate fails on an
+  injected 1/16" safe-Z change and passes on the reconciled tree.
 
 ### Recovered into source (was Electron-only)
 - `geom.js`: per-edge arc bulge via `pts[].arcR` in `polyLoop` (+ bulges out,
   − bulges in); fillet radius clamped to half the adjacent edge lengths;
-  degenerate-angle guard for straight/doubled-back corners; per-corner rect
+  degenerate-angle guard for straight or doubled-back corners; per-corner rect
   radii (`rectLoop(..., rc[])`); `normalizePolyPts` exported.
 - `app.js`: polygon builder dialog (sides by length + absolute or turn angle,
-  auto-computed closing side); polygon point/edge table with live editing of
-  X, Y, fillet R, edge length, edge direction and arc R; `rotateSel` about the
-  bounding-box centre; `X`/`Y`/`A` keys to jump to fields; `[` / `]` to rotate.
-- `index.html`: `Dims…` toolbar button, overlay/dialog styles, wider
-  properties column.
+  with the closing side computed automatically); polygon point/edge table with
+  live editing of X, Y, fillet R, edge length, edge direction and arc R;
+  `rotateSel` about the bounding-box centre; `X`/`Y`/`A` keys to jump to
+  fields; `[` and `]` to rotate.
+- `index.html`: `Dims…` toolbar button, overlay/dialog styles, wider properties
+  column.
 
 ### Removed
 - `dist/CNCStudio.html` and the standalone-HTML build target. The Electron app
   is now the only target.
-- The generated bundle is no longer tracked in Git (it is rebuilt by every
-  `npm start`), which keeps a 100 KB generated file out of every diff.
+- The generated bundle is no longer tracked in Git — it is rebuilt by every
+  `npm start`, and tracking it put a 100 KB generated file into every diff.
 
 ---
 
