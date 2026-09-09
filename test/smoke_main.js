@@ -920,7 +920,7 @@ app.whenReady().then(async () => {
       document.querySelector('button.tool[data-tool="circle"]').click();
       window.__click(10, 10, 'mousedown'); return true; })()`);
     ok((await run(`document.querySelectorAll('#dynIn label')[0].textContent`)) === 'R', 'a circle asks for R');
-    ok((await run(`document.querySelector('#dynAng').style.display`)) === 'none', 'and hides the second box');
+    ok((await run(`document.querySelectorAll('#dynIn label')[1].textContent`)) === 'dia', 'and offers the diameter alongside it');
     await run(`(() => { document.querySelector('#dynLen').value = '2.75'; CNC.commitDyn2(); return true; })()`);
     const c = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s=>({k:s.kind,r:s.r})))`));
     ok(c.length === 1 && Math.abs(c[0].r - 2.75) < 1e-9, 'a circle of exactly R 2.75 is created', JSON.stringify(c));
@@ -1104,6 +1104,51 @@ app.whenReady().then(async () => {
     await run(`(() => { window.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true})); return true; })()`);
     ok((await run('CNC.dynTargetInfo()')) === null, 'Escape dismisses it, leaving the part as drawn');
     ok((await run('CNC.job.shapes.length')) === 1, 'and the part survives');
+    await run(`(() => { document.querySelector('button.tool[data-tool="select"]').click(); return true; })()`);
+    }
+
+    { // scoped
+    console.log('circle box offers radius AND diameter');
+    const dragCircle = (cx, cy, ex, ey) => run(`(() => {
+      CNC.job.shapes.length = 0;
+      document.querySelector('button.tool[data-tool="circle"]').click();
+      const cv = document.querySelector('#cv'), r = cv.getBoundingClientRect();
+      const at = (wx, wy, type) => { const sp = CNC.W2S({x:wx,y:wy});
+        const ev = new MouseEvent(type, { clientX: r.left + sp.x/devicePixelRatio,
+          clientY: r.top + sp.y/devicePixelRatio, bubbles:true, button:0 });
+        cv.dispatchEvent(ev); if (type === 'mouseup') window.dispatchEvent(ev); };
+      at(${cx}, ${cy}, 'mousedown'); at(${ex}, ${ey}, 'mousemove'); at(${ex}, ${ey}, 'mouseup');
+      return true; })()`);
+
+    await dragCircle(10, 10, 13, 10);
+    ok((await run('CNC.dynTargetInfo()')) !== null, 'the box stays after drawing a circle');
+    ok((await run(`document.querySelectorAll('#dynIn label')[0].textContent`)) === 'R', 'first box is R');
+    ok((await run(`document.querySelectorAll('#dynIn label')[1].textContent`)) === 'dia', 'second box is the diameter');
+    ok((await run(`document.querySelector('#dynAng').style.display`)) !== 'none', 'and the second box is visible now');
+    const pre = JSON.parse(await run(`JSON.stringify([document.querySelector('#dynLen').value, document.querySelector('#dynAng').value])`));
+    ok(Math.abs(parseFloat(pre[1]) - parseFloat(pre[0]) * 2) < 1e-6, 'prefilled diameter is twice the radius', JSON.stringify(pre));
+
+    console.log('the two boxes track each other');
+    await run(`(() => { const l = document.querySelector('#dynLen');
+      l.value = '2.5'; l.dispatchEvent(new Event('input', {bubbles:true})); return true; })()`);
+    ok((await run(`document.querySelector('#dynAng').value`)) === '5', 'typing R 2.5 shows dia 5', String(await run(`document.querySelector('#dynAng').value`)));
+    await run(`(() => { const a = document.querySelector('#dynAng');
+      a.value = '9'; a.dispatchEvent(new Event('input', {bubbles:true})); return true; })()`);
+    ok((await run(`document.querySelector('#dynLen').value`)) === '4.5', 'typing dia 9 shows R 4.5', String(await run(`document.querySelector('#dynLen').value`)));
+
+    console.log('Enter uses whichever was typed last');
+    await run(`CNC.commitDyn2()`);
+    ok(Math.abs((await run('CNC.job.shapes[0].r')) - 4.5) < 1e-9, 'entering the diameter sets the radius to half of it', String(await run('CNC.job.shapes[0].r')));
+    ok((await run('CNC.job.shapes.length')) === 1, 'still one circle');
+
+    await dragCircle(10, 10, 12, 10);
+    await run(`(() => { const l = document.querySelector('#dynLen');
+      l.value = '1.75'; l.dispatchEvent(new Event('input', {bubbles:true})); return true; })()`);
+    await run(`CNC.commitDyn2()`);
+    ok(Math.abs((await run('CNC.job.shapes[0].r')) - 1.75) < 1e-9, 'entering the radius still sets the radius', String(await run('CNC.job.shapes[0].r')));
+    const cbb = JSON.parse(await run(`JSON.stringify(CNC.G.bbox(CNC.worldLoop(CNC.job.shapes[0])))`));
+    ok(Math.abs(cbb.w - 3.5) < 1e-6, 'the geometry is 3.5 in across', String(cbb.w));
+    ok(Math.abs((cbb.x0 + cbb.x1) / 2 - 10) < 0.2, 'and kept the centre it was drawn from', String((cbb.x0 + cbb.x1) / 2));
     await run(`(() => { document.querySelector('button.tool[data-tool="select"]').click(); return true; })()`);
     }
 

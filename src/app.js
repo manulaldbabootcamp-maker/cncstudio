@@ -2020,7 +2020,7 @@
   const TOOL_HINTS = {
     select: 'Click a <b>line</b> to select it (then <span class="k">Del</span>) · double-click for the whole part · <span class="k">Alt</span>+click to skip lines',
     rect: 'Drag a rectangle, or type the <b>width</b>, <span class="k">Tab</span>, the <b>height</b>, <span class="k">Enter</span>',
-    circle: 'Drag from the centre, or type the <b>radius</b> and press <span class="k">Enter</span>',
+    circle: 'Drag from the centre, then type the <b>radius</b> or <span class="k">Tab</span> to the <b>diameter</b> \u00b7 <span class="k">Enter</span>',
     ellipse: 'Drag from the centre, or type <b>radius X</b>, <span class="k">Tab</span>, <b>radius Y</b>, <span class="k">Enter</span>',
     arc: 'Click <b>start</b>, then <b>end</b>, then a point <b>on the curve</b>',
     poly: 'Click corners · type a <b>length</b> then <span class="k">Tab</span> for the angle · <span class="k">Enter</span> or double-click to close',
@@ -2043,6 +2043,7 @@
   /* Type an exact length and angle for the next point instead of clicking and
      hoping. This is how a corner at a known angle actually gets drawn. */
   const dynEl = () => $('#dynIn');
+  let dynLastEditedRef = () => 'len';   // set up by wireDyn
   let dynActive = false;
   /* After a rect/circle/ellipse is drawn, the entry box stays open next to the
      cursor holding the size just drawn, so it can be corrected to exact numbers
@@ -2084,13 +2085,16 @@
     if (mode.edit) {
       const t = mode.edit;
       if (t.kind === 'rect') { $('#dynLen').value = fmtIn(t.w); $('#dynAng').value = fmtIn(t.h); }
-      else if (t.kind === 'circle') { $('#dynLen').value = fmtIn(t.r); }
+      else if (t.kind === 'circle') { $('#dynLen').value = fmtIn(t.r); $('#dynAng').value = fmtIn(t.r * 2); }
       else { $('#dynLen').value = fmtIn(t.rx); $('#dynAng').value = fmtIn(t.ry); }
       return;
     }
     if (!drawing || !drawing.a || !drawing.b) return;
     const dx = Math.abs(drawing.b.x - drawing.a.x), dy = Math.abs(drawing.b.y - drawing.a.y);
-    if (mode.kind === 'circle') { $('#dynLen').value = fmtIn(G.dist(drawing.a, drawing.b)); }
+    if (mode.kind === 'circle') {
+      const rr = G.dist(drawing.a, drawing.b);
+      $('#dynLen').value = fmtIn(rr); $('#dynAng').value = fmtIn(rr * 2);
+    }
     else { $('#dynLen').value = fmtIn(dx); $('#dynAng').value = fmtIn(dy); }
   }
   /* What the two boxes mean depends on the tool:
@@ -2102,14 +2106,14 @@
      to be dragged to an exact size. */
   function dynMode() {
     if (drawing && drawing.kind === 'rect') return { kind: 'rect', l1: 'w', l2: 'h' };
-    if (drawing && drawing.kind === 'circle') return { kind: 'circle', l1: 'R', l2: null };
+    if (drawing && drawing.kind === 'circle') return { kind: 'circle', l1: 'R', l2: 'dia' };
     if (drawing && drawing.kind === 'ellipse') return { kind: 'ellipse', l1: 'rX', l2: 'rY' };
     if (dynAnchor() && ['poly', 'pline', 'spline', 'arc'].includes(tool)) return { kind: 'polar', l1: 'len', l2: 'ang' };
     // no drag in progress, but a freshly drawn part is still on the hook
     const t = dynTargetShape();
     if (t) {
       if (t.kind === 'rect') return { kind: 'rect', l1: 'w', l2: 'h', edit: t };
-      if (t.kind === 'circle') return { kind: 'circle', l1: 'R', l2: null, edit: t };
+      if (t.kind === 'circle') return { kind: 'circle', l1: 'R', l2: 'dia', edit: t };
       if (t.kind === 'ellipse') return { kind: 'ellipse', l1: 'rX', l2: 'rY', edit: t };
     }
     return null;
@@ -2152,9 +2156,10 @@
         if (v2 > 0) t.h = v2;
         LOG.action('Resized "' + t.name + '" to ' + fmtIn(t.w) + ' x ' + fmtIn(t.h) + ' in');
       } else if (t.kind === 'circle') {
-        if (!(v1 > 0)) { toast('Enter a radius'); return; }
-        t.r = v1;
-        LOG.action('Resized "' + t.name + '" to R ' + fmtIn(v1) + ' in');
+        const rNew = dynLastEditedRef() === 'ang' ? (v2 > 0 ? v2 / 2 : NaN) : v1;
+        if (!(rNew > 0)) { toast('Enter a radius or a diameter'); return; }
+        t.r = rNew;
+        LOG.action('Resized "' + t.name + '" to R ' + fmtIn(rNew) + ' in (dia ' + fmtIn(rNew * 2) + ')');
       } else {
         if (v1 > 0) t.rx = v1;
         if (v2 > 0) t.ry = v2;
@@ -2175,10 +2180,11 @@
       addShape(makeShape('rect', { x: origin.x, y: origin.y, w: v1, h: v2, r: 0 }));
       LOG.action('Rectangle ' + fmtIn(v1) + ' x ' + fmtIn(v2) + ' in entered by size');
     } else if (mode.kind === 'circle') {
-      if (!(v1 > 0)) { toast('Enter a radius'); return; }
+      const rNew = dynLastEditedRef() === 'ang' ? (v2 > 0 ? v2 / 2 : NaN) : v1;
+      if (!(rNew > 0)) { toast('Enter a radius or a diameter'); return; }
       drawing = null; showDyn(false);
-      addShape(makeShape('circle', { x: origin.x, y: origin.y, r: v1 }));
-      LOG.action('Circle R ' + fmtIn(v1) + ' in entered by size');
+      addShape(makeShape('circle', { x: origin.x, y: origin.y, r: rNew }));
+      LOG.action('Circle R ' + fmtIn(rNew) + ' in entered by size');
     } else {
       if (!(v1 > 0) || !(v2 > 0)) { toast('Enter both radii'); return; }
       drawing = null; showDyn(false);
@@ -2205,6 +2211,21 @@
   (function wireDyn() {
     const len = $('#dynLen'), ang = $('#dynAng');
     if (!len || !ang) return;
+    /* On a circle the two boxes are the same number twice over, so editing
+       either one updates the other. Whichever was touched last is the one the
+       operator meant, and that is what Enter uses. */
+    let dynLastEdited = 'len';
+    const mirrorCircle = (from) => {
+      const m = dynMode();
+      if (!m || m.kind !== 'circle') return;
+      dynLastEdited = from;
+      const v = parseFloat(from === 'len' ? len.value : ang.value);
+      if (!isFinite(v) || v <= 0) return;
+      if (from === 'len') ang.value = fmtIn(v * 2); else len.value = fmtIn(v / 2);
+    };
+    len.addEventListener('input', () => mirrorCircle('len'));
+    ang.addEventListener('input', () => mirrorCircle('ang'));
+    dynLastEditedRef = () => dynLastEdited;
     for (const el of [len, ang]) {
       el.addEventListener('focus', () => { dynActive = true; });
       el.addEventListener('blur', () => { setTimeout(() => { if (document.activeElement !== len && document.activeElement !== ang) dynActive = false; }, 0); });

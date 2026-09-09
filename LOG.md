@@ -5,6 +5,28 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Circle size box takes radius or diameter
+
+### Changed
+- The circle's entry box now has **two fields like the rectangle**: `R` and
+  `dia`. It previously showed only a radius and hid the second field.
+- The two track each other as you type — enter `2.5` in R and `5` appears in
+  dia, enter `9` in dia and `4.5` appears in R. They are the same number twice
+  over, so showing one changing without the other would be misleading.
+- **Enter uses whichever field was typed into last**, so a diameter can be
+  entered directly without halving it by hand. Stock and cutters are usually
+  quoted by diameter while the geometry stores a radius, and that conversion is
+  a pointless place to make an arithmetic slip.
+
+### Tests
+- Smoke test now 236 assertions: both labels are present and visible, the
+  prefilled diameter is exactly twice the radius, typing either field updates
+  the other, entering a diameter of 9 gives a radius of 4.5, entering a radius
+  still sets the radius, and the resulting circle is 3.5 in across on the
+  centre it was drawn from.
+
+---
+
 ## The size box stays after the drag
 
 ### Fixed
