@@ -1,0 +1,1324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CNC Studio</title>
+<style>
+  :root { --bg:#1e2126; --panel:#262a31; --panel2:#2d323a; --border:#3a404a; --text:#e6e8eb; --muted:#9aa3ad; --accent:#4da3ff; --ok:#41c77a; --warn:#ffb84d; --err:#ff5c5c; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font: 13px/1.4 system-ui, Segoe UI, Roboto, sans-serif; overflow:hidden; }
+  #app { display:grid; grid-template-rows: 40px 1fr 26px; grid-template-columns: 220px 1fr 280px; height:100vh; }
+  header { grid-column: 1 / -1; display:flex; align-items:center; gap:6px; padding:0 8px; background:var(--panel); border-bottom:1px solid var(--border); }
+  header .brand { font-weight:700; margin-right:8px; color:var(--accent); }
+  header .tabs { display:flex; gap:2px; margin-left:auto; }
+  .tab { padding:5px 12px; border-radius:6px; cursor:pointer; color:var(--muted); }
+  .tab.active { background:var(--panel2); color:var(--text); }
+  button, select, input[type=text], input[type=number], input[type=password], textarea { background:var(--panel2); color:var(--text); border:1px solid var(--border); border-radius:5px; padding:4px 8px; font:inherit; }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#0b1520; border-color:var(--accent); font-weight:600; }
+  button.tool.active { background:var(--accent); color:#0b1520; }
+  button.small { padding:2px 6px; font-size:12px; }
+  input[type=number] { width:84px; }
+  #left, #right { background:var(--panel); border-right:1px solid var(--border); overflow:auto; padding:8px; }
+  #right { border-right:none; border-left:1px solid var(--border); }
+  #center { position:relative; overflow:hidden; background:#15171b; }
+  canvas#cv { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; }
+  #cursorTag { position:absolute; pointer-events:none; background:rgba(20,22,26,.9); border:1px solid var(--border); padding:2px 6px; border-radius:4px; font: 12px ui-monospace, Consolas, monospace; color:var(--accent); display:none; }
+  footer { grid-column: 1 / -1; display:flex; gap:18px; align-items:center; padding:0 10px; background:var(--panel); border-top:1px solid var(--border); font: 12px ui-monospace, Consolas, monospace; color:var(--muted); }
+  footer b { color:var(--text); }
+  h3 { margin:6px 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .row { display:flex; align-items:center; gap:6px; margin:4px 0; flex-wrap:wrap; }
+  .row label { min-width:70px; color:var(--muted); }
+  .list div.item { padding:4px 6px; border-radius:4px; cursor:pointer; display:flex; justify-content:space-between; }
+  .list div.item:hover { background:var(--panel2); }
+  .list div.item.sel { background:#1f3a5a; }
+  .list .op { color:var(--muted); font-size:11px; }
+  .page { display:none; position:absolute; inset:0; overflow:auto; padding:16px 20px; background:var(--bg); }
+  .page.active { display:block; }
+  table { border-collapse:collapse; width:100%; }
+  th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--border); }
+  td input { width:100%; }
+  td input[type=number] { width:80px; }
+  textarea { width:100%; min-height:70px; font: 12px ui-monospace, Consolas, monospace; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:14px; max-width:980px; }
+  .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+  .muted { color:var(--muted); }
+  .kbd { font: 11px ui-monospace, monospace; background:var(--panel2); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  #simWrap { display:grid; grid-template-rows: auto 1fr; height:100%; }
+  #simCanvas { width:100%; height:100%; background:#15171b; }
+  .toast { position:absolute; left:50%; bottom:40px; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--border); padding:8px 14px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show { opacity:1; }
+  .warnbox { color:var(--warn); }
+  pre.gcode { max-height:300px; overflow:auto; background:#111318; padding:8px; border-radius:6px; font-size:11px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="brand">CNC Studio</span>
+    <button id="btnNew" title="New job">New</button>
+    <button id="btnOpen" title="Open project / DXF / TAP">Open…</button>
+    <button id="btnSave" title="Save project (.cncjob)">Save</button>
+    <span style="width:8px"></span>
+    <button class="tool active" data-tool="select" title="Select (V)">Select</button>
+    <button class="tool" data-tool="rect" title="Rectangle (R)">Rect</button>
+    <button class="tool" data-tool="circle" title="Circle (C)">Circle</button>
+    <button class="tool" data-tool="poly" title="Polygon (P) — click points, Enter/double-click to close">Polygon</button>
+    <button class="tool" data-tool="pline" title="Open polyline for on-line cuts (L)">Line</button>
+    <span style="width:8px"></span>
+    <button id="btnNest" title="Auto-arrange all parts from bottom-left">Nest</button>
+    <button id="btnDxf" title="Export DXF">DXF ↓</button>
+    <button id="btnTap" class="primary" title="Generate and export .TAP">Export TAP</button>
+    <div class="tabs">
+      <div class="tab active" data-page="design">Design</div>
+      <div class="tab" data-page="sim">Simulate</div>
+      <div class="tab" data-page="ai">AI Design</div>
+      <div class="tab" data-page="settings">Settings</div>
+    </div>
+  </header>
+
+  <div id="left">
+    <h3>Job</h3>
+    <div class="row"><label>Material</label><select id="selMaterial"></select></div>
+    <div class="row"><label>Thickness</label><input type="number" id="inThick" step="any"> in</div>
+    <div class="row"><label>Cut-through</label><input type="number" id="inCutThrough" step="0.005" value="0"> in</div>
+    <div class="row"><label>Snap</label><select id="selSnap"><option value="0">off</option><option value="0.0625">1/16</option><option value="0.125" selected>1/8</option><option value="0.25">1/4</option><option value="0.5">1/2</option><option value="1">1</option></select></div>
+    <div class="row"><label><input type="checkbox" id="chkPaths" checked> Toolpaths</label><label><input type="checkbox" id="chkKerf"> Kerf</label></div>
+    <h3>Parts <span id="partCount" class="muted"></span></h3>
+    <div id="shapeList" class="list"></div>
+    <div class="row" style="margin-top:8px">
+      <button class="small" id="btnDup">Duplicate</button>
+      <button class="small" id="btnDel">Delete</button>
+      <button class="small" id="btnUndo" title="Ctrl+Z">Undo</button>
+    </div>
+  </div>
+
+  <div id="center">
+    <canvas id="cv"></canvas>
+    <div id="cursorTag"></div>
+    <div id="pageSim" class="page">
+      <div id="simWrap">
+        <div class="row" style="margin-bottom:6px">
+          <button id="simGen" class="primary">Simulate current job</button>
+          <button id="simLoad">Load .TAP file…</button>
+          <button id="simPlay">▶ Play</button>
+          <input type="range" id="simSlider" min="0" max="1000" value="1000" style="flex:1">
+          <label>Speed <select id="simSpeed"><option value="1">1×</option><option value="5" selected>5×</option><option value="20">20×</option><option value="100">100×</option></select></label>
+          <span id="simInfo" class="muted"></span>
+        </div>
+        <canvas id="simCanvas"></canvas>
+      </div>
+    </div>
+    <div id="pageAi" class="page">
+      <div class="card">
+        <h3>Describe what to cut</h3>
+        <p class="muted">Examples: <i>"3 rectangles 6.5 by 7 with 0.25 corner radius, 2 circles 3 inch diameter"</i>, <i>"a 12x12 plate with four 0.5 holes 1 inch from each corner"</i>. Parts are added to the job and arranged from the bottom-left corner within the bed limits.</p>
+        <textarea id="aiPrompt" placeholder="e.g. a rectangle 6.5&quot; by 7&quot;, make 7 of them"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button id="aiGo" class="primary">Generate parts</button>
+          <label><input type="checkbox" id="aiReplace"> Replace existing parts</label>
+          <span id="aiStatus" class="muted"></span>
+        </div>
+        <pre id="aiOut" class="gcode" style="display:none"></pre>
+      </div>
+    </div>
+    <div id="pageSettings" class="page">
+      <div class="grid2">
+        <div class="card">
+          <h3>Machine</h3>
+          <div class="row"><label>Bed W × H</label><input type="number" id="mBedW" step="1"> × <input type="number" id="mBedH" step="1"> in</div>
+          <div class="row"><label>Safe Z</label><input type="number" id="mSafeZ" step="0.0625"> in</div>
+          <div class="row"><label>Decimals</label><input type="number" id="mDec" step="1" min="2" max="6"></div>
+          <div class="row"><label>Line ending</label><select id="mEol"><option value="crlf">CRLF (Windows)</option><option value="lf">LF</option></select></div>
+          <div class="row"><label>Header</label></div><textarea id="mHeader"></textarea>
+          <div class="row"><label>Tool change</label><span class="muted">{toolName} {slot} {rpm}</span></div><textarea id="mToolChange"></textarea>
+          <div class="row"><label>Footer</label></div><textarea id="mFooter"></textarea>
+        </div>
+        <div>
+          <div class="card">
+            <h3>Materials</h3>
+            <table id="matTable"><thead><tr><th>Name</th><th>Thickness</th><th></th></tr></thead><tbody></tbody></table>
+            <button class="small" id="matAdd" style="margin-top:6px">+ Add material</button>
+          </div>
+          <div class="card">
+            <h3>Nesting</h3>
+            <div class="row"><label>Part gap</label><input type="number" id="nGap" step="0.125"> in</div>
+            <div class="row"><label>Bed margin</label><input type="number" id="nMargin" step="0.125"> in</div>
+            <div class="row"><label><input type="checkbox" id="nRotate"> Allow 90° rotation</label></div>
+          </div>
+          <div class="card">
+            <h3>Claude API</h3>
+            <div class="row"><label>API key</label><input type="password" id="aiKey" style="flex:1" placeholder="sk-ant-…"></div>
+            <div class="row"><label>Model</label><input type="text" id="aiModel" style="flex:1"></div>
+            <p class="muted">Key is stored only in this app's local storage on this PC.</p>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Tools (auto tool changer)</h3>
+        <table id="toolTable"><thead><tr><th>Slot</th><th>Name</th><th>Type</th><th>Dia (in)</th><th>RPM</th><th>Feed (ipm)</th><th>Plunge (ipm)</th><th>Pass depth</th><th></th></tr></thead><tbody></tbody></table>
+        <div class="row" style="margin-top:6px"><button class="small" id="toolAdd">+ Add tool</button><button class="small" id="setExport">Export settings</button><button class="small" id="setImport">Import settings</button><button class="small" id="setReset">Reset defaults</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="right">
+    <div id="props"><p class="muted">Select a part to edit it.<br><br>
+      <b>Canvas</b><br>Wheel: zoom · Right/middle drag or <span class="kbd">Space</span>+drag: pan<br>
+      <span class="kbd">Del</span> delete · <span class="kbd">Ctrl+D</span> duplicate · <span class="kbd">Ctrl+Z</span> undo · arrows nudge<br>
+      <span class="kbd">F</span> fit bed · <span class="kbd">Esc</span> cancel tool</p></div>
+    <h3 style="margin-top:14px">Output</h3>
+    <div id="jobStats" class="muted">—</div>
+    <pre id="gcodePreview" class="gcode" style="display:none"></pre>
+  </div>
+
+  <footer>
+    <span>X <b id="stX">0.0000</b></span><span>Y <b id="stY">0.0000</b></span>
+    <span id="stTool"></span>
+    <span id="stMsg" style="margin-left:auto"></span>
+  </footer>
+</div>
+<div id="toast" class="toast"></div>
+<input type="file" id="fileIn" style="display:none" accept=".cncjob,.json,.dxf,.tap,.nc,.txt">
+<input type="file" id="fileSim" style="display:none" accept=".tap,.nc,.txt">
+<input type="file" id="fileSet" style="display:none" accept=".json">
+<script>
+/* ===== geom.js — 2D geometry core: segments, loops, offsetting, DXF ===== */
+const GEOM = (() => {
+  const EPS = 1e-7;
+  const P = (x, y) => ({ x, y });
+  const add = (a, b) => P(a.x + b.x, a.y + b.y);
+  const sub = (a, b) => P(a.x - b.x, a.y - b.y);
+  const mul = (a, s) => P(a.x * s, a.y * s);
+  const dot = (a, b) => a.x * b.x + a.y * b.y;
+  const cross = (a, b) => a.x * b.y - a.y * b.x;
+  const len = (a) => Math.hypot(a.x, a.y);
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const norm = (a) => { const l = len(a) || 1; return P(a.x / l, a.y / l); };
+  const rightN = (d) => P(d.y, -d.x);           // normal to the right of travel
+  const rot = (p, ang) => P(p.x * Math.cos(ang) - p.y * Math.sin(ang), p.x * Math.sin(ang) + p.y * Math.cos(ang));
+  const same = (a, b, e = 1e-6) => Math.abs(a.x - b.x) < e && Math.abs(a.y - b.y) < e;
+
+  // ---- segments: {type:'line',a,b} | {type:'arc',a,b,c,ccw}
+  const line = (a, b) => ({ type: 'line', a, b });
+  const arc = (a, b, c, ccw) => ({ type: 'arc', a, b, c, ccw });
+  const radius = (s) => dist(s.a, s.c);
+  const angOf = (c, p) => Math.atan2(p.y - c.y, p.x - c.x);
+  function sweep(s) { // signed sweep angle, + for ccw
+    let a0 = angOf(s.c, s.a), a1 = angOf(s.c, s.b), d = a1 - a0;
+    if (s.ccw) { while (d <= 1e-9) d += 2 * Math.PI; } else { while (d >= -1e-9) d -= 2 * Math.PI; }
+    return d;
+  }
+  function tangentAt(s, atStart) {
+    if (s.type === 'line') return norm(sub(s.b, s.a));
+    const p = atStart ? s.a : s.b, r = sub(p, s.c);
+    const t = s.ccw ? P(-r.y, r.x) : P(r.y, -r.x);
+    return norm(t);
+  }
+  function segLen(s) { return s.type === 'line' ? dist(s.a, s.b) : Math.abs(sweep(s)) * radius(s); }
+  function pointAt(s, t) { // t in 0..1
+    if (s.type === 'line') return add(s.a, mul(sub(s.b, s.a), t));
+    const a0 = angOf(s.c, s.a), sw = sweep(s), r = radius(s);
+    return P(s.c.x + r * Math.cos(a0 + sw * t), s.c.y + r * Math.sin(a0 + sw * t));
+  }
+  function samplePts(s, maxSeg = 0.02) {
+    if (s.type === 'line') return [s.a, s.b];
+    const n = Math.max(2, Math.ceil(segLen(s) / maxSeg));
+    const out = [];
+    for (let i = 0; i <= n; i++) out.push(pointAt(s, i / n));
+    return out;
+  }
+  function loopPts(loop, maxSeg = 0.02) {
+    const pts = [];
+    for (const s of loop) { const p = samplePts(s, maxSeg); for (let i = 0; i < p.length - 1; i++) pts.push(p[i]); }
+    return pts;
+  }
+  function signedArea(loop) {
+    const pts = loopPts(loop, 0.01); let a = 0;
+    for (let i = 0; i < pts.length; i++) { const p = pts[i], q = pts[(i + 1) % pts.length]; a += p.x * q.y - q.x * p.y; }
+    return a / 2;
+  }
+  function reverseLoop(loop) {
+    return loop.slice().reverse().map(s => s.type === 'line' ? line(s.b, s.a) : arc(s.b, s.a, s.c, !s.ccw));
+  }
+  function bbox(loop) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of loopPts(loop, 0.05)) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+    return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 };
+  }
+  function transformLoop(loop, fn) {
+    return loop.map(s => s.type === 'line' ? line(fn(s.a), fn(s.b)) : arc(fn(s.a), fn(s.b), fn(s.c), s.ccw));
+  }
+  function translateLoop(loop, dx, dy) { return transformLoop(loop, p => P(p.x + dx, p.y + dy)); }
+  function rotateLoop(loop, ang, about) { return transformLoop(loop, p => add(about, rot(sub(p, about), ang))); }
+  function mirrorLoopX(loop, cx) { // mirror across vertical line x=cx, keeps orientation by reversing
+    const m = transformLoop(loop, p => P(2 * cx - p.x, p.y)).map(s => s.type === 'arc' ? arc(s.a, s.b, s.c, !s.ccw) : s);
+    return reverseLoop(m);
+  }
+  function pointInLoop(pt, loop) {
+    const pts = loopPts(loop, 0.05); let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const a = pts[i], b = pts[j];
+      if ((a.y > pt.y) !== (b.y > pt.y) && pt.x < (b.x - a.x) * (pt.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  }
+
+  // ---- shape builders (all loops returned CCW)
+  function polyLoop(pts) { // pts: [{x,y,r?}] with optional fillet radius r at vertex
+    const n = pts.length; if (n < 3) return [];
+    let base = pts.map(p => P(p.x, p.y));
+    let area = 0; for (let i = 0; i < n; i++) { const p = base[i], q = base[(i + 1) % n]; area += p.x * q.y - q.x * p.y; }
+    let order = pts.slice(); if (area < 0) order = order.slice().reverse();
+    const segs = []; const corner = [];
+    for (let i = 0; i < n; i++) {
+      const prev = order[(i - 1 + n) % n], cur = order[i], next = order[(i + 1) % n];
+      const r = cur.r || 0;
+      if (r <= EPS) { corner.push({ in: P(cur.x, cur.y), out: P(cur.x, cur.y) }); continue; }
+      const d1 = norm(sub(P(prev.x, prev.y), P(cur.x, cur.y))), d2 = norm(sub(P(next.x, next.y), P(cur.x, cur.y)));
+      const ang = Math.acos(Math.max(-1, Math.min(1, dot(d1, d2))));
+      const t = r / Math.tan(ang / 2);
+      const pin = add(P(cur.x, cur.y), mul(d1, t)), pout = add(P(cur.x, cur.y), mul(d2, t));
+      const bis = norm(add(d1, d2)); const c = add(P(cur.x, cur.y), mul(bis, r / Math.sin(ang / 2)));
+      const ccw = cross(d1, d2) < 0; // turning left (ccw loop convex corner) -> arc ccw
+      corner.push({ in: pin, out: pout, arc: arc(pin, pout, c, ccw) });
+    }
+    for (let i = 0; i < n; i++) {
+      const c = corner[i], nx = corner[(i + 1) % n];
+      if (c.arc) segs.push(c.arc);
+      if (dist(c.out, nx.in) > EPS) segs.push(line(c.out, nx.in));
+    }
+    return segs;
+  }
+  function rectLoop(x, y, w, h, r = 0) { return polyLoop([{ x, y, r }, { x: x + w, y, r }, { x: x + w, y: y + h, r }, { x, y: y + h, r }]); }
+  function circleLoop(cx, cy, r) {
+    const c = P(cx, cy);
+    return [arc(P(cx + r, cy), P(cx - r, cy), c, true), arc(P(cx - r, cy), P(cx + r, cy), c, true)];
+  }
+
+  // ---- intersections
+  function lineLine(p1, d1, p2, d2) {
+    const den = cross(d1, d2); if (Math.abs(den) < 1e-12) return null;
+    const t = cross(sub(p2, p1), d2) / den; return add(p1, mul(d1, t));
+  }
+  function lineCircle(p, d, c, r) {
+    const f = sub(p, c), a = dot(d, d), b = 2 * dot(f, d), cc = dot(f, f) - r * r;
+    let disc = b * b - 4 * a * cc; if (disc < 0) { if (disc > -1e-9) disc = 0; else return []; }
+    const s = Math.sqrt(disc); return [add(p, mul(d, (-b - s) / (2 * a))), add(p, mul(d, (-b + s) / (2 * a)))];
+  }
+  function circleCircle(c1, r1, c2, r2) {
+    const d = dist(c1, c2); if (d < 1e-12 || d > r1 + r2 + 1e-9 || d < Math.abs(r1 - r2) - 1e-9) return [];
+    const a = (r1 * r1 - r2 * r2 + d * d) / (2 * d); let h2 = r1 * r1 - a * a; if (h2 < 0) h2 = 0;
+    const h = Math.sqrt(h2), m = add(c1, mul(sub(c2, c1), a / d)), n = norm(sub(c2, c1));
+    return [P(m.x - n.y * h, m.y + n.x * h), P(m.x + n.y * h, m.y - n.x * h)];
+  }
+  function nearest(pts, ref) { let best = null, bd = Infinity; for (const p of pts) { const d = dist(p, ref); if (d < bd) { bd = d; best = p; } } return best; }
+  function segSegTrim(s1, s2, ref) { // intersection of (extended) s1 and s2 nearest to ref
+    if (s1.type === 'line' && s2.type === 'line') return lineLine(s1.a, sub(s1.b, s1.a), s2.a, sub(s2.b, s2.a));
+    if (s1.type === 'line') return nearest(lineCircle(s1.a, sub(s1.b, s1.a), s2.c, radius(s2)), ref);
+    if (s2.type === 'line') return nearest(lineCircle(s2.a, sub(s2.b, s2.a), s1.c, radius(s1)), ref);
+    return nearest(circleCircle(s1.c, radius(s1), s2.c, radius(s2)), ref);
+  }
+
+  // ---- offset a closed loop. d>0 = to the right of travel (outside for CCW loops)
+  const STRAIGHT_TOL = 5e-3;
+  function offsetLoop(loop, d) {
+    if (Math.abs(d) < EPS) return loop.map(s => ({ ...s }));
+    // 1. offset each segment; arcs that collapse become vertices
+    const items = [];
+    for (const s of loop) {
+      const t0 = tangentAt(s, true), t1 = tangentAt(s, false);
+      if (s.type === 'line') {
+        const n = rightN(norm(sub(s.b, s.a)));
+        items.push({ seg: line(add(s.a, mul(n, d)), add(s.b, mul(n, d))), t0, t1, oa: s.a, ob: s.b });
+      } else {
+        const r = radius(s), nr = s.ccw ? r + d : r - d;
+        if (nr <= 5e-4) { items.push({ vertex: s.c, t0, t1 }); continue; }
+        const na = add(s.c, mul(norm(sub(s.a, s.c)), nr)), nb = add(s.c, mul(norm(sub(s.b, s.c)), nr));
+        items.push({ seg: arc(na, nb, s.c, s.ccw), t0, t1, oa: s.a, ob: s.b });
+      }
+    }
+    if (!items.some(i => i.seg)) return [];
+    let idx = 0; while (!items[idx].seg) idx++;
+    const ordered = items.slice(idx).concat(items.slice(0, idx));
+    // 2. build sequence: seg, turns..., seg, turns..., (wrap)
+    const seq = [];
+    for (let i = 0; i < ordered.length; i++) {
+      const it = ordered[i], nx = ordered[(i + 1) % ordered.length];
+      if (it.seg) { seq.push({ seg: { ...it.seg } }); seq.push({ turn: true, dirIn: it.t1, dirOut: nx.t0, origin: it.ob }); }
+      else { seq.push({ turn: true, dirIn: it.t0, dirOut: it.t1, origin: it.vertex }); seq.push({ turn: true, dirIn: it.t1, dirOut: nx.t0, origin: it.vertex }); }
+    }
+    // merge consecutive turns with same origin, drop straight turns
+    const seq2 = [];
+    for (const e of seq) {
+      if (!e.turn) { seq2.push(e); continue; }
+      const last = seq2[seq2.length - 1];
+      if (last && last.turn && same(last.origin, e.origin, 1e-6)) { last.dirOut = e.dirOut; continue; }
+      seq2.push({ ...e });
+    }
+    const seq3 = seq2.filter(e => !(e.turn && Math.abs(cross(e.dirIn, e.dirOut)) < STRAIGHT_TOL && dot(e.dirIn, e.dirOut) > 0));
+    // 3. emit, walking the sequence; cursor = last emitted segment
+    const out = [];
+    const firstSeg = seq3.findIndex(e => !e.turn);
+    const walk = seq3.slice(firstSeg).concat(seq3.slice(0, firstSeg));
+    const n = walk.length;
+    const nextSegAfter = (k) => { for (let j = 1; j <= n; j++) { const e = walk[(k + j) % n]; if (!e.turn) return e; } return null; };
+    for (let k = 0; k < n; k++) {
+      const e = walk[k];
+      if (!e.turn) { out.push(e.seg); continue; }
+      const cur = out[out.length - 1];
+      const cr = cross(e.dirIn, e.dirOut);
+      const gap = (d > 0 && cr > 0) || (d < 0 && cr < 0);
+      const nextIsSeg = !walk[(k + 1) % n].turn;
+      const nextSeg = nextSegAfter(k).seg;
+      if (gap) {
+        const pa = add(e.origin, mul(rightN(e.dirIn), d)), pb = add(e.origin, mul(rightN(e.dirOut), d));
+        cur.b = pa; out.push(arc(pa, pb, e.origin, cr > 0));
+        if (nextIsSeg) nextSeg.a = pb;
+      } else {
+        if (nextIsSeg) {
+          const ip = segSegTrim(cur, nextSeg, cur.b);
+          if (ip && dist(ip, cur.b) < Math.abs(d) * 4 + 1) { cur.b = ip; nextSeg.a = ip; }
+          else { out.push(line(cur.b, nextSeg.a)); }
+        } else {
+          const p2 = add(e.origin, mul(rightN(e.dirOut), d));
+          const virt = line(p2, add(p2, e.dirOut));
+          const ip = segSegTrim(cur, virt, cur.b);
+          if (ip) { cur.b = ip; out.push(line(ip, p2)); } else out.push(line(cur.b, p2));
+        }
+      }
+    }
+    // ensure closure between last and first
+    const last = out[out.length - 1], first = out[0];
+    if (!same(last.b, first.a, 1e-5)) { if (last.type === 'line' && first.type === 'line') { const ip = lineLine(last.a, sub(last.b, last.a), first.a, sub(first.b, first.a)); if (ip && dist(ip, last.b) < 1) { last.b = ip; first.a = ip; } else out.push(line(last.b, first.a)); } else out.push(line(last.b, first.a)); }
+    // drop micro lines (numeric noise from tangent joins) and reconnect
+    const res = [];
+    for (const s of out) {
+      if (segLen(s) < 2e-3) { continue; }
+      res.push(s);
+    }
+    for (let i = 0; i < res.length; i++) { const s = res[i], nx = res[(i + 1) % res.length]; if (!same(s.b, nx.a, 1e-9)) { if (nx.type === 'line') nx.a = s.b; else if (s.type === 'line') s.b = nx.a; } }
+    return res;
+  }
+  function fixArcEnd(a) { /* keep b on circle */ const r = radius(a); a.b = add(a.c, mul(norm(sub(a.b, a.c)), r)); }
+
+  // split loop so it starts at the point on a line segment nearest to `pt`
+  function startLoopAt(loop, pt) {
+    let best = null;
+    loop.forEach((s, i) => {
+      let cand;
+      if (s.type === 'line') {
+        const d = sub(s.b, s.a), L2 = dot(d, d) || 1; let t = dot(sub(pt, s.a), d) / L2; t = Math.max(0, Math.min(1, t));
+        cand = { p: add(s.a, mul(d, t)), i, t };
+      } else {
+        // nearest of endpoints only (no arc splitting)
+        cand = dist(s.a, pt) <= dist(s.b, pt) ? { p: s.a, i, t: 0 } : { p: s.b, i, t: 1 };
+      }
+      const dd = dist(cand.p, pt); if (!best || dd < best.d) best = { ...cand, d: dd };
+    });
+    if (!best) return loop;
+    const s = loop[best.i];
+    let head, tail;
+    if (s.type === 'line' && best.t > 1e-6 && best.t < 1 - 1e-6) { head = [line(best.p, s.b)]; tail = [line(s.a, best.p)]; }
+    else if (best.t >= 1 - 1e-6) { head = []; tail = [s]; }
+    else { head = [s]; tail = []; }
+    return head.concat(loop.slice(best.i + 1), loop.slice(0, best.i), tail);
+  }
+  function longestLineIndex(loop) {
+    let bi = 0, bl = -1; loop.forEach((s, i) => { if (s.type === 'line') { const l = dist(s.a, s.b); if (l > bl) { bl = l; bi = i; } } }); return bi;
+  }
+  function midOfSeg(s) { return pointAt(s, 0.5); }
+
+  // split arcs so no arc sweeps more than maxDeg (EnRoute/WinCNC style: <= 90 deg)
+  function splitArcs(loop, maxDeg = 90) {
+    const out = [];
+    for (const s of loop) {
+      if (s.type !== 'arc') { out.push(s); continue; }
+      const sw = sweep(s); const n = Math.ceil(Math.abs(sw) / (maxDeg * Math.PI / 180) - 0.006);
+      if (n <= 1) { out.push(s); continue; }
+      let prev = s.a;
+      for (let i = 1; i <= n; i++) { const p = i === n ? s.b : pointAt(s, i / n); out.push(arc(prev, p, s.c, s.ccw)); prev = p; }
+    }
+    return out;
+  }
+
+  // ---- DXF import/export
+  function parseDXF(text) {
+    const lines = text.split(/\r?\n/); const pairs = [];
+    for (let i = 0; i + 1 < lines.length; i += 2) pairs.push([parseInt(lines[i].trim(), 10), lines[i + 1].trim()]);
+    const ents = []; let i = 0; let inEntities = false; let insUnits = 1;
+    while (i < pairs.length) {
+      const [c, v] = pairs[i];
+      if (c === 9 && v === '$INSUNITS') { insUnits = parseInt(pairs[i + 1][1], 10); }
+      if (c === 2 && v === 'ENTITIES' && pairs[i - 1] && pairs[i - 1][1] === 'SECTION') inSection();
+      function inSection() { inEntities = true; }
+      if (inEntities && c === 0) {
+        if (v === 'ENDSEC') break;
+        const ent = { type: v, data: [] }; i++;
+        while (i < pairs.length && pairs[i][0] !== 0) { ent.data.push(pairs[i]); i++; }
+        ents.push(ent); continue;
+      }
+      i++;
+    }
+    const scale = insUnits === 4 ? 1 / 25.4 : insUnits === 5 ? 1 / 2.54 : 1; // mm/cm -> inch
+    const get = (e, code, def) => { const f = e.data.find(d => d[0] === code); return f ? parseFloat(f[1]) : def; };
+    const loops = [], opens = [];
+    for (const e of ents) {
+      if (e.type === 'LWPOLYLINE') {
+        const verts = []; let closed = (get(e, 70, 0) & 1) === 1; let cur = null;
+        for (const [c, v] of e.data) {
+          if (c === 10) { cur = { x: parseFloat(v) * scale, y: 0, b: 0 }; verts.push(cur); }
+          else if (c === 20 && cur) cur.y = parseFloat(v) * scale;
+          else if (c === 42 && cur) cur.b = parseFloat(v);
+        }
+        const segs = [];
+        const nseg = closed ? verts.length : verts.length - 1;
+        for (let k = 0; k < nseg; k++) {
+          const a = verts[k], b = verts[(k + 1) % verts.length];
+          if (same(a, b)) continue;
+          if (Math.abs(a.b) < 1e-9) segs.push(line(P(a.x, a.y), P(b.x, b.y)));
+          else segs.push(bulgeArc(P(a.x, a.y), P(b.x, b.y), a.b));
+        }
+        if (!segs.length) continue;
+        if (closed) loops.push(segs); else opens.push(segs);
+      } else if (e.type === 'CIRCLE') {
+        loops.push(circleLoop(get(e, 10, 0) * scale, get(e, 20, 0) * scale, get(e, 40, 0) * scale));
+      } else if (e.type === 'ARC') {
+        const c = P(get(e, 10, 0) * scale, get(e, 20, 0) * scale), r = get(e, 40, 0) * scale;
+        const a0 = get(e, 50, 0) * Math.PI / 180, a1 = get(e, 51, 0) * Math.PI / 180;
+        opens.push([arc(P(c.x + r * Math.cos(a0), c.y + r * Math.sin(a0)), P(c.x + r * Math.cos(a1), c.y + r * Math.sin(a1)), c, true)]);
+      } else if (e.type === 'LINE') {
+        opens.push([line(P(get(e, 10, 0) * scale, get(e, 20, 0) * scale), P(get(e, 11, 0) * scale, get(e, 21, 0) * scale))]);
+      } else if (e.type === 'SPLINE') {
+        // approximate via fit points / control points
+        const pts = []; let cur = null;
+        for (const [c, v] of e.data) { if (c === 10) { cur = P(parseFloat(v) * scale, 0); pts.push(cur); } else if (c === 20 && cur) cur.y = parseFloat(v) * scale; }
+        const segs = []; for (let k = 0; k + 1 < pts.length; k++) segs.push(line(pts[k], pts[k + 1]));
+        if (segs.length) opens.push(segs);
+      }
+    }
+    // chain open segments into loops where possible
+    const chained = chainOpen(opens);
+    for (const ch of chained) { if (ch.closed) loops.push(ch.segs); else opens2.push(ch.segs); }
+    return { loops: loops.map(l => signedArea(l) < 0 ? reverseLoop(l) : l), opens: opens2 };
+  }
+  const opens2 = [];
+  function chainOpen(opens) {
+    opens2.length = 0;
+    const pool = opens.map(s => s.slice()); const out = [];
+    while (pool.length) {
+      let cur = pool.shift(); let grew = true;
+      while (grew) {
+        grew = false;
+        const end = cur[cur.length - 1].b, start = cur[0].a;
+        for (let k = 0; k < pool.length; k++) {
+          const c = pool[k];
+          if (same(end, c[0].a, 1e-4)) { cur = cur.concat(c); pool.splice(k, 1); grew = true; break; }
+          if (same(end, c[c.length - 1].b, 1e-4)) { cur = cur.concat(reverseLoop(c)); pool.splice(k, 1); grew = true; break; }
+          if (same(start, c[c.length - 1].b, 1e-4)) { cur = c.concat(cur); pool.splice(k, 1); grew = true; break; }
+          if (same(start, c[0].a, 1e-4)) { cur = reverseLoop(c).concat(cur); pool.splice(k, 1); grew = true; break; }
+        }
+      }
+      const closed = same(cur[0].a, cur[cur.length - 1].b, 1e-4) && cur.length > 1 || (cur.length === 1 && cur[0].type === 'arc' && same(cur[0].a, cur[0].b, 1e-6));
+      out.push({ segs: cur, closed });
+    }
+    return out;
+  }
+  function bulgeArc(a, b, bulge) {
+    const theta = 4 * Math.atan(bulge); const chord = dist(a, b); const r = chord / (2 * Math.sin(Math.abs(theta) / 2));
+    const m = mul(add(a, b), 0.5); const dir = norm(sub(b, a)); const h = r * Math.cos(theta / 2);
+    const nrm = P(-dir.y, dir.x); // left normal
+    const c = add(m, mul(nrm, bulge > 0 ? h : -h));
+    return arc(a, b, c, bulge > 0);
+  }
+  function arcBulge(s) { return Math.tan(sweep(s) / 4); }
+  function writeDXF(loops, opens = []) {
+    const f = (n) => (+n.toFixed(6)).toString();
+    let o = '0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n';
+    const emit = (segs, closed) => {
+      o += `0\nLWPOLYLINE\n8\n0\n90\n${closed ? segs.length : segs.length + 1}\n70\n${closed ? 1 : 0}\n`;
+      segs.forEach(s => { o += `10\n${f(s.a.x)}\n20\n${f(s.a.y)}\n`; if (s.type === 'arc') o += `42\n${f(arcBulge(s))}\n`; });
+      if (!closed) { const l = segs[segs.length - 1]; o += `10\n${f(l.b.x)}\n20\n${f(l.b.y)}\n`; }
+    };
+    loops.forEach(l => emit(l, true)); opens.forEach(l => emit(l, false));
+    o += '0\nENDSEC\n0\nEOF\n';
+    return o;
+  }
+
+  return { EPS, P, add, sub, mul, dot, cross, len, dist, norm, rot, same, line, arc, radius, sweep, tangentAt, segLen, pointAt, samplePts, loopPts, signedArea, reverseLoop, bbox, transformLoop, translateLoop, rotateLoop, mirrorLoopX, pointInLoop, polyLoop, rectLoop, circleLoop, offsetLoop, splitArcs, startLoopAt, longestLineIndex, midOfSeg, parseDXF, writeDXF, bulgeArc, arcBulge, chainOpen };
+})();
+if (typeof module !== 'undefined') module.exports = GEOM;
+
+/* ===== post.js — toolpath generation + WinCNC TAP post-processor ===== */
+const POST = (() => {
+  const G = typeof GEOM !== 'undefined' ? GEOM : require('./geom.js');
+
+  const DEFAULT_MACHINE = {
+    name: 'WinCNC 5x10',
+    bedW: 60, bedH: 120, units: 'in', // X = 60" (5 ft), Y = 120" (10 ft) — matches G53 X0 Y120 park in sample
+    safeZ: 1.1875,
+    header: 'G90\nG53\nM61\n',
+    toolChange: '\n[{toolName}]\nM5\nT{slot}\nM3\n\n',
+    footer: 'M5\nG53\nM62\nG53 X0 Y120\n',
+    lineEnding: '\r\n',
+    decimals: 4,
+    plungeFeedOnFirstOnly: true, // sample: F on first plunge only
+  };
+  const DEFAULT_TOOLS = [
+    { id: 1, slot: 1, name: '3/8" Upspiral', dia: 0.375, rpm: 23000, feed: 180, plunge: 20, passDepth: 0.09375, type: 'endmill' },
+    { id: 2, slot: 2, name: '1/4" Upspiral', dia: 0.25, rpm: 20000, feed: 150, plunge: 20, passDepth: 0.125, type: 'endmill' },
+    { id: 3, slot: 3, name: '1/8" Downcut', dia: 0.125, rpm: 18000, feed: 100, plunge: 15, passDepth: 0.0625, type: 'endmill' },
+    { id: 4, slot: 4, name: '1/2" Compression', dia: 0.5, rpm: 18000, feed: 200, plunge: 25, passDepth: 0.25, type: 'endmill' },
+    { id: 5, slot: 5, name: '1/4" Drill', dia: 0.25, rpm: 12000, feed: 60, plunge: 30, passDepth: 0.5, type: 'drill' },
+  ];
+  const DEFAULT_MATERIALS = [
+    { name: '3/16" Acrylic', thickness: 0.1875 },
+    { name: '1/4" Acrylic', thickness: 0.25 },
+    { name: '1/8" Acrylic', thickness: 0.125 },
+    { name: '1/2" HDPE', thickness: 0.5 },
+    { name: '3/4" HDPE', thickness: 0.75 },
+  ];
+
+  // number format: 4 decimals, strip trailing zeros, keep trailing "." (WinCNC/EnRoute style: 0. / 6.125)
+  function fmt(n, dec = 4) {
+    let s = (Math.abs(n) < 1e-9 ? 0 : n).toFixed(dec);
+    if (s.indexOf('.') >= 0) { s = s.replace(/0+$/, ''); }
+    if (s === '-0.') s = '0.';
+    return s;
+  }
+  function rnd(n, dec = 4) { return parseFloat(n.toFixed(dec)); }
+
+  // compute pass depths (Z values, Z0 = bed). Returns array from first cut to last.
+  function passDepths(thickness, passDepth, cutThrough = 0) {
+    const out = []; const bottom = -cutThrough; let z = thickness - passDepth;
+    if (passDepth <= 0) return [bottom];
+    while (z > bottom + 1e-6) { out.push(z); z -= passDepth; }
+    out.push(bottom);
+    return out;
+  }
+
+  // ---- toolpath from a shape
+  // shape: {loop:[segs], open?:bool, op:'outside'|'inside'|'on', tool, startHint?}
+  function buildToolpathLoop(shape, tool, opts = {}) {
+    let loop = shape.loop;
+    if (shape.open) return loop; // engrave along open path, no offset
+    if (G.signedArea(loop) < 0) loop = G.reverseLoop(loop);
+    const r = tool.dia / 2;
+    let path;
+    if (shape.op === 'inside') path = G.offsetLoop(loop, -r);
+    else if (shape.op === 'outside') path = G.offsetLoop(loop, r);
+    else path = loop.map(s => ({ ...s }));
+    if (!path.length) return [];
+    // direction: default CCW for outside (matches EnRoute sample), CW (climb) for inside
+    const wantCCW = shape.op === 'inside' ? !!opts.climb : !opts.climb;
+    // outside default: CCW (conventional). climb flips.
+    const isCCW = G.signedArea(path) > 0;
+    if (isCCW !== wantCCW) path = G.reverseLoop(path);
+    // start point
+    let start = shape.startHint;
+    if (!start) { const s = path[G.longestLineIndex(path)]; start = G.midOfSeg(s); }
+    path = G.startLoopAt(path, start);
+    return G.splitArcs(path, 90);
+  }
+
+  // order shapes nearest-neighbour by start point
+  function orderPaths(paths) {
+    const rem = paths.slice(); const out = []; let cur = { x: 0, y: 0 };
+    while (rem.length) {
+      let bi = 0, bd = Infinity;
+      rem.forEach((p, i) => { const d = G.dist(p.path[0].a, cur); if (d < bd) { bd = d; bi = i; } });
+      const p = rem.splice(bi, 1)[0]; out.push(p); const last = p.path[p.path.length - 1]; cur = last.b;
+    }
+    return out;
+  }
+
+  // ---- generate G-code
+  // job: {shapes:[{loop, op, toolId, open}], tools, material:{thickness}, machine, cutThrough}
+  function generate(job) {
+    const m = { ...DEFAULT_MACHINE, ...(job.machine || {}) };
+    const dec = m.decimals;
+    const L = [];
+    const emit = (s) => L.push(s);
+    const tpl = (s, vars) => s.replace(/\{(\w+)\}/g, (_, k) => vars[k] !== undefined ? vars[k] : '');
+    const pushBlock = (s) => { s.replace(/\r\n/g, '\n').split('\n').forEach((ln, i, arr) => { if (i === arr.length - 1 && ln === '') return; emit(ln); }); };
+
+    pushBlock(m.header);
+    // group by tool in slot order of first use (or explicit order)
+    const byTool = new Map();
+    for (const sh of job.shapes) { if (!byTool.has(sh.toolId)) byTool.set(sh.toolId, []); byTool.get(sh.toolId).push(sh); }
+    const stats = { length: 0, rapid: 0, timeMin: 0, passes: 0, tools: [] };
+    let pos = { x: null, y: null, z: null };
+    for (const [toolId, shapes] of byTool) {
+      const tool = job.tools.find(t => t.id === toolId) || job.tools[0];
+      stats.tools.push(tool.name);
+      pushBlock(tpl(m.toolChange, { toolName: tool.name, slot: String(tool.slot).padStart(2, '0'), rpm: tool.rpm }));
+      // toolpaths
+      let paths = shapes.map(sh => ({ shape: sh, path: buildToolpathLoop(sh, tool, { climb: sh.climb }) })).filter(p => p.path.length);
+      paths = orderPaths(paths);
+      const depths = passDepths(job.material.thickness, tool.passDepth, job.cutThrough || 0);
+      let first = true;
+      for (const { shape, path } of paths) {
+        const sd = shape.depth != null ? passDepths(shape.depth, tool.passDepth, 0).map(z => z + (job.material.thickness - shape.depth)) : depths;
+        const useDepths = shape.op === 'on' && shape.depth != null ? sd : depths;
+        for (const z of useDepths) {
+          stats.passes++;
+          const st = path[0].a;
+          emit(`G0 X${fmt(st.x, dec)} Y${fmt(st.y, dec)}`);
+          if (pos.x != null) stats.rapid += G.dist(pos, st);
+          pos = { x: rnd(st.x, dec), y: rnd(st.y, dec), z: pos.z };
+          if (first) {
+            emit(`S${tool.rpm}`);
+            emit(`G0 Z${fmt(m.safeZ, dec)}`);
+            emit(`G1 Z${fmt(z, dec)}F${tool.plunge}`);
+            emit(`F${tool.feed}`);
+            first = false;
+          } else {
+            emit(`G1 Z${fmt(z, dec)}`);
+          }
+          stats.timeMin += (m.safeZ - z) / tool.plunge;
+          for (const s of path) {
+            const b = { x: rnd(s.b.x, dec), y: rnd(s.b.y, dec) };
+            if (s.type === 'line') {
+              const parts = [];
+              if (b.x !== pos.x) parts.push(`X${fmt(b.x, dec)}`);
+              if (b.y !== pos.y) parts.push(`Y${fmt(b.y, dec)}`);
+              if (parts.length) emit(`G1 ${parts.join(' ')}`);
+            } else {
+              const i = s.c.x - s.a.x, j = s.c.y - s.a.y;
+              emit(`${s.ccw ? 'G3' : 'G2'} X${fmt(b.x, dec)} Y${fmt(b.y, dec)} I${fmt(i, dec)} J${fmt(j, dec)}`);
+            }
+            const l = G.segLen(s); stats.length += l; stats.timeMin += l / tool.feed;
+            pos = { x: b.x, y: b.y, z };
+          }
+          emit(`G0 Z${fmt(m.safeZ, dec)}`);
+          emit('');
+        }
+      }
+    }
+    pushBlock(m.footer);
+    stats.timeMin += stats.rapid / 600; // rough rapid rate 600 ipm
+    return { gcode: L.join(m.lineEnding) + m.lineEnding, stats };
+  }
+
+  // ---- parse G-code for simulation / import preview
+  function parseGcode(text) {
+    const moves = []; let x = 0, y = 0, z = 1, feed = 0, tool = null, rpm = 0;
+    const lines = text.split(/\r?\n/);
+    for (const raw of lines) {
+      const ln = raw.trim(); if (!ln) continue;
+      const mt = ln.match(/^\[(.*)\]$/); if (mt) { tool = mt[1]; continue; }
+      if (/^T(\d+)/.test(ln)) { continue; }
+      if (/^S(\d+)/.test(ln)) { rpm = parseInt(ln.slice(1), 10); continue; }
+      const gm = ln.match(/^G(\d+)/); if (!gm) { const fm = ln.match(/^F([\d.]+)/); if (fm) feed = parseFloat(fm[1]); continue; }
+      const g = parseInt(gm[1], 10);
+      if (![0, 1, 2, 3].includes(g)) continue;
+      const w = {}; for (const mm of ln.matchAll(/([XYZIJF])(-?[\d.]+)/g)) w[mm[1]] = parseFloat(mm[2]);
+      if (w.F !== undefined) feed = w.F;
+      const nx = w.X !== undefined ? w.X : x, ny = w.Y !== undefined ? w.Y : y, nz = w.Z !== undefined ? w.Z : z;
+      const mv = { g, from: { x, y, z }, to: { x: nx, y: ny, z: nz }, feed, tool };
+      if (g === 2 || g === 3) mv.c = { x: x + (w.I || 0), y: y + (w.J || 0) };
+      moves.push(mv); x = nx; y = ny; z = nz;
+    }
+    return moves;
+  }
+
+  return { DEFAULT_MACHINE, DEFAULT_TOOLS, DEFAULT_MATERIALS, fmt, rnd, passDepths, buildToolpathLoop, orderPaths, generate, parseGcode };
+})();
+if (typeof module !== 'undefined') module.exports = POST;
+
+/* ===== nest.js — simple bottom-left rectangular nesting within bed limits ===== */
+const NEST = (() => {
+  const G = typeof GEOM !== 'undefined' ? GEOM : require('./geom.js');
+  // items: [{id, w, h}] ; returns [{id, x, y, rotated}] placed from bottom-left, or null if it doesn't fit
+  function nest(items, bedW, bedH, gap = 0.5, margin = 0.5, allowRotate = true) {
+    const placed = []; // rects {x,y,w,h}
+    const order = items.slice().sort((a, b) => (b.h * b.w) - (a.h * a.w));
+    const overlaps = (r) => placed.some(p => !(r.x + r.w + gap <= p.x || p.x + p.w + gap <= r.x || r.y + r.h + gap <= p.y || p.y + p.h + gap <= r.y));
+    const fits = (r) => r.x >= margin - 1e-9 && r.y >= margin - 1e-9 && r.x + r.w <= bedW - margin + 1e-9 && r.y + r.h <= bedH - margin + 1e-9;
+    const result = [];
+    for (const it of order) {
+      // candidate positions: margin corner + right of / above each placed rect
+      const cands = [{ x: margin, y: margin }];
+      for (const p of placed) { cands.push({ x: p.x + p.w + gap, y: p.y }); cands.push({ x: p.x, y: p.y + p.h + gap }); cands.push({ x: margin, y: p.y + p.h + gap }); cands.push({ x: p.x + p.w + gap, y: margin }); }
+      cands.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+      let best = null;
+      const tryDims = allowRotate && Math.abs(it.w - it.h) > 1e-9 ? [[it.w, it.h, false], [it.h, it.w, true]] : [[it.w, it.h, false]];
+      outer: for (const c of cands) {
+        for (const [w, h, rot] of tryDims) {
+          const r = { x: c.x, y: c.y, w, h };
+          if (fits(r) && !overlaps(r)) { best = { ...r, rotated: rot }; break outer; }
+        }
+      }
+      if (!best) { result.push({ id: it.id, fail: true }); continue; }
+      placed.push(best); result.push({ id: it.id, x: best.x, y: best.y, rotated: best.rotated });
+    }
+    return result;
+  }
+  return { nest };
+})();
+if (typeof module !== 'undefined') module.exports = NEST;
+
+/* ===== app.js — CNC Studio UI ===== */
+(() => {
+  const G = GEOM, PO = POST, NE = NEST;
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => Array.from(document.querySelectorAll(s));
+
+  // ---------- settings (persisted) ----------
+  const DEFAULT_SETTINGS = {
+    machine: { ...PO.DEFAULT_MACHINE },
+    tools: PO.DEFAULT_TOOLS.map(t => ({ ...t })),
+    materials: PO.DEFAULT_MATERIALS.map(m => ({ ...m })),
+    nest: { gap: 0.5, margin: 0.375, rotate: false },
+    ai: { key: '', model: 'claude-sonnet-4-5' },
+  };
+  let S = loadSettings();
+  function loadSettings() {
+    try { const j = JSON.parse(localStorage.getItem('cncstudio.settings') || 'null'); if (j) return { ...DEFAULT_SETTINGS, ...j, machine: { ...DEFAULT_SETTINGS.machine, ...(j.machine || {}) } }; } catch (e) { }
+    return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  }
+  function saveSettings() { try { localStorage.setItem('cncstudio.settings', JSON.stringify(S)); } catch (e) { } }
+
+  // ---------- job state ----------
+  let job = newJob();
+  function newJob() { return { shapes: [], material: { name: S.materials[0].name, thickness: S.materials[0].thickness }, cutThrough: 0, nextId: 1 }; }
+  let sel = new Set();
+  let undoStack = [], redoStack = [];
+  function snapshot() { undoStack.push(JSON.stringify(job)); if (undoStack.length > 60) undoStack.shift(); redoStack = []; }
+  function undo() { if (!undoStack.length) return; redoStack.push(JSON.stringify(job)); job = JSON.parse(undoStack.pop()); sel.clear(); refresh(); }
+  function redo() { if (!redoStack.length) return; undoStack.push(JSON.stringify(job)); job = JSON.parse(redoStack.pop()); sel.clear(); refresh(); }
+
+  // shape: {id,name,kind:'rect'|'circle'|'poly'|'path', x,y,rot, w,h,r, pts, loop(local), open, op, toolId, climb}
+  function makeShape(kind, props) {
+    const id = job.nextId++;
+    const base = { id, name: `${kind} ${id}`, kind, x: 0, y: 0, rot: 0, op: 'outside', toolId: S.tools[0]?.id || 1, climb: false, open: false };
+    return Object.assign(base, props);
+  }
+  function localLoop(sh) {
+    if (sh.kind === 'rect') return G.rectLoop(0, 0, sh.w, sh.h, sh.r || 0);
+    if (sh.kind === 'circle') return G.circleLoop(0, 0, sh.r);
+    if (sh.kind === 'poly') return sh.open ? polyOpen(sh.pts) : G.polyLoop(sh.pts);
+    if (sh.kind === 'path') return sh.loop;
+    return [];
+  }
+  function polyOpen(pts) { const s = []; for (let i = 0; i + 1 < pts.length; i++) s.push(G.line(G.P(pts[i].x, pts[i].y), G.P(pts[i + 1].x, pts[i + 1].y))); return s; }
+  function worldLoop(sh) {
+    let l = localLoop(sh);
+    if (sh.rot) l = G.rotateLoop(l, sh.rot * Math.PI / 180, G.P(0, 0));
+    return G.translateLoop(l, sh.x, sh.y);
+  }
+  function shapeBBox(sh) { return G.bbox(worldLoop(sh)); }
+  function toolOf(sh) { return S.tools.find(t => t.id === sh.toolId) || S.tools[0]; }
+  function toolpathOf(sh) {
+    if (sh.op === 'none') return null;
+    const t = toolOf(sh); if (!t) return null;
+    try { return PO.buildToolpathLoop({ loop: worldLoop(sh), op: sh.op, open: sh.open, startHint: sh.startPt, climb: sh.climb }, t, { climb: sh.climb }); } catch (e) { console.warn(e); return null; }
+  }
+
+  // ---------- canvas / view ----------
+  const cv = $('#cv'), ctx = cv.getContext('2d');
+  const view = { scale: 8, ox: 40, oy: 0 }; // px per inch; origin offset in px (bottom-left)
+  let mouse = { x: 0, y: 0, wx: 0, wy: 0, down: false };
+  let tool = 'select';
+  let drawing = null; // in-progress drawing state
+  let drag = null;
+  let spaceDown = false;
+  function W2S(p) { return { x: view.ox + p.x * view.scale, y: cv.height - view.oy - p.y * view.scale }; }
+  function S2W(p) { return { x: (p.x - view.ox) / view.scale, y: (cv.height - view.oy - p.y) / view.scale }; }
+  function fitBed() {
+    const m = S.machine; const pad = 30;
+    view.scale = Math.min((cv.width - pad * 2) / m.bedW, (cv.height - pad * 2) / m.bedH);
+    view.ox = (cv.width - m.bedW * view.scale) / 2; view.oy = (cv.height - m.bedH * view.scale) / 2;
+  }
+  function resize() {
+    const r = $('#center').getBoundingClientRect();
+    if (cv.width !== Math.floor(r.width * devicePixelRatio) || cv.height !== Math.floor(r.height * devicePixelRatio)) {
+      cv.width = Math.floor(r.width * devicePixelRatio); cv.height = Math.floor(r.height * devicePixelRatio);
+      fitBed();
+    }
+    draw();
+  }
+  window.addEventListener('resize', resize);
+
+  function snapV() { return parseFloat($('#selSnap').value) || 0; }
+  function snap(p) { const s = snapV(); if (!s) return p; return { x: Math.round(p.x / s) * s, y: Math.round(p.y / s) * s }; }
+
+  function draw() {
+    const m = S.machine; const dpr = devicePixelRatio;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#15171b'; ctx.fillRect(0, 0, cv.width, cv.height);
+    // bed
+    const bl = W2S({ x: 0, y: 0 }), tr = W2S({ x: m.bedW, y: m.bedH });
+    ctx.fillStyle = '#1c2027'; ctx.fillRect(bl.x, tr.y, tr.x - bl.x, bl.y - tr.y);
+    // grid
+    const step = view.scale > 20 ? 1 : view.scale > 6 ? 6 : 12;
+    ctx.lineWidth = 1;
+    for (let x = 0; x <= m.bedW + 1e-9; x += step) { const p = W2S({ x, y: 0 }); ctx.strokeStyle = x % 12 === 0 ? '#343a44' : '#262b33'; ctx.beginPath(); ctx.moveTo(p.x, bl.y); ctx.lineTo(p.x, tr.y); ctx.stroke(); }
+    for (let y = 0; y <= m.bedH + 1e-9; y += step) { const p = W2S({ x: 0, y }); ctx.strokeStyle = y % 12 === 0 ? '#343a44' : '#262b33'; ctx.beginPath(); ctx.moveTo(bl.x, p.y); ctx.lineTo(tr.x, p.y); ctx.stroke(); }
+    ctx.strokeStyle = '#5a6473'; ctx.lineWidth = 1.5; ctx.strokeRect(bl.x, tr.y, tr.x - bl.x, bl.y - tr.y);
+    // axis labels (feet)
+    ctx.fillStyle = '#6f7a88'; ctx.font = `${11 * dpr}px system-ui`;
+    for (let x = 0; x <= m.bedW; x += 12) { const p = W2S({ x, y: 0 }); ctx.fillText(x + '"', p.x + 2, bl.y + 12 * dpr); }
+    for (let y = 0; y <= m.bedH; y += 12) { const p = W2S({ x: 0, y }); ctx.fillText(y + '"', bl.x - 26 * dpr, p.y - 2); }
+    // origin marker
+    ctx.fillStyle = '#ff5c5c'; ctx.beginPath(); ctx.arc(bl.x, bl.y, 4 * dpr, 0, Math.PI * 2); ctx.fill();
+    // shapes
+    const showPaths = $('#chkPaths').checked, showKerf = $('#chkKerf').checked;
+    for (const sh of job.shapes) {
+      const loop = worldLoop(sh); const isSel = sel.has(sh.id);
+      const bb = G.bbox(loop);
+      const outside = bb.x0 < -1e-6 || bb.y0 < -1e-6 || bb.x1 > m.bedW + 1e-6 || bb.y1 > m.bedH + 1e-6;
+      // fill
+      if (!sh.open) { ctx.fillStyle = outside ? 'rgba(255,92,92,.18)' : (isSel ? 'rgba(77,163,255,.22)' : 'rgba(120,200,255,.10)'); tracePath(loop, sh.open); ctx.fill(); }
+      ctx.strokeStyle = outside ? '#ff5c5c' : (isSel ? '#8cc4ff' : '#c9d3df'); ctx.lineWidth = (isSel ? 2 : 1.2) * dpr; tracePath(loop, sh.open); ctx.stroke();
+      // toolpath
+      if (showPaths || showKerf) {
+        const tp = toolpathOf(sh);
+        if (tp && tp.length) {
+          if (showKerf) { const t = toolOf(sh); ctx.strokeStyle = 'rgba(255,184,77,.35)'; ctx.lineWidth = t.dia * view.scale; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; tracePath(tp, sh.open); ctx.stroke(); }
+          if (showPaths) { ctx.strokeStyle = sh.op === 'inside' ? '#41c77a' : sh.op === 'on' ? '#d38cff' : '#ffb84d'; ctx.lineWidth = 1 * dpr; ctx.setLineDash([4 * dpr, 3 * dpr]); tracePath(tp, sh.open); ctx.stroke(); ctx.setLineDash([]);
+            // start point + direction
+            const st = tp[0].a, p = W2S(st); ctx.fillStyle = '#ffb84d'; ctx.beginPath(); ctx.arc(p.x, p.y, 3 * dpr, 0, Math.PI * 2); ctx.fill();
+          }
+        }
+      }
+      // handles for selection
+      if (isSel) {
+        ctx.strokeStyle = '#4da3ff'; ctx.setLineDash([3 * dpr, 3 * dpr]); ctx.lineWidth = 1 * dpr;
+        const a = W2S({ x: bb.x0, y: bb.y0 }), b = W2S({ x: bb.x1, y: bb.y1 }); ctx.strokeRect(a.x, b.y, b.x - a.x, a.y - b.y); ctx.setLineDash([]);
+      }
+    }
+    // in-progress drawing
+    if (drawing) {
+      ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([5 * dpr, 4 * dpr]);
+      if (drawing.kind === 'rect') { const a = W2S(drawing.a), b = W2S(drawing.b); ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y)); dimLabel(drawing.b, `${fmtIn(Math.abs(drawing.b.x - drawing.a.x))} × ${fmtIn(Math.abs(drawing.b.y - drawing.a.y))}`); }
+      if (drawing.kind === 'circle') { const c = W2S(drawing.a); const r = G.dist(drawing.a, drawing.b) * view.scale; ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.stroke(); dimLabel(drawing.b, `R ${fmtIn(G.dist(drawing.a, drawing.b))}  Ø ${fmtIn(2 * G.dist(drawing.a, drawing.b))}`); }
+      if (drawing.kind === 'poly' || drawing.kind === 'pline') { ctx.beginPath(); drawing.pts.forEach((p, i) => { const s = W2S(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); const s = W2S(drawing.cur); ctx.lineTo(s.x, s.y); ctx.stroke(); if (drawing.pts.length) dimLabel(drawing.cur, `${fmtIn(G.dist(drawing.pts[drawing.pts.length - 1], drawing.cur))}`); }
+      ctx.setLineDash([]);
+    }
+    if (drag && drag.kind === 'marquee') { const a = W2S(drag.a), b = W2S(drag.cur); ctx.strokeStyle = '#4da3ff'; ctx.setLineDash([3, 3]); ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y)); ctx.setLineDash([]); }
+  }
+  function dimLabel(wp, text) { const p = W2S(wp); ctx.fillStyle = '#4da3ff'; ctx.font = `${12 * devicePixelRatio}px ui-monospace, monospace`; ctx.fillText(text, p.x + 10, p.y - 10); }
+  function tracePath(loop, open) {
+    ctx.beginPath();
+    loop.forEach((s, i) => {
+      const a = W2S(s.a); if (i === 0) ctx.moveTo(a.x, a.y);
+      if (s.type === 'line') { const b = W2S(s.b); ctx.lineTo(b.x, b.y); }
+      else { const c = W2S(s.c); const r = G.radius(s) * view.scale; const a0 = Math.atan2(-(s.a.y - s.c.y), s.a.x - s.c.x), a1 = Math.atan2(-(s.b.y - s.c.y), s.b.x - s.c.x); ctx.arc(c.x, c.y, r, a0, a1, s.ccw); }
+    });
+    if (!open) ctx.closePath();
+  }
+  const fmtIn = (v) => (Math.round(v * 10000) / 10000).toString();
+
+  // ---------- mouse ----------
+  cv.addEventListener('contextmenu', e => e.preventDefault());
+  cv.addEventListener('wheel', e => {
+    e.preventDefault(); const r = cv.getBoundingClientRect(); const px = (e.clientX - r.left) * devicePixelRatio, py = (e.clientY - r.top) * devicePixelRatio;
+    const before = S2W({ x: px, y: py }); const f = e.deltaY < 0 ? 1.15 : 1 / 1.15; view.scale *= f;
+    const after = S2W({ x: px, y: py }); view.ox += (after.x - before.x) * view.scale; view.oy += (after.y - before.y) * view.scale; draw();
+  }, { passive: false });
+  function evPos(e) { const r = cv.getBoundingClientRect(); const p = { x: (e.clientX - r.left) * devicePixelRatio, y: (e.clientY - r.top) * devicePixelRatio }; return { s: p, w: S2W(p) }; }
+  function hitShape(wp) {
+    const tol = 6 / view.scale;
+    for (let i = job.shapes.length - 1; i >= 0; i--) {
+      const sh = job.shapes[i]; const loop = worldLoop(sh);
+      if (!sh.open && G.pointInLoop(wp, loop)) return sh;
+      for (const s of loop) { const pts = G.samplePts(s, 0.1); for (let k = 0; k + 1 < pts.length; k++) if (distToSeg(wp, pts[k], pts[k + 1]) < tol) return sh; }
+    }
+    return null;
+  }
+  function distToSeg(p, a, b) { const d = G.sub(b, a); const L2 = G.dot(d, d) || 1; let t = G.dot(G.sub(p, a), d) / L2; t = Math.max(0, Math.min(1, t)); return G.dist(p, G.add(a, G.mul(d, t))); }
+
+  cv.addEventListener('mousedown', e => {
+    const { s, w } = evPos(e); mouse.down = true;
+    if (e.button === 1 || e.button === 2 || spaceDown) { drag = { kind: 'pan', sx: s.x, sy: s.y, ox: view.ox, oy: view.oy }; return; }
+    const ws = snap(w);
+    if (tool === 'select') {
+      const hit = hitShape(w);
+      if (hit) {
+        if (e.shiftKey) { sel.has(hit.id) ? sel.delete(hit.id) : sel.add(hit.id); }
+        else if (!sel.has(hit.id)) { sel.clear(); sel.add(hit.id); }
+        drag = { kind: 'move', start: w, orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false };
+      } else { if (!e.shiftKey) sel.clear(); drag = { kind: 'marquee', a: w, cur: w }; }
+      refreshList(); refreshProps(); draw();
+    } else if (tool === 'rect' || tool === 'circle') {
+      drawing = { kind: tool, a: ws, b: ws };
+    } else if (tool === 'poly' || tool === 'pline') {
+      if (!drawing) drawing = { kind: tool, pts: [ws], cur: ws };
+      else { if (G.dist(ws, drawing.pts[0]) < 4 / view.scale && drawing.pts.length > 2 && tool === 'poly') finishPoly(); else drawing.pts.push(ws); }
+      draw();
+    }
+  });
+  cv.addEventListener('dblclick', e => { if (drawing && (drawing.kind === 'poly' || drawing.kind === 'pline')) { drawing.pts.pop(); finishPoly(); } });
+  cv.addEventListener('mousemove', e => {
+    const { s, w } = evPos(e); mouse = { ...mouse, x: s.x, y: s.y, wx: w.x, wy: w.y };
+    const ws = snap(w);
+    $('#stX').textContent = ws.x.toFixed(4); $('#stY').textContent = ws.y.toFixed(4);
+    const tag = $('#cursorTag'); tag.style.display = 'block'; tag.style.left = (s.x / devicePixelRatio + 16) + 'px'; tag.style.top = (s.y / devicePixelRatio + 16) + 'px'; tag.textContent = `${ws.x.toFixed(3)}, ${ws.y.toFixed(3)}`;
+    if (drag) {
+      if (drag.kind === 'pan') { view.ox = drag.ox + (s.x - drag.sx); view.oy = drag.oy - (s.y - drag.sy); }
+      else if (drag.kind === 'move') {
+        if (!drag.moved) { snapshot(); drag.moved = true; }
+        let dx = w.x - drag.start.x, dy = w.y - drag.start.y; const sv = snapV(); if (sv) { dx = Math.round(dx / sv) * sv; dy = Math.round(dy / sv) * sv; }
+        for (const o of drag.orig) { const sh = job.shapes.find(x => x.id === o.id); sh.x = o.x + dx; sh.y = o.y + dy; }
+        refreshProps();
+      } else if (drag.kind === 'marquee') drag.cur = w;
+      draw(); return;
+    }
+    if (drawing) { if (drawing.kind === 'rect' || drawing.kind === 'circle') drawing.b = ws; else drawing.cur = ws; draw(); }
+  });
+  cv.addEventListener('mouseleave', () => { $('#cursorTag').style.display = 'none'; });
+  window.addEventListener('mouseup', e => {
+    mouse.down = false;
+    if (drag) {
+      if (drag.kind === 'marquee') { const a = drag.a, b = drag.cur; const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y); if (x1 - x0 > 0.01) for (const sh of job.shapes) { const bb = shapeBBox(sh); if (bb.x0 >= x0 && bb.x1 <= x1 && bb.y0 >= y0 && bb.y1 <= y1) sel.add(sh.id); } }
+      if (drag.kind === 'move' && drag.moved) updateStats();
+      drag = null; refreshList(); refreshProps(); draw(); return;
+    }
+    if (drawing && (drawing.kind === 'rect' || drawing.kind === 'circle')) {
+      const d = drawing; drawing = null;
+      if (d.kind === 'rect') { const w = Math.abs(d.b.x - d.a.x), h = Math.abs(d.b.y - d.a.y); if (w > 0.01 && h > 0.01) addShape(makeShape('rect', { x: Math.min(d.a.x, d.b.x), y: Math.min(d.a.y, d.b.y), w, h, r: 0 })); }
+      else { const r = G.dist(d.a, d.b); if (r > 0.01) addShape(makeShape('circle', { x: d.a.x, y: d.a.y, r })); }
+      draw();
+    }
+  });
+  function finishPoly() {
+    const d = drawing; drawing = null; if (!d || d.pts.length < 2) { draw(); return; }
+    const open = d.kind === 'pline'; if (!open && d.pts.length < 3) { draw(); return; }
+    const x0 = Math.min(...d.pts.map(p => p.x)), y0 = Math.min(...d.pts.map(p => p.y));
+    addShape(makeShape('poly', { x: x0, y: y0, pts: d.pts.map(p => ({ x: p.x - x0, y: p.y - y0, r: 0 })), open, op: open ? 'on' : 'outside' }));
+  }
+  function addShape(sh) { snapshot(); job.shapes.push(sh); sel.clear(); sel.add(sh.id); refresh(); }
+
+  window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
+    if (e.key === 'Escape') { drawing = null; setTool('select'); draw(); }
+    if (e.key === 'Enter' && drawing) finishPoly();
+    if (e.key === 'Delete' || e.key === 'Backspace') deleteSel();
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.shiftKey ? redo() : undo(); e.preventDefault(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { redo(); e.preventDefault(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { duplicateSel(); e.preventDefault(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { job.shapes.forEach(s => sel.add(s.id)); refresh(); e.preventDefault(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { saveProject(); e.preventDefault(); }
+    if (e.key.toLowerCase() === 'f') { fitBed(); draw(); }
+    if (e.key.toLowerCase() === 'v') setTool('select'); if (e.key.toLowerCase() === 'r') setTool('rect'); if (e.key.toLowerCase() === 'c') setTool('circle'); if (e.key.toLowerCase() === 'p') setTool('poly'); if (e.key.toLowerCase() === 'l') setTool('pline');
+    if (e.key.startsWith('Arrow') && sel.size) { const st = e.shiftKey ? 1 : (snapV() || 0.125); const dx = e.key === 'ArrowRight' ? st : e.key === 'ArrowLeft' ? -st : 0, dy = e.key === 'ArrowUp' ? st : e.key === 'ArrowDown' ? -st : 0; snapshot(); for (const sh of job.shapes) if (sel.has(sh.id)) { sh.x += dx; sh.y += dy; } refresh(); e.preventDefault(); }
+  });
+  window.addEventListener('keyup', e => { if (e.code === 'Space') spaceDown = false; });
+  function setTool(t) { tool = t; $$('button.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t)); $('#stTool').textContent = t === 'select' ? '' : `Tool: ${t}`; }
+  $$('button.tool').forEach(b => b.addEventListener('click', () => { drawing = null; setTool(b.dataset.tool); draw(); }));
+
+  function deleteSel() { if (!sel.size) return; snapshot(); job.shapes = job.shapes.filter(s => !sel.has(s.id)); sel.clear(); refresh(); }
+  function duplicateSel() {
+    if (!sel.size) return; snapshot(); const copies = [];
+    for (const sh of job.shapes) if (sel.has(sh.id)) { const c = JSON.parse(JSON.stringify(sh)); c.id = job.nextId++; c.name = sh.name + ' copy'; c.x += 1; c.y += 1; delete c.startPt; copies.push(c); }
+    job.shapes.push(...copies); sel = new Set(copies.map(c => c.id)); refresh();
+  }
+  $('#btnDel').onclick = deleteSel; $('#btnDup').onclick = duplicateSel; $('#btnUndo').onclick = undo;
+
+  // ---------- panels ----------
+  function refresh() { refreshList(); refreshProps(); updateStats(); draw(); }
+  function refreshList() {
+    const el = $('#shapeList'); el.innerHTML = '';
+    $('#partCount').textContent = job.shapes.length ? `(${job.shapes.length})` : '';
+    for (const sh of job.shapes) {
+      const d = document.createElement('div'); d.className = 'item' + (sel.has(sh.id) ? ' sel' : '');
+      d.innerHTML = `<span>${esc(sh.name)}</span><span class="op">${sh.op}</span>`;
+      d.onclick = (e) => { if (e.shiftKey) { sel.has(sh.id) ? sel.delete(sh.id) : sel.add(sh.id); } else { sel.clear(); sel.add(sh.id); } refreshList(); refreshProps(); draw(); };
+      el.appendChild(d);
+    }
+  }
+  const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function refreshProps() {
+    const el = $('#props');
+    const shs = job.shapes.filter(s => sel.has(s.id));
+    if (!shs.length) { el.innerHTML = `<p class="muted">Select a part to edit it.<br><br><b>Canvas</b><br>Wheel: zoom · Right/middle drag or <span class="kbd">Space</span>+drag: pan<br><span class="kbd">Del</span> delete · <span class="kbd">Ctrl+D</span> duplicate · <span class="kbd">Ctrl+Z</span> undo · arrows nudge<br><span class="kbd">F</span> fit bed · <span class="kbd">Esc</span> cancel tool</p>`; return; }
+    const sh = shs[0]; const multi = shs.length > 1;
+    const num = (k, label, step = 0.125) => `<div class="row"><label>${label}</label><input type="number" step="${step}" data-k="${k}" value="${fmtIn(sh[k] ?? 0)}"></div>`;
+    let h = `<h3>${multi ? shs.length + ' parts' : esc(sh.kind)}</h3>`;
+    if (!multi) h += `<div class="row"><label>Name</label><input type="text" data-k="name" value="${esc(sh.name)}" style="flex:1"></div>`;
+    h += num('x', 'X') + num('y', 'Y');
+    if (!multi && sh.kind === 'rect') h += num('w', 'Width') + num('h', 'Height') + num('r', 'Corner R', 0.0625);
+    if (!multi && sh.kind === 'circle') h += num('r', 'Radius', 0.0625) + `<div class="row"><label>Diameter</label><input type="number" step="0.125" data-k="dia" value="${fmtIn(sh.r * 2)}"></div>`;
+    if (!multi && sh.kind === 'poly' && !sh.open) h += `<div class="row"><label>All corners R</label><input type="number" step="0.0625" data-k="allr" value="${fmtIn(sh.pts[0].r || 0)}"></div>`;
+    h += num('rot', 'Rotation °', 15);
+    const bb = shapeBBox(sh);
+    if (!multi) h += `<div class="row muted">Size ${fmtIn(bb.w)} × ${fmtIn(bb.h)}</div>`;
+    h += `<h3>Cut</h3><div class="row"><label>Operation</label><select data-k="op">${['outside', 'inside', 'on', 'none'].map(o => `<option ${sh.op === o ? 'selected' : ''} ${o !== 'on' && o !== 'none' && sh.open ? 'disabled' : ''}>${o}</option>`).join('')}</select></div>`;
+    h += `<div class="row"><label>Tool</label><select data-k="toolId">${S.tools.map(t => `<option value="${t.id}" ${t.id === sh.toolId ? 'selected' : ''}>T${t.slot} ${esc(t.name)}</option>`).join('')}</select></div>`;
+    h += `<div class="row"><label>Climb</label><input type="checkbox" data-k="climb" ${sh.climb ? 'checked' : ''}> <span class="muted">reverse direction</span></div>`;
+    if (!multi) h += `<div class="row"><button class="small" id="btnSetStart">Set start point</button><button class="small" id="btnClearStart">Auto start</button></div>`;
+    h += `<div class="row"><button class="small" id="btnMirror">Mirror</button><button class="small" id="btnToOrigin">To 0,0</button></div>`;
+    el.innerHTML = h;
+    el.querySelectorAll('[data-k]').forEach(inp => {
+      inp.addEventListener('change', () => {
+        snapshot();
+        const k = inp.dataset.k; let v = inp.type === 'checkbox' ? inp.checked : inp.type === 'number' ? parseFloat(inp.value) : inp.value;
+        if (inp.tagName === 'SELECT' && k === 'toolId') v = parseInt(v, 10);
+        for (const s of shs) {
+          if (k === 'dia') s.r = v / 2; else if (k === 'allr') s.pts.forEach(p => p.r = v); else s[k] = v;
+          if (k === 'w' || k === 'h' || k === 'r' || k === 'dia' || k === 'rot' || k === 'allr') delete s.startPt;
+        }
+        refresh();
+      });
+    });
+    const bs = $('#btnSetStart'); if (bs) bs.onclick = () => { toast('Click on the part outline to set the start point'); const h2 = (e) => { const { w } = evPos(e); snapshot(); sh.startPt = w; cv.removeEventListener('mousedown', h2, true); e.stopPropagation(); refresh(); }; cv.addEventListener('mousedown', h2, true); };
+    const bc = $('#btnClearStart'); if (bc) bc.onclick = () => { snapshot(); delete sh.startPt; refresh(); };
+    $('#btnMirror').onclick = () => { snapshot(); for (const s of shs) { const bb = shapeBBox(s); const cx = (bb.x0 + bb.x1) / 2; if (s.kind === 'rect' || s.kind === 'circle') { /* symmetric */ } else if (s.kind === 'poly') { const w = Math.max(...s.pts.map(p => p.x)); s.pts = s.pts.map(p => ({ ...p, x: w - p.x })); } else if (s.kind === 'path') { const l = G.mirrorLoopX(s.loop, 0); const b2 = G.bbox(l); s.loop = G.translateLoop(l, -b2.x0, 0); } delete s.startPt; } refresh(); };
+    $('#btnToOrigin').onclick = () => { snapshot(); for (const s of shs) { const bb = shapeBBox(s); s.x -= bb.x0 - S.nest.margin; s.y -= bb.y0 - S.nest.margin; } refresh(); };
+  }
+
+  // ---------- job stats / gcode ----------
+  function buildJob() {
+    return {
+      shapes: job.shapes.filter(s => s.op !== 'none').map(s => ({ loop: worldLoop(s), op: s.op, open: s.open, toolId: s.toolId, startHint: s.startPt, climb: s.climb })),
+      tools: S.tools, material: { thickness: job.material.thickness }, cutThrough: job.cutThrough, machine: machineForPost(),
+    };
+  }
+  function machineForPost() { const m = { ...S.machine }; m.lineEnding = S.machine.eol === 'lf' ? '\n' : '\r\n'; return m; }
+  let lastGcode = null;
+  function updateStats() {
+    const el = $('#jobStats');
+    const m = S.machine; const bad = job.shapes.filter(s => { const bb = shapeBBox(s); return bb.x0 < -1e-6 || bb.y0 < -1e-6 || bb.x1 > m.bedW + 1e-6 || bb.y1 > m.bedH + 1e-6; });
+    if (!job.shapes.length) { el.textContent = '—'; lastGcode = null; return; }
+    try {
+      const out = PO.generate(buildJob()); lastGcode = out.gcode;
+      const st = out.stats;
+      el.innerHTML = `${job.shapes.length} parts · ${st.passes} passes · ${st.tools.map(esc).join(', ')}<br>Cut length ${st.length.toFixed(1)} in · est. ${st.timeMin.toFixed(1)} min<br>Material ${esc(job.material.name)} (${job.material.thickness}")` + (bad.length ? `<br><span class="warnbox">⚠ ${bad.length} part(s) outside the bed</span>` : '');
+    } catch (e) { el.innerHTML = `<span class="warnbox">Toolpath error: ${esc(e.message)}</span>`; console.error(e); }
+  }
+
+  // ---------- file I/O ----------
+  function download(name, text, mime = 'text/plain') {
+    const blob = new Blob([text], { type: mime }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+  function jobName() { return (job.name || 'job').replace(/[^\w\- ]+/g, '_'); }
+  $('#btnTap').onclick = () => {
+    if (!job.shapes.length) return toast('Nothing to cut');
+    updateStats(); if (!lastGcode) return;
+    const name = prompt('File name for the TAP file:', jobName()); if (name === null) return; job.name = name;
+    download(name.replace(/\.tap$/i, '') + '.tap', lastGcode); toast('TAP exported');
+    $('#gcodePreview').style.display = 'block'; $('#gcodePreview').textContent = lastGcode;
+  };
+  $('#btnDxf').onclick = () => {
+    if (!job.shapes.length) return toast('Nothing to export');
+    const loops = [], opens = [];
+    for (const s of job.shapes) (s.open ? opens : loops).push(worldLoop(s));
+    download(jobName() + '.dxf', G.writeDXF(loops, opens), 'application/dxf'); toast('DXF exported');
+  };
+  $('#btnSave').onclick = saveProject;
+  function saveProject() { const name = prompt('Project name:', jobName()); if (name === null) return; job.name = name; download(name + '.cncjob', JSON.stringify({ version: 1, job, settingsSnapshot: { material: job.material } }, null, 1), 'application/json'); toast('Project saved'); }
+  $('#btnNew').onclick = () => { if (job.shapes.length && !confirm('Clear current job?')) return; job = newJob(); sel.clear(); undoStack = []; syncMaterialUI(); refresh(); };
+  $('#btnOpen').onclick = () => $('#fileIn').click();
+  $('#fileIn').addEventListener('change', async (e) => {
+    const f = e.target.files[0]; if (!f) return; e.target.value = '';
+    const text = await f.text(); const ext = f.name.split('.').pop().toLowerCase();
+    if (ext === 'cncjob' || ext === 'json') { try { const j = JSON.parse(text); snapshot(); job = j.job || j; sel.clear(); syncMaterialUI(); refresh(); toast('Project loaded'); } catch (err) { toast('Bad project file'); } }
+    else if (ext === 'dxf') importDXF(text, f.name);
+    else importTAP(text, f.name);
+  });
+  function importDXF(text, name) {
+    let res; try { res = G.parseDXF(text); } catch (err) { console.error(err); return toast('Could not read DXF'); }
+    if (!res.loops.length && !res.opens.length) return toast('No usable geometry in DXF');
+    snapshot();
+    const all = res.loops.concat(res.opens); let gx0 = Infinity, gy0 = Infinity; for (const l of all) { const b = G.bbox(l); gx0 = Math.min(gx0, b.x0); gy0 = Math.min(gy0, b.y0); }
+    const shift = (gx0 < 0 || gy0 < 0) ? { x: S.nest.margin - gx0, y: S.nest.margin - gy0 } : { x: 0, y: 0 };
+    const added = [];
+    // holes: a closed loop fully inside another → inside cut
+    const loops = res.loops.map(l => ({ l, bb: G.bbox(l), area: Math.abs(G.signedArea(l)) }));
+    loops.forEach((L, i) => {
+      const inner = loops.some((M, j) => j !== i && M.area > L.area && G.pointInLoop(L.l[0].a, M.l));
+      const bb = L.bb; const local = G.translateLoop(L.l, -bb.x0, -bb.y0);
+      const sh = makeShape('path', { name: `${name.replace(/\.dxf$/i, '')} ${i + 1}`, x: bb.x0 + shift.x, y: bb.y0 + shift.y, loop: local, op: inner ? 'inside' : 'outside' }); added.push(sh);
+    });
+    res.opens.forEach((l, i) => { const bb = G.bbox(l); const sh = makeShape('path', { name: `line ${i + 1}`, x: bb.x0 + shift.x, y: bb.y0 + shift.y, loop: G.translateLoop(l, -bb.x0, -bb.y0), open: true, op: 'on' }); added.push(sh); });
+    job.shapes.push(...added); sel = new Set(added.map(a => a.id)); refresh(); toast(`Imported ${added.length} objects from DXF`);
+  }
+  function importTAP(text, name) {
+    // show existing TAP in simulator
+    showPage('sim'); simLoadText(text, name);
+  }
+  function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 2200); }
+
+  // ---------- nesting ----------
+  $('#btnNest').onclick = () => nestAll();
+  function nestAll() {
+    if (!job.shapes.length) return;
+    snapshot();
+    const items = job.shapes.filter(s => s.op !== 'inside').map(s => { const bb = shapeBBox(s); const t = toolOf(s); const k = s.op === 'outside' ? t.dia : 0; return { id: s.id, w: bb.w + k, h: bb.h + k, bb, k }; });
+    const res = NE.nest(items, S.machine.bedW, S.machine.bedH, S.nest.gap, S.nest.margin, S.nest.rotate);
+    let fails = 0;
+    for (const r of res) {
+      const sh = job.shapes.find(s => s.id === r.id); const it = items.find(i => i.id === r.id);
+      if (r.fail) { fails++; continue; }
+      // children (inside cuts) that were inside this shape move with it
+      const before = shapeBBox(sh); const kids = job.shapes.filter(k => k.op === 'inside' && k !== sh && (() => { const kb = shapeBBox(k); return kb.x0 >= before.x0 - 1e-6 && kb.x1 <= before.x1 + 1e-6 && kb.y0 >= before.y0 - 1e-6 && kb.y1 <= before.y1 + 1e-6; })());
+      if (r.rotated) { sh.rot = (sh.rot || 0) + 90; delete sh.startPt; }
+      const nb = shapeBBox(sh); const dx = r.x + it.k / 2 - nb.x0, dy = r.y + it.k / 2 - nb.y0;
+      sh.x += dx; sh.y += dy;
+      for (const k of kids) { if (r.rotated) { const c = { x: (before.x0 + before.x1) / 2, y: (before.y0 + before.y1) / 2 }; const p = G.add(c, G.rot(G.sub({ x: k.x, y: k.y }, c), Math.PI / 2)); k.x = p.x; k.y = p.y; k.rot = (k.rot || 0) + 90; } k.x += dx; k.y += dy; }
+    }
+    refresh(); toast(fails ? `${fails} part(s) do not fit on the bed` : 'Parts arranged from bottom-left');
+  }
+
+  // ---------- pages ----------
+  $$('.tab').forEach(t => t.addEventListener('click', () => showPage(t.dataset.page)));
+  function showPage(p) {
+    $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.page === p));
+    $('#pageSim').classList.toggle('active', p === 'sim'); $('#pageAi').classList.toggle('active', p === 'ai'); $('#pageSettings').classList.toggle('active', p === 'settings');
+    if (p === 'settings') renderSettings(); if (p === 'sim') simResize();
+  }
+
+  // ---------- settings UI ----------
+  function renderSettings() {
+    const m = S.machine;
+    $('#mBedW').value = m.bedW; $('#mBedH').value = m.bedH; $('#mSafeZ').value = m.safeZ; $('#mDec').value = m.decimals; $('#mEol').value = m.eol || 'crlf';
+    $('#mHeader').value = m.header; $('#mToolChange').value = m.toolChange; $('#mFooter').value = m.footer;
+    $('#nGap').value = S.nest.gap; $('#nMargin').value = S.nest.margin; $('#nRotate').checked = !!S.nest.rotate;
+    $('#aiKey').value = S.ai.key || ''; $('#aiModel').value = S.ai.model || '';
+    const tb = $('#toolTable tbody'); tb.innerHTML = '';
+    S.tools.forEach((t, i) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><input type="number" step="1" value="${t.slot}" data-f="slot"></td><td><input type="text" value="${esc(t.name)}" data-f="name"></td><td><select data-f="type"><option ${t.type === 'endmill' ? 'selected' : ''}>endmill</option><option ${t.type === 'drill' ? 'selected' : ''}>drill</option><option ${t.type === 'vbit' ? 'selected' : ''}>vbit</option></select></td><td><input type="number" step="0.0625" value="${t.dia}" data-f="dia"></td><td><input type="number" step="500" value="${t.rpm}" data-f="rpm"></td><td><input type="number" step="10" value="${t.feed}" data-f="feed"></td><td><input type="number" step="5" value="${t.plunge}" data-f="plunge"></td><td><input type="number" step="0.03125" value="${t.passDepth}" data-f="passDepth"></td><td><button class="small" data-del="${i}">✕</button></td>`;
+      tr.querySelectorAll('[data-f]').forEach(inp => inp.addEventListener('change', () => { const f = inp.dataset.f; t[f] = inp.type === 'number' ? parseFloat(inp.value) : inp.value; saveSettings(); refresh(); }));
+      tr.querySelector('[data-del]').onclick = () => { if (S.tools.length <= 1) return; S.tools.splice(i, 1); saveSettings(); renderSettings(); refresh(); };
+      tb.appendChild(tr);
+    });
+    const mb = $('#matTable tbody'); mb.innerHTML = '';
+    S.materials.forEach((mt, i) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><input type="text" value="${esc(mt.name)}" data-f="name"></td><td><input type="number" step="0.0625" value="${mt.thickness}" data-f="thickness"></td><td><button class="small" data-del="${i}">✕</button></td>`;
+      tr.querySelectorAll('[data-f]').forEach(inp => inp.addEventListener('change', () => { const f = inp.dataset.f; mt[f] = inp.type === 'number' ? parseFloat(inp.value) : inp.value; saveSettings(); syncMaterialUI(); }));
+      tr.querySelector('[data-del]').onclick = () => { if (S.materials.length <= 1) return; S.materials.splice(i, 1); saveSettings(); renderSettings(); syncMaterialUI(); };
+      mb.appendChild(tr);
+    });
+  }
+  const bindSetting = (id, fn) => $(id).addEventListener('change', () => { fn($(id)); saveSettings(); refresh(); });
+  bindSetting('#mBedW', el => S.machine.bedW = parseFloat(el.value)); bindSetting('#mBedH', el => S.machine.bedH = parseFloat(el.value));
+  bindSetting('#mSafeZ', el => S.machine.safeZ = parseFloat(el.value)); bindSetting('#mDec', el => S.machine.decimals = parseInt(el.value, 10)); bindSetting('#mEol', el => S.machine.eol = el.value);
+  bindSetting('#mHeader', el => S.machine.header = el.value); bindSetting('#mToolChange', el => S.machine.toolChange = el.value); bindSetting('#mFooter', el => S.machine.footer = el.value);
+  bindSetting('#nGap', el => S.nest.gap = parseFloat(el.value)); bindSetting('#nMargin', el => S.nest.margin = parseFloat(el.value)); bindSetting('#nRotate', el => S.nest.rotate = el.checked);
+  bindSetting('#aiKey', el => S.ai.key = el.value.trim()); bindSetting('#aiModel', el => S.ai.model = el.value.trim());
+  $('#toolAdd').onclick = () => { const id = Math.max(0, ...S.tools.map(t => t.id)) + 1; S.tools.push({ id, slot: id, name: 'New tool', type: 'endmill', dia: 0.25, rpm: 18000, feed: 120, plunge: 20, passDepth: 0.125 }); saveSettings(); renderSettings(); };
+  $('#matAdd').onclick = () => { S.materials.push({ name: 'New material', thickness: 0.25 }); saveSettings(); renderSettings(); syncMaterialUI(); };
+  $('#setExport').onclick = () => download('cncstudio-settings.json', JSON.stringify(S, null, 1), 'application/json');
+  $('#setImport').onclick = () => $('#fileSet').click();
+  $('#fileSet').addEventListener('change', async e => { const f = e.target.files[0]; if (!f) return; try { S = { ...DEFAULT_SETTINGS, ...JSON.parse(await f.text()) }; saveSettings(); renderSettings(); syncMaterialUI(); refresh(); toast('Settings imported'); } catch (err) { toast('Bad settings file'); } e.target.value = ''; });
+  $('#setReset').onclick = () => { if (!confirm('Reset all settings to defaults?')) return; S = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); saveSettings(); renderSettings(); syncMaterialUI(); refresh(); };
+
+  // material UI (left panel)
+  function syncMaterialUI() {
+    const sel = $('#selMaterial'); sel.innerHTML = S.materials.map((m, i) => `<option value="${i}" ${m.name === job.material.name ? 'selected' : ''}>${esc(m.name)}</option>`).join('');
+    $('#inThick').value = job.material.thickness; $('#inCutThrough').value = job.cutThrough || 0;
+  }
+  $('#selMaterial').addEventListener('change', e => { const m = S.materials[parseInt(e.target.value, 10)]; job.material = { name: m.name, thickness: m.thickness }; $('#inThick').value = m.thickness; updateStats(); });
+  $('#inThick').addEventListener('change', e => { job.material.thickness = parseFloat(e.target.value); updateStats(); });
+  $('#inCutThrough').addEventListener('change', e => { job.cutThrough = parseFloat(e.target.value) || 0; updateStats(); });
+  $('#chkPaths').addEventListener('change', draw); $('#chkKerf').addEventListener('change', draw); $('#selSnap').addEventListener('change', draw);
+
+  // ---------- simulation ----------
+  const sc = $('#simCanvas'), sctx = sc.getContext('2d');
+  let sim = { moves: [], total: 0, t: 1, playing: false, name: '' };
+  function simResize() { const r = sc.getBoundingClientRect(); sc.width = Math.floor(r.width * devicePixelRatio); sc.height = Math.floor(r.height * devicePixelRatio); simDraw(); }
+  window.addEventListener('resize', simResize);
+  $('#simGen').onclick = () => { updateStats(); if (!lastGcode) return toast('Nothing to simulate'); simLoadText(lastGcode, 'current job'); };
+  $('#simLoad').onclick = () => $('#fileSim').click();
+  $('#fileSim').addEventListener('change', async e => { const f = e.target.files[0]; if (!f) return; simLoadText(await f.text(), f.name); e.target.value = ''; });
+  function simLoadText(text, name) {
+    const moves = PO.parseGcode(text); let total = 0;
+    const toolDia = (nm) => { const t = S.tools.find(t => t.name === nm); if (t) return t.dia; const m = (nm || '').match(/(\d+)\s*\/\s*(\d+)/); if (m) return parseInt(m[1]) / parseInt(m[2]); const m2 = (nm || '').match(/([\d.]+)/); return m2 ? parseFloat(m2[1]) : 0.25; };
+    for (const mv of moves) { mv.dia = toolDia(mv.tool); mv.len = mv.g >= 2 ? arcLen(mv) : G.dist(mv.from, mv.to); mv.t0 = total; const rate = mv.g === 0 ? 600 : (mv.feed || 100); mv.dt = (mv.len + Math.abs(mv.to.z - mv.from.z)) / rate; total += mv.dt; }
+    sim = { moves, total, t: 1, playing: false, name };
+    $('#simSlider').value = 1000; simResize(); showPage('sim');
+    $('#simInfo').textContent = `${name}: ${moves.length} moves · est. ${total.toFixed(1)} min`;
+  }
+  function arcLen(mv) { const r = G.dist(mv.from, mv.c); if (r < 1e-9) return 0; const s = G.arc(mv.from, mv.to, mv.c, mv.g === 3); return Math.abs(G.sweep(s)) * r; }
+  function simDraw() {
+    const m = S.machine; const W = sc.width, H = sc.height; const pad = 30;
+    const scale = Math.min((W - pad * 2) / m.bedW, (H - pad * 2) / m.bedH); const ox = (W - m.bedW * scale) / 2, oy = (H - m.bedH * scale) / 2;
+    const T = (p) => ({ x: ox + p.x * scale, y: H - oy - p.y * scale });
+    sctx.setTransform(1, 0, 0, 1, 0, 0); sctx.fillStyle = '#15171b'; sctx.fillRect(0, 0, W, H);
+    const a = T({ x: 0, y: 0 }), b = T({ x: m.bedW, y: m.bedH }); sctx.fillStyle = '#e8e2d0'; sctx.fillRect(a.x, b.y, b.x - a.x, a.y - b.y);
+    sctx.strokeStyle = '#5a6473'; sctx.strokeRect(a.x, b.y, b.x - a.x, a.y - b.y);
+    // part outlines (current job) faint
+    for (const sh of job.shapes) { const l = worldLoop(sh); sctx.strokeStyle = 'rgba(0,0,0,.15)'; sctx.lineWidth = 1; sctx.beginPath(); l.forEach((s, i) => { const pts = G.samplePts(s, 0.1); pts.forEach((p, k) => { const q = T(p); (i === 0 && k === 0) ? sctx.moveTo(q.x, q.y) : sctx.lineTo(q.x, q.y); }); }); if (!sh.open) sctx.closePath(); sctx.stroke(); }
+    const tcut = sim.t * sim.total; let cur = null;
+    sctx.lineCap = 'round'; sctx.lineJoin = 'round';
+    for (const mv of sim.moves) {
+      if (mv.t0 > tcut) break;
+      const frac = mv.dt > 0 ? Math.min(1, (tcut - mv.t0) / mv.dt) : 1;
+      const cutting = mv.g !== 0 && (mv.to.z <= job.material.thickness + 1e-6 || mv.from.z <= job.material.thickness + 1e-6) && mv.len > 1e-9;
+      if (cutting) {
+        const depthFrac = Math.max(0, Math.min(1, 1 - Math.max(mv.to.z, 0) / Math.max(job.material.thickness, 1e-6)));
+        sctx.strokeStyle = `rgba(${40 + 60 * (1 - depthFrac)},${40 + 40 * (1 - depthFrac)},${40 + 30 * (1 - depthFrac)},1)`; sctx.lineWidth = Math.max(1, mv.dia * scale);
+        sctx.beginPath(); const p0 = T(mv.from);
+        if (mv.g >= 2) { const s = G.arc(mv.from, mv.to, mv.c, mv.g === 3); const n = Math.max(2, Math.ceil(mv.len / 0.05)); sctx.moveTo(p0.x, p0.y); for (let i = 1; i <= n * frac; i++) { const q = T(G.pointAt(s, i / n)); sctx.lineTo(q.x, q.y); } }
+        else { const q = T({ x: mv.from.x + (mv.to.x - mv.from.x) * frac, y: mv.from.y + (mv.to.y - mv.from.y) * frac }); sctx.moveTo(p0.x, p0.y); sctx.lineTo(q.x, q.y); }
+        sctx.stroke();
+      } else if (mv.g === 0 && sim.t < 1) { sctx.strokeStyle = 'rgba(255,92,92,.35)'; sctx.lineWidth = 1; sctx.setLineDash([4, 4]); sctx.beginPath(); const p0 = T(mv.from), p1 = T(mv.to); sctx.moveTo(p0.x, p0.y); sctx.lineTo(p1.x, p1.y); sctx.stroke(); sctx.setLineDash([]); }
+      cur = { mv, frac };
+    }
+    if (cur && sim.t < 1) { const mv = cur.mv; let p; if (mv.g >= 2) p = G.pointAt(G.arc(mv.from, mv.to, mv.c, mv.g === 3), cur.frac); else p = { x: mv.from.x + (mv.to.x - mv.from.x) * cur.frac, y: mv.from.y + (mv.to.y - mv.from.y) * cur.frac }; const q = T(p); sctx.fillStyle = '#ff5c5c'; sctx.beginPath(); sctx.arc(q.x, q.y, Math.max(3, mv.dia * scale / 2), 0, Math.PI * 2); sctx.fill(); $('#simInfo').textContent = `${sim.name}: ${(sim.t * sim.total).toFixed(1)} / ${sim.total.toFixed(1)} min · X${p.x.toFixed(3)} Y${p.y.toFixed(3)} Z${(mv.from.z + (mv.to.z - mv.from.z) * cur.frac).toFixed(3)} · ${mv.tool || ''}`; }
+  }
+  $('#simSlider').addEventListener('input', e => { sim.t = e.target.value / 1000; sim.playing = false; $('#simPlay').textContent = '▶ Play'; simDraw(); });
+  $('#simPlay').onclick = () => { sim.playing = !sim.playing; if (sim.playing && sim.t >= 1) sim.t = 0; $('#simPlay').textContent = sim.playing ? '⏸ Pause' : '▶ Play'; if (sim.playing) requestAnimationFrame(simTick); };
+  let lastTick = 0;
+  function simTick(ts) { if (!sim.playing) return; const dt = lastTick ? (ts - lastTick) / 1000 : 0; lastTick = ts; const sp = parseFloat($('#simSpeed').value); sim.t = Math.min(1, sim.t + (dt / 60) * sp / Math.max(sim.total, 1e-6)); $('#simSlider').value = Math.round(sim.t * 1000); simDraw(); if (sim.t >= 1) { sim.playing = false; $('#simPlay').textContent = '▶ Play'; lastTick = 0; return; } requestAnimationFrame(simTick); }
+
+  // ---------- AI design ----------
+  $('#aiGo').onclick = async () => {
+    const prompt = $('#aiPrompt').value.trim(); if (!prompt) return;
+    if (!S.ai.key) { toast('Add your Claude API key in Settings'); showPage('settings'); return; }
+    const st = $('#aiStatus'); st.textContent = 'Thinking…'; $('#aiOut').style.display = 'none';
+    const tools = S.tools.map(t => `id ${t.id}: ${t.name} (${t.dia}" dia)`).join('; ');
+    const system = `You convert a CNC operator's text request into 2D parts for a flat-sheet CNC router. Units: inches. Bed: ${S.machine.bedW} x ${S.machine.bedH} in, origin bottom-left. Material thickness ${job.material.thickness} in.
+Respond with ONLY a JSON object, no prose, no markdown: {"parts":[...]} where each part is one of:
+{"kind":"rect","name":str,"w":num,"h":num,"r":num(corner radius, default 0),"qty":int,"op":"outside"|"inside","toolId":int,"holes":[{"kind":"circle","cx":num,"cy":num,"d":num}|{"kind":"rect","x":num,"y":num,"w":num,"h":num,"r":num}]}
+{"kind":"circle","name":str,"d":num,"qty":int,"op":"outside"|"inside","toolId":int}
+{"kind":"poly","name":str,"pts":[{"x":num,"y":num,"r":num}],"qty":int,"op":"outside","toolId":int}
+Holes are positioned relative to the part's bottom-left corner. "outside" = cut the part out; "inside" = pocket/hole. Available tools: ${tools}. Default toolId ${S.tools[0].id}. Interpret fractions (6 1/2 = 6.5) and quotes as inches. Do not position parts; they will be nested automatically.`;
+    try {
+      const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': S.ai.key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model: S.ai.model || 'claude-sonnet-4-5', max_tokens: 4000, system, messages: [{ role: 'user', content: prompt }] }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error?.message || r.statusText);
+      const text = (j.content || []).map(c => c.text || '').join('');
+      const jm = text.match(/\{[\s\S]*\}/); if (!jm) throw new Error('No JSON in response');
+      const data = JSON.parse(jm[0]);
+      $('#aiOut').style.display = 'block'; $('#aiOut').textContent = JSON.stringify(data, null, 1);
+      snapshot(); if ($('#aiReplace').checked) job.shapes = [];
+      const added = [];
+      for (const p of data.parts || []) {
+        const qty = Math.max(1, Math.min(200, parseInt(p.qty || 1, 10)));
+        for (let q = 0; q < qty; q++) {
+          const toolId = S.tools.some(t => t.id === p.toolId) ? p.toolId : S.tools[0].id; const op = p.op === 'inside' ? 'inside' : 'outside';
+          let sh;
+          if (p.kind === 'rect') sh = makeShape('rect', { name: p.name || 'rect', w: +p.w, h: +p.h, r: +(p.r || 0), op, toolId });
+          else if (p.kind === 'circle') sh = makeShape('circle', { name: p.name || 'circle', r: +p.d / 2, op, toolId });
+          else if (p.kind === 'poly' && Array.isArray(p.pts) && p.pts.length >= 3) { const x0 = Math.min(...p.pts.map(v => +v.x)), y0 = Math.min(...p.pts.map(v => +v.y)); sh = makeShape('poly', { name: p.name || 'poly', pts: p.pts.map(v => ({ x: +v.x - x0, y: +v.y - y0, r: +(v.r || 0) })), op, toolId }); }
+          if (!sh) continue;
+          if (qty > 1) sh.name += ` #${q + 1}`;
+          job.shapes.push(sh); added.push(sh);
+          for (const h of p.holes || []) {
+            let hs;
+            if (h.kind === 'circle') hs = makeShape('circle', { name: sh.name + ' hole', r: +h.d / 2, x: sh.x + (+h.cx), y: sh.y + (+h.cy), op: 'inside', toolId });
+            else if (h.kind === 'rect') hs = makeShape('rect', { name: sh.name + ' pocket', w: +h.w, h: +h.h, r: +(h.r || 0), x: sh.x + (+h.x), y: sh.y + (+h.y), op: 'inside', toolId });
+            if (hs) { job.shapes.push(hs); added.push(hs); }
+          }
+        }
+      }
+      st.textContent = `Added ${added.length} objects.`; sel = new Set(added.map(a => a.id));
+      nestAll(); showPage('design');
+    } catch (err) { st.textContent = 'Error: ' + err.message; console.error(err); }
+  };
+
+  // ---------- init ----------
+  syncMaterialUI(); resize(); refresh();
+  window.CNC = { get job() { return job; }, S, G, PO, NE, worldLoop, importDXF, refresh };
+})();
+
+</script>
+</body>
+</html>

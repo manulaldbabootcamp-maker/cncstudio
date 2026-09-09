@@ -1,0 +1,5 @@
+node_modules/
+electron/dist/
+test/parts.json
+test/regen.tap
+*.log

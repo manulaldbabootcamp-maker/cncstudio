@@ -1,0 +1,5 @@
+# TAP/DXF are machine-format files: byte-exact line endings matter.
+# verify.js compares generated output against Sides_manav.tap byte-for-byte.
+*.tap -text
+*.TAP -text
+*.dxf -text

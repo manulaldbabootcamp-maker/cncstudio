@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CNC Studio</title>
+<style>
+  :root { --bg:#1e2126; --panel:#262a31; --panel2:#2d323a; --border:#3a404a; --text:#e6e8eb; --muted:#9aa3ad; --accent:#4da3ff; --ok:#41c77a; --warn:#ffb84d; --err:#ff5c5c; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font: 13px/1.4 system-ui, Segoe UI, Roboto, sans-serif; overflow:hidden; }
+  #app { display:grid; grid-template-rows: 40px 1fr 26px; grid-template-columns: 220px 1fr 280px; height:100vh; }
+  header { grid-column: 1 / -1; display:flex; align-items:center; gap:6px; padding:0 8px; background:var(--panel); border-bottom:1px solid var(--border); }
+  header .brand { font-weight:700; margin-right:8px; color:var(--accent); }
+  header .tabs { display:flex; gap:2px; margin-left:auto; }
+  .tab { padding:5px 12px; border-radius:6px; cursor:pointer; color:var(--muted); }
+  .tab.active { background:var(--panel2); color:var(--text); }
+  button, select, input[type=text], input[type=number], input[type=password], textarea { background:var(--panel2); color:var(--text); border:1px solid var(--border); border-radius:5px; padding:4px 8px; font:inherit; }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#0b1520; border-color:var(--accent); font-weight:600; }
+  button.tool.active { background:var(--accent); color:#0b1520; }
+  button.small { padding:2px 6px; font-size:12px; }
+  input[type=number] { width:84px; }
+  #left, #right { background:var(--panel); border-right:1px solid var(--border); overflow:auto; padding:8px; }
+  #right { border-right:none; border-left:1px solid var(--border); }
+  #center { position:relative; overflow:hidden; background:#15171b; }
+  canvas#cv { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; }
+  #cursorTag { position:absolute; pointer-events:none; background:rgba(20,22,26,.9); border:1px solid var(--border); padding:2px 6px; border-radius:4px; font: 12px ui-monospace, Consolas, monospace; color:var(--accent); display:none; }
+  footer { grid-column: 1 / -1; display:flex; gap:18px; align-items:center; padding:0 10px; background:var(--panel); border-top:1px solid var(--border); font: 12px ui-monospace, Consolas, monospace; color:var(--muted); }
+  footer b { color:var(--text); }
+  h3 { margin:6px 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .row { display:flex; align-items:center; gap:6px; margin:4px 0; flex-wrap:wrap; }
+  .row label { min-width:70px; color:var(--muted); }
+  .list div.item { padding:4px 6px; border-radius:4px; cursor:pointer; display:flex; justify-content:space-between; }
+  .list div.item:hover { background:var(--panel2); }
+  .list div.item.sel { background:#1f3a5a; }
+  .list .op { color:var(--muted); font-size:11px; }
+  .page { display:none; position:absolute; inset:0; overflow:auto; padding:16px 20px; background:var(--bg); }
+  .page.active { display:block; }
+  table { border-collapse:collapse; width:100%; }
+  th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--border); }
+  td input { width:100%; }
+  td input[type=number] { width:80px; }
+  textarea { width:100%; min-height:70px; font: 12px ui-monospace, Consolas, monospace; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:14px; max-width:980px; }
+  .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+  .muted { color:var(--muted); }
+  .kbd { font: 11px ui-monospace, monospace; background:var(--panel2); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  #simWrap { display:grid; grid-template-rows: auto 1fr; height:100%; }
+  #simCanvas { width:100%; height:100%; background:#15171b; }
+  .toast { position:absolute; left:50%; bottom:40px; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--border); padding:8px 14px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show { opacity:1; }
+  .warnbox { color:var(--warn); }
+  pre.gcode { max-height:300px; overflow:auto; background:#111318; padding:8px; border-radius:6px; font-size:11px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="brand">CNC Studio</span>
+    <button id="btnNew" title="New job">New</button>
+    <button id="btnOpen" title="Open project / DXF / TAP">Open…</button>
+    <button id="btnSave" title="Save project (.cncjob)">Save</button>
+    <span style="width:8px"></span>
+    <button class="tool active" data-tool="select" title="Select (V)">Select</button>
+    <button class="tool" data-tool="rect" title="Rectangle (R)">Rect</button>
+    <button class="tool" data-tool="circle" title="Circle (C)">Circle</button>
+    <button class="tool" data-tool="poly" title="Polygon (P) — click points, Enter/double-click to close">Polygon</button>
+    <button class="tool" data-tool="pline" title="Open polyline for on-line cuts (L)">Line</button>
+    <span style="width:8px"></span>
+    <button id="btnNest" title="Auto-arrange all parts from bottom-left">Nest</button>
+    <button id="btnDxf" title="Export DXF">DXF ↓</button>
+    <button id="btnTap" class="primary" title="Generate and export .TAP">Export TAP</button>
+    <div class="tabs">
+      <div class="tab active" data-page="design">Design</div>
+      <div class="tab" data-page="sim">Simulate</div>
+      <div class="tab" data-page="ai">AI Design</div>
+      <div class="tab" data-page="settings">Settings</div>
+    </div>
+  </header>
+
+  <div id="left">
+    <h3>Job</h3>
+    <div class="row"><label>Material</label><select id="selMaterial"></select></div>
+    <div class="row"><label>Thickness</label><input type="number" id="inThick" step="any"> in</div>
+    <div class="row"><label>Cut-through</label><input type="number" id="inCutThrough" step="0.005" value="0"> in</div>
+    <div class="row"><label>Snap</label><select id="selSnap"><option value="0">off</option><option value="0.0625">1/16</option><option value="0.125" selected>1/8</option><option value="0.25">1/4</option><option value="0.5">1/2</option><option value="1">1</option></select></div>
+    <div class="row"><label><input type="checkbox" id="chkPaths" checked> Toolpaths</label><label><input type="checkbox" id="chkKerf"> Kerf</label></div>
+    <h3>Parts <span id="partCount" class="muted"></span></h3>
+    <div id="shapeList" class="list"></div>
+    <div class="row" style="margin-top:8px">
+      <button class="small" id="btnDup">Duplicate</button>
+      <button class="small" id="btnDel">Delete</button>
+      <button class="small" id="btnUndo" title="Ctrl+Z">Undo</button>
+    </div>
+  </div>
+
+  <div id="center">
+    <canvas id="cv"></canvas>
+    <div id="cursorTag"></div>
+    <div id="pageSim" class="page">
+      <div id="simWrap">
+        <div class="row" style="margin-bottom:6px">
+          <button id="simGen" class="primary">Simulate current job</button>
+          <button id="simLoad">Load .TAP file…</button>
+          <button id="simPlay">▶ Play</button>
+          <input type="range" id="simSlider" min="0" max="1000" value="1000" style="flex:1">
+          <label>Speed <select id="simSpeed"><option value="1">1×</option><option value="5" selected>5×</option><option value="20">20×</option><option value="100">100×</option></select></label>
+          <span id="simInfo" class="muted"></span>
+        </div>
+        <canvas id="simCanvas"></canvas>
+      </div>
+    </div>
+    <div id="pageAi" class="page">
+      <div class="card">
+        <h3>Describe what to cut</h3>
+        <p class="muted">Examples: <i>"3 rectangles 6.5 by 7 with 0.25 corner radius, 2 circles 3 inch diameter"</i>, <i>"a 12x12 plate with four 0.5 holes 1 inch from each corner"</i>. Parts are added to the job and arranged from the bottom-left corner within the bed limits.</p>
+        <textarea id="aiPrompt" placeholder="e.g. a rectangle 6.5&quot; by 7&quot;, make 7 of them"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button id="aiGo" class="primary">Generate parts</button>
+          <label><input type="checkbox" id="aiReplace"> Replace existing parts</label>
+          <span id="aiStatus" class="muted"></span>
+        </div>
+        <pre id="aiOut" class="gcode" style="display:none"></pre>
+      </div>
+    </div>
+    <div id="pageSettings" class="page">
+      <div class="grid2">
+        <div class="card">
+          <h3>Machine</h3>
+          <div class="row"><label>Bed W × H</label><input type="number" id="mBedW" step="1"> × <input type="number" id="mBedH" step="1"> in</div>
+          <div class="row"><label>Safe Z</label><input type="number" id="mSafeZ" step="0.0625"> in</div>
+          <div class="row"><label>Decimals</label><input type="number" id="mDec" step="1" min="2" max="6"></div>
+          <div class="row"><label>Line ending</label><select id="mEol"><option value="crlf">CRLF (Windows)</option><option value="lf">LF</option></select></div>
+          <div class="row"><label>Header</label></div><textarea id="mHeader"></textarea>
+          <div class="row"><label>Tool change</label><span class="muted">{toolName} {slot} {rpm}</span></div><textarea id="mToolChange"></textarea>
+          <div class="row"><label>Footer</label></div><textarea id="mFooter"></textarea>
+        </div>
+        <div>
+          <div class="card">
+            <h3>Materials</h3>
+            <table id="matTable"><thead><tr><th>Name</th><th>Thickness</th><th></th></tr></thead><tbody></tbody></table>
+            <button class="small" id="matAdd" style="margin-top:6px">+ Add material</button>
+          </div>
+          <div class="card">
+            <h3>Nesting</h3>
+            <div class="row"><label>Part gap</label><input type="number" id="nGap" step="0.125"> in</div>
+            <div class="row"><label>Bed margin</label><input type="number" id="nMargin" step="0.125"> in</div>
+            <div class="row"><label><input type="checkbox" id="nRotate"> Allow 90° rotation</label></div>
+          </div>
+          <div class="card">
+            <h3>Claude API</h3>
+            <div class="row"><label>API key</label><input type="password" id="aiKey" style="flex:1" placeholder="sk-ant-…"></div>
+            <div class="row"><label>Model</label><input type="text" id="aiModel" style="flex:1"></div>
+            <p class="muted">Key is stored only in this app's local storage on this PC.</p>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Tools (auto tool changer)</h3>
+        <table id="toolTable"><thead><tr><th>Slot</th><th>Name</th><th>Type</th><th>Dia (in)</th><th>RPM</th><th>Feed (ipm)</th><th>Plunge (ipm)</th><th>Pass depth</th><th></th></tr></thead><tbody></tbody></table>
+        <div class="row" style="margin-top:6px"><button class="small" id="toolAdd">+ Add tool</button><button class="small" id="setExport">Export settings</button><button class="small" id="setImport">Import settings</button><button class="small" id="setReset">Reset defaults</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="right">
+    <div id="props"><p class="muted">Select a part to edit it.<br><br>
+      <b>Canvas</b><br>Wheel: zoom · Right/middle drag or <span class="kbd">Space</span>+drag: pan<br>
+      <span class="kbd">Del</span> delete · <span class="kbd">Ctrl+D</span> duplicate · <span class="kbd">Ctrl+Z</span> undo · arrows nudge<br>
+      <span class="kbd">F</span> fit bed · <span class="kbd">Esc</span> cancel tool</p></div>
+    <h3 style="margin-top:14px">Output</h3>
+    <div id="jobStats" class="muted">—</div>
+    <pre id="gcodePreview" class="gcode" style="display:none"></pre>
+  </div>
+
+  <footer>
+    <span>X <b id="stX">0.0000</b></span><span>Y <b id="stY">0.0000</b></span>
+    <span id="stTool"></span>
+    <span id="stMsg" style="margin-left:auto"></span>
+  </footer>
+</div>
+<div id="toast" class="toast"></div>
+<input type="file" id="fileIn" style="display:none" accept=".cncjob,.json,.dxf,.tap,.nc,.txt">
+<input type="file" id="fileSim" style="display:none" accept=".tap,.nc,.txt">
+<input type="file" id="fileSet" style="display:none" accept=".json">
+<!--SCRIPTS-->
+</body>
+</html>
