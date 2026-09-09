@@ -129,8 +129,24 @@ const SNAP = (() => {
       add(P(Math.round(wp.x / g) * g, Math.round(wp.y / g) * g), 'grid', null);
     }
     if (!cands.length) return null;
-    cands.sort((a, b) => (PRIO[a.type] - PRIO[b.type]) || (a.d - b.d));
-    return cands[0];
+    /* Rank by type, but only among candidates that are actually close to each
+       other. Sorting by priority alone let a far-off endpoint beat an on-edge
+       snap right under the cursor: zoomed out the tolerance is inches wide, so
+       an arc's seam 3 in away would win over the circumference 0.1 in away and
+       the point would jump somewhere unexpected. Candidates outside the band
+       are simply too far to have been meant. */
+    /* Grid is not an object snap and must not compete on distance: at a 0.001
+       step there is always a grid point within half a step of the cursor, so
+       it would win every band and swallow real geometry. It is the fallback
+       used only when nothing on the drawing is in range. */
+    const objs = cands.filter(c => c.type !== 'grid');
+    const pool = objs.length ? objs : cands;
+    let dMin = Infinity;
+    for (const c of pool) if (c.d < dMin) dMin = c.d;
+    const band = Math.max(tol * 0.25, 1e-6);
+    const close = pool.filter(c => c.d <= dMin + band);
+    close.sort((a, b) => (PRIO[a.type] - PRIO[b.type]) || (a.d - b.d));
+    return close[0];
   }
 
   /* Constrain `to` relative to `from`: 90 deg steps, or 45 deg when polar.

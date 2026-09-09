@@ -1152,6 +1152,83 @@ app.whenReady().then(async () => {
     await run(`(() => { document.querySelector('button.tool[data-tool="select"]').click(); return true; })()`);
     }
 
+    { // scoped
+    console.log('circle snap points: centre, quadrant, circumference');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      document.querySelector('button.tool[data-tool="select"]').click();
+      CNC.job.shapes.push({id:2000,name:'c',kind:'circle',x:10,y:10,rot:0,r:4,op:'outside',toolId:2,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const snapAt = (x, y) => run(`(() => { CNC.resolvePoint({x:${x},y:${y}});
+      const s = CNC.lastSnapInfo(); return s ? JSON.stringify({t:s.type, x:+s.p.x.toFixed(4), y:+s.p.y.toFixed(4), d:+s.d.toFixed(4)}) : 'none'; })()`);
+
+    const centre = JSON.parse(await snapAt(10.05, 10.03));
+    ok(centre.t === 'center' && centre.x === 10 && centre.y === 10, 'the centre of a circle snaps', JSON.stringify(centre));
+
+    // the point that was broken: near the circumference, far from the arc seam
+    const circ = JSON.parse(await snapAt(12.9, 12.9));
+    ok(circ.t === 'on', 'a point near the circumference snaps to the circumference', JSON.stringify(circ));
+    ok(circ.d < 0.2, 'and lands on it, not on a seam feet away', String(circ.d));
+    const onCircle = Math.abs(Math.hypot(circ.x - 10, circ.y - 10) - 4);
+    ok(onCircle < 1e-3, 'the snapped point is genuinely on the circle', String(onCircle));
+
+    const seam = JSON.parse(await snapAt(14.03, 10.02));
+    ok(seam.t === 'endpoint' && seam.x === 14, 'sitting on the seam still gives the endpoint', JSON.stringify(seam));
+
+    console.log('and during a polyline, not just with the select tool');
+    await run(`(() => { document.querySelector('button.tool[data-tool="pline"]').click();
+      CNC.commitPoint({x:1,y:1}); return true; })()`);
+    const mid = JSON.parse(await snapAt(12.9, 12.9));
+    ok(mid.t === 'on', 'mid-polyline the circumference still snaps', JSON.stringify(mid));
+    const c2 = JSON.parse(await snapAt(10.04, 10.02));
+    ok(c2.t === 'center', 'mid-polyline the centre still snaps', JSON.stringify(c2));
+    await run(`(() => { window.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+      document.querySelector('button.tool[data-tool="select"]').click(); return true; })()`);
+
+    console.log('PDF picks up the design view toggles');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:2010,name:'p',kind:'rect',x:2,y:2,rot:0,w:10,h:6,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.dims = [{a:{x:2,y:1},b:{x:12,y:1},off:-0.5}];
+      CNC.refresh(); return true; })()`);
+    const withAll = await run(`(() => {
+      let captured = null;
+      const realCreate = document.createElement.bind(document);
+      const realURL = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = (blob) => { captured = blob.size; return realURL(blob); };
+      document.createElement = (t) => { const el = realCreate(t); if (t === 'a') el.click = () => {}; return el; };
+      try { CNC.buildPdf({page:'tabloid', landscape:true, scale:'fit', sizes:true, names:true,
+        dims:true, centres:true, bed:false, paths:true, kerf:true}, 'opts.pdf'); }
+      finally { document.createElement = realCreate; URL.createObjectURL = realURL; }
+      return captured || 0;
+    })()`);
+    ok(typeof withAll === 'number' && withAll > 0, 'a PDF is produced with every option on', String(withAll));
+
+    const plain = await run(`(() => {
+      let captured = null;
+      const realCreate = document.createElement.bind(document);
+      const realURL = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = (blob) => { captured = blob.size; return realURL(blob); };
+      document.createElement = (t) => { const el = realCreate(t); if (t === 'a') el.click = () => {}; return el; };
+      try { CNC.buildPdf({page:'tabloid', landscape:true, scale:'fit', sizes:false, names:false,
+        dims:false, centres:false, bed:false, paths:false, kerf:false}, 'plain.pdf'); }
+      finally { document.createElement = realCreate; URL.createObjectURL = realURL; }
+      return captured || 0;
+    })()`);
+    ok(plain > 0 && withAll > plain, 'turning the extras on makes a bigger file than the outline alone', `${withAll} vs ${plain}`);
+
+    const dialogHas = await run(`(() => {
+      document.querySelectorAll('.overlay').forEach(o => o.remove());
+      CNC.openPdf();
+      const ov = document.querySelector('.overlay');
+      const ids = ['pdSizes','pdNames','pdDims','pdCentres','pdPaths','pdKerf','pdBed'].filter(i => ov.querySelector('#'+i));
+      const kerfDefault = ov.querySelector('#pdKerf').checked;
+      ov.remove();
+      return JSON.stringify({ids, kerfDefault});
+    })()`);
+    const dh = JSON.parse(dialogHas);
+    ok(dh.ids.length === 7, 'the dialog offers sizes, names, dimensions, centres, toolpaths, kerf and bed', JSON.stringify(dh.ids));
+    ok(dh.kerfDefault === false, 'kerf defaults off, matching the design view where it is unticked', String(dh.kerfDefault));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

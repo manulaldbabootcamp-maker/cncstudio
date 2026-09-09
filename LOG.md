@@ -5,6 +5,44 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Circle snap points, and PDF options matching the design view
+
+### Fixed
+- **Snapping to a circle's circumference or centre often did not work.** Snap
+  priority was applied globally, so a higher-ranked type won on rank alone no
+  matter how far away it was. Clicking 0.1 in from a circle's edge would jump to
+  the arc's seam **3.1 in away**, because an endpoint outranks an on-edge snap.
+  Zoomed out the tolerance is inches wide, which made this constant.
+  Ranking now only applies among candidates that are *actually close to each
+  other* — within a band of the nearest hit. A distant endpoint can no longer
+  beat the edge under the cursor, while an endpoint you are genuinely on still
+  wins over the edge it sits on.
+- **Grid snap was swallowing every object snap** once that band existed. At a
+  0.001 in step there is always a grid point within half a step of the cursor,
+  so it was always the nearest candidate and always won the band. Grid is not an
+  object snap: it is now a fallback used only when nothing on the drawing is in
+  range. This is what made snapping feel dead while drawing a polyline.
+
+### Added — PDF
+- The export dialog now carries **the same toggles as the design view**, and
+  **starts from whatever is currently ticked there**, so the print matches what
+  is on screen: Toolpaths, **Kerf**, **Centre marks**, Sizes, Part names,
+  **Dimensions**, Bed outline.
+- **Kerf** draws the removed material at true tool width, scaled with the
+  drawing.
+- **Dimensions** placed with the D tool are drawn with witness lines in the same
+  violet as on screen; **size labels print in green**, matching the canvas.
+
+### Tests
+- Smoke test now 247 assertions. The circle case is covered directly: the centre
+  snaps, a point near the circumference snaps *to the circumference* and lands
+  genuinely on the circle, sitting on the seam still gives the endpoint, and all
+  of it still works mid-polyline rather than only with the select tool. Plus the
+  PDF dialog offering all seven toggles, kerf defaulting off to match the view,
+  and a PDF with the extras on being larger than the outline alone.
+
+---
+
 ## Circle size box takes radius or diameter
 
 ### Changed

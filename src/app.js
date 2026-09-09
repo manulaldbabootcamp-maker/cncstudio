@@ -3230,11 +3230,21 @@
       <div class="row"><label>Include</label>
         <label style="min-width:0"><input type="checkbox" id="pdSizes" checked> Sizes</label>
         <label style="min-width:0"><input type="checkbox" id="pdNames" checked> Part names</label>
-        <label style="min-width:0"><input type="checkbox" id="pdBed"> Bed outline</label>
-        <label style="min-width:0"><input type="checkbox" id="pdPaths"> Toolpaths</label></div>
+        <label style="min-width:0"><input type="checkbox" id="pdDims" checked> Dimensions</label>
+        <label style="min-width:0"><input type="checkbox" id="pdCentres"> Centre marks</label></div>
+      <div class="row"><label></label>
+        <label style="min-width:0"><input type="checkbox" id="pdPaths"> Toolpaths</label>
+        <label style="min-width:0"><input type="checkbox" id="pdKerf"> Kerf</label>
+        <label style="min-width:0"><input type="checkbox" id="pdBed"> Bed outline</label></div>
       <p class="muted" id="pdNote" style="font-size:11px"></p>
       <div class="row" style="margin-top:10px"><button class="primary" id="pdOk">Export PDF</button><button id="pdCancel">Cancel</button></div>`,
       (ov, close) => {
+        // start from the design view's own toggles, so the print matches what is seen
+        const chk = (id) => { const e = $(id); return !!(e && e.checked); };
+        ov.querySelector('#pdPaths').checked = chk('#chkPaths');
+        ov.querySelector('#pdKerf').checked = chk('#chkKerf');
+        ov.querySelector('#pdCentres').checked = chk('#chkCentres');
+        ov.querySelector('#pdSizes').checked = chk('#chkSizes');
         const note = () => {
           const sc = ov.querySelector('#pdScale').value;
           ov.querySelector('#pdNote').innerHTML = sc === 'fit'
@@ -3250,8 +3260,11 @@
             scale: ov.querySelector('#pdScale').value,
             sizes: ov.querySelector('#pdSizes').checked,
             names: ov.querySelector('#pdNames').checked,
+            dims: ov.querySelector('#pdDims').checked,
+            centres: ov.querySelector('#pdCentres').checked,
             bed: ov.querySelector('#pdBed').checked,
             paths: ov.querySelector('#pdPaths').checked,
+            kerf: ov.querySelector('#pdKerf').checked,
           };
           close();
           const name = await askText('Export PDF', 'File name', jobName());
@@ -3275,7 +3288,7 @@
         const pad = Math.max(0.5, (x1 - x0) * 0.04);
         box = { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad, w: (x1 - x0) + pad * 2, h: (y1 - y0) + pad * 2 };
       }
-      let used;
+      let used, usedScale;
       if (opts.scale === 'fit') used = d.fit(box, 0.6);
       else {
         used = d.setScale(parseFloat(opts.scale), box, 0.6);
@@ -3288,6 +3301,7 @@
         }
       }
 
+      usedScale = used;
       if (opts.bed) {
         d.gray(0.6).width(0.8).dash(0);
         d.rect(0, S.machine.bedH, S.machine.bedW, S.machine.bedH); d.stroke();
@@ -3297,22 +3311,58 @@
         let loop;
         try { loop = worldLoop(sh); } catch (e) { continue; }
         if (!loop.length) continue;
-        if (opts.paths) {
-          const tp = toolpathOf(sh);
-          if (tp && tp.length) {
-            d.gray(0.65).width(0.5).dash(3, 2);
-            PDFDOC.tracePath(d, tp, G, !sh.open); d.stroke(); d.dash(0);
-          }
+        const tp = (opts.paths || opts.kerf) ? toolpathOf(sh) : null;
+        if (opts.kerf && tp && tp.length) {
+          // the material the cutter actually removes, drawn at true tool width
+          const t = toolOf(sh);
+          d.rgb(1, 0.72, 0.30).width(Math.max(0.4, t.dia * 72 * (usedScale || 1)));
+          d.dash(0);
+          PDFDOC.tracePath(d, tp, G, !sh.open); d.stroke();
+        }
+        if (opts.paths && tp && tp.length) {
+          d.gray(0.65).width(0.5).dash(3, 2);
+          PDFDOC.tracePath(d, tp, G, !sh.open); d.stroke(); d.dash(0);
         }
         d.gray(0).width(sh.open ? 0.9 : 1.2).dash(0);
         PDFDOC.tracePath(d, loop, G, !sh.open);
         d.stroke();
 
         const b = G.bbox(loop);
-        if (opts.names) d.text((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, sh.name, 8, 'center', 0, -3);
+        if (opts.centres) {
+          d.rgb(0.37, 0.62, 0.47).width(0.5).dash(0);
+          for (const c of centresOf(sh)) {
+            const k = 0.12;                       // cross arm, in inches
+            d.moveTo(c.p.x - k, c.p.y); d.lineTo(c.p.x + k, c.p.y);
+            d.moveTo(c.p.x, c.p.y - k); d.lineTo(c.p.x, c.p.y + k);
+            d.stroke();
+          }
+        }
+        if (opts.names) { d.gray(0); d.text((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, sh.name, 8, 'center', 0, -3); }
         if (opts.sizes) {
+          // green, matching the size labels on screen
+          d.fillRgb(0.30, 0.62, 0.47);
           if (sh.kind === 'circle') d.text(sh.x, sh.y, 'R ' + fmtIn(sh.r) + '"', 8, 'center', 0, 8);
           else d.text((b.x0 + b.x1) / 2, b.y0, fmtIn(b.w) + '" x ' + fmtIn(b.h) + '"', 8, 'center', 0, -11);
+          d.fillRgb(0, 0, 0);
+        }
+      }
+
+      // dimensions placed with the D tool, drawn in the same violet as on screen
+      if (opts.dims) {
+        for (const dm of (job.dims || [])) {
+          const dx = dm.b.x - dm.a.x, dy = dm.b.y - dm.a.y, L = Math.hypot(dx, dy);
+          if (L < 1e-9) continue;
+          const nx = -dy / L, ny = dx / L, off = dm.off || 0;
+          const A = { x: dm.a.x + nx * off, y: dm.a.y + ny * off };
+          const B = { x: dm.b.x + nx * off, y: dm.b.y + ny * off };
+          d.rgb(0.83, 0.55, 1).width(0.6).dash(0);
+          d.moveTo(dm.a.x, dm.a.y); d.lineTo(A.x, A.y);
+          d.moveTo(dm.b.x, dm.b.y); d.lineTo(B.x, B.y);
+          d.moveTo(A.x, A.y); d.lineTo(B.x, B.y);
+          d.stroke();
+          d.fillRgb(0.83, 0.55, 1);
+          d.text((A.x + B.x) / 2, (A.y + B.y) / 2, dm.text || fmtIn(L) + '"', 8, 'center', 0, 3);
+          d.fillRgb(0, 0, 0);
         }
       }
 
