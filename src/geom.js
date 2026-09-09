@@ -128,6 +128,53 @@ const GEOM = (() => {
     const c = P(cx, cy);
     return [arc(P(cx + r, cy), P(cx - r, cy), c, true), arc(P(cx - r, cy), P(cx + r, cy), c, true)];
   }
+  /* Ellipse as a fine polyline. A true ellipse is not an arc, and the machine
+     only understands lines and circular arcs, so it has to be approximated
+     either way - doing it here, visibly, beats pretending otherwise. Point
+     count comes from the sagitta tolerance at the tightest end of the curve. */
+  function ellipseLoop(cx, cy, rx, ry, rotDeg = 0, tol = 0.002) {
+    rx = Math.abs(rx); ry = Math.abs(ry);
+    if (rx < EPS || ry < EPS) return [];
+    if (Math.abs(rx - ry) < 1e-9 && Math.abs(rotDeg) < 1e-9) return circleLoop(cx, cy, rx);
+    const rmin = Math.min(rx, ry), rmax = Math.max(rx, ry);
+    const kappa = rmax / (rmin * rmin);                 // max curvature
+    const step = Math.acos(Math.max(-1, 1 - tol * kappa));
+    let n = Math.ceil((2 * Math.PI) / (isFinite(step) && step > 1e-4 ? step : 0.05));
+    n = Math.max(24, Math.min(2000, n));
+    const a = rotDeg * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const t = (i / n) * 2 * Math.PI;
+      const x = rx * Math.cos(t), y = ry * Math.sin(t);
+      pts.push(P(cx + x * ca - y * sa, cy + x * sa + y * ca));
+    }
+    const segs = [];
+    for (let i = 0; i < n; i++) segs.push(line(pts[i], pts[(i + 1) % n]));
+    return segs;
+  }
+  /* Catmull-Rom spline through the given points, flattened to line segments.
+     Passes through every control point, which is what an operator expects when
+     they place points; a B-spline would not. */
+  function splineLoop(pts, closed = false, seg = 16) {
+    const n = pts.length;
+    if (n < 2) return [];
+    if (n === 2) return closed ? [] : [line(P(pts[0].x, pts[0].y), P(pts[1].x, pts[1].y))];
+    const at = (i) => { const k = closed ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i)); return pts[k]; };
+    const out = [];
+    const last = closed ? n : n - 1;
+    let prev = P(pts[0].x, pts[0].y);
+    for (let i = 0; i < last; i++) {
+      const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+      for (let s = 1; s <= seg; s++) {
+        const t = s / seg, t2 = t * t, t3 = t2 * t;
+        const x = 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
+        const y = 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3);
+        const q = P(x, y);
+        if (dist(prev, q) > 1e-9) { out.push(line(prev, q)); prev = q; }
+      }
+    }
+    return out;
+  }
 
   // ---- intersections
   function lineLine(p1, d1, p2, d2) {
@@ -378,6 +425,6 @@ const GEOM = (() => {
     return o;
   }
 
-  return { EPS, P, add, sub, mul, dot, cross, len, dist, norm, rot, same, line, arc, radius, sweep, tangentAt, segLen, pointAt, samplePts, loopPts, signedArea, reverseLoop, bbox, transformLoop, translateLoop, rotateLoop, mirrorLoopX, pointInLoop, polyLoop, normalizePolyPts, rectLoop, circleLoop, offsetLoop, splitArcs, startLoopAt, longestLineIndex, midOfSeg, parseDXF, writeDXF, bulgeArc, arcBulge, chainOpen };
+  return { EPS, P, add, sub, mul, dot, cross, len, dist, norm, rot, same, line, arc, radius, sweep, tangentAt, segLen, pointAt, samplePts, loopPts, signedArea, reverseLoop, bbox, transformLoop, translateLoop, rotateLoop, mirrorLoopX, pointInLoop, polyLoop, normalizePolyPts, rectLoop, circleLoop, ellipseLoop, splineLoop, offsetLoop, splitArcs, startLoopAt, longestLineIndex, midOfSeg, parseDXF, writeDXF, bulgeArc, arcBulge, chainOpen };
 })();
 if (typeof module !== 'undefined') module.exports = GEOM;

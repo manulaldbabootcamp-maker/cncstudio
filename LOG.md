@@ -5,6 +5,61 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Push 3 — Text, groups, ellipse and spline
+
+### Added
+- **Text and engraving** (`src/font.js`, new), covering the two genuinely
+  different jobs:
+  - **Engrave (single line).** A built-in stroke font whose glyphs are *open*
+    polylines, so the tool follows the centreline of each letter. This is what
+    a V-bit or small endmill needs to put a part number on a piece. A normal
+    font cannot do this — its letters are closed outlines, and following one
+    traces *around* the letter instead of drawing it. Covers A–Z, a–z, 0–9 and
+    common punctuation.
+  - **Cut / pocket (outline).** A real TrueType parser: `head`, `maxp`, `hhea`,
+    `hmtx`, `cmap` (formats 0/4/6/12), `loca`, `glyf`, including composite
+    glyphs and quadratic curve flattening. Load any `.ttf` you own from the
+    text dialog; nothing is bundled and nothing is sent anywhere.
+    Contours nested an odd number of deep are detected as counters (the hole in
+    an "A"), so they are cut as holes rather than as separate islands.
+  - Cap height is exact — set 0.5 in and the letters measure 0.5 in, because
+    engraving usually has to fit a labelled area.
+  - The dialog disables "pocket" and "cut free" for the single-line font and
+    explains why, rather than silently producing a traced outline.
+  - Characters the chosen font does not contain are reported in a toast and
+    the activity log instead of being silently dropped.
+  - A text block is one group and keeps its spec, so it can be re-opened and
+    edited (change the wording, height or font) rather than deleted and redone.
+- **Groups** (`Ctrl+G` / `Ctrl+Shift+G`). Selecting any member selects the
+  whole group, so a plate and its holes move together — the gap called out in
+  the original list, where nesting handled this implicitly but dragging did not.
+- **Ellipse** (`E`) — drag from the centre. Emitted as a fine polyline: a true
+  ellipse is not a circular arc, and the machine only understands lines and
+  circular arcs, so it has to be approximated. The point count is derived from
+  the sagitta tolerance at the tightest end of the curve, and a perfectly round
+  ellipse falls back to real arcs.
+- **Spline** — Catmull-Rom through the points you click, so the curve passes
+  *through* every control point (a B-spline would not, which surprises
+  operators). Click the first point again to close it.
+
+### Tests
+- `test/font_test.js` — 48 assertions. The TrueType half runs against a real
+  font from the Windows font folder and checks the things that reveal a broken
+  parse: "A" comes back as an outer contour plus its counter, "O" as two
+  concentric rings, contours enclose real area, curves are finely flattened,
+  and every outline contour is closed while every stroke path is open.
+- The Electron smoke test grew to 36 assertions, adding text, groups, ellipse
+  and spline, and confirming engraved text still generates real G-code.
+- `npm test` now runs all four Node suites; `npm run smoke` runs the Electron
+  one.
+
+### Fixed
+- Text was offset twice — the glyph outlines were translated to the anchor and
+  the first shape also had its `x`/`y` set, so `worldLoop` applied the anchor a
+  second time. The anchor is now stored separately from the shape position.
+
+---
+
 ## Push 2 — Construction tools and booleans
 
 ### Added

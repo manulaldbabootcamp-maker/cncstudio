@@ -46,6 +46,8 @@
     if (sh.kind === 'rect') return G.rectLoop(0, 0, sh.w, sh.h, sh.r || 0, sh.rc);
     if (sh.kind === 'circle') return G.circleLoop(0, 0, sh.r);
     if (sh.kind === 'poly') return sh.open ? polyOpen(sh.pts) : G.polyLoop(sh.pts);
+    if (sh.kind === 'ellipse') return G.ellipseLoop(0, 0, sh.rx, sh.ry, 0);
+    if (sh.kind === 'spline') return G.splineLoop(sh.pts, !sh.open);
     if (sh.kind === 'path') return sh.loop;
     return [];
   }
@@ -214,6 +216,8 @@
       ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([5 * dpr, 4 * dpr]);
       if (drawing.kind === 'rect') { const a = W2S(drawing.a), b = W2S(drawing.b); ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y)); dimLabel(drawing.b, `${fmtIn(Math.abs(drawing.b.x - drawing.a.x))} × ${fmtIn(Math.abs(drawing.b.y - drawing.a.y))}`); }
       if (drawing.kind === 'circle') { const c = W2S(drawing.a); const r = G.dist(drawing.a, drawing.b) * view.scale; ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.stroke(); dimLabel(drawing.b, `R ${fmtIn(G.dist(drawing.a, drawing.b))}  Ø ${fmtIn(2 * G.dist(drawing.a, drawing.b))}`); }
+      if (drawing.kind === 'ellipse') { const c = W2S(drawing.a); const rx = Math.abs(drawing.b.x - drawing.a.x) * view.scale, ry = Math.abs(drawing.b.y - drawing.a.y) * view.scale; if (rx > 0.5 && ry > 0.5) { ctx.beginPath(); ctx.ellipse(c.x, c.y, rx, ry, 0, 0, Math.PI * 2); ctx.stroke(); } dimLabel(drawing.b, `${fmtIn(Math.abs(drawing.b.x - drawing.a.x) * 2)} × ${fmtIn(Math.abs(drawing.b.y - drawing.a.y) * 2)}`); }
+      if (drawing.kind === 'spline' && drawing.pts.length) { const pv = drawing.pts.concat([drawing.cur]); const prev = pv.length > 2 ? G.splineLoop(pv, false) : []; ctx.beginPath(); if (prev.length) { const s0 = W2S(prev[0].a); ctx.moveTo(s0.x, s0.y); prev.forEach(sg => { const q = W2S(sg.b); ctx.lineTo(q.x, q.y); }); } else { pv.forEach((p, i) => { const q = W2S(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); }); } ctx.stroke(); pv.forEach(p => { const q = W2S(p); ctx.fillStyle = '#4da3ff'; ctx.fillRect(q.x - 2.5, q.y - 2.5, 5, 5); }); }
       if (drawing.kind === 'poly' || drawing.kind === 'pline') { ctx.beginPath(); drawing.pts.forEach((p, i) => { const s = W2S(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); const s = W2S(drawing.cur); ctx.lineTo(s.x, s.y); ctx.stroke(); if (drawing.pts.length) { const prev = drawing.pts[drawing.pts.length - 1]; dimLabel(drawing.cur, `${fmtIn(G.dist(prev, drawing.cur))}  ${fmtAng(prev, drawing.cur)}`); } }
       if (drawing.kind === 'arc') {
         const a = drawing.a, b = drawing.b, cur = drawing.cur;
@@ -443,10 +447,11 @@
       if (hit) {
         if (e.shiftKey) { sel.has(hit.id) ? sel.delete(hit.id) : sel.add(hit.id); }
         else if (!sel.has(hit.id)) { sel.clear(); sel.add(hit.id); }
+        expandGroups();
         drag = { kind: 'move', start: w, orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false };
       } else { if (!e.shiftKey) sel.clear(); drag = { kind: 'marquee', a: w, cur: w }; }
       refreshList(); refreshProps(); draw();
-    } else if (tool === 'rect' || tool === 'circle') {
+    } else if (tool === 'rect' || tool === 'circle' || tool === 'ellipse') {
       drawing = { kind: tool, a: ws, b: ws };
     } else if (tool === 'arc') {
       // 3 clicks: start, end, then a point the arc passes through
@@ -454,8 +459,9 @@
       else if (drawing.stage === 1) { drawing.b = ws; drawing.stage = 2; drawing.cur = ws; }
       else finishArc(ws);
       draw();
-    } else if (tool === 'poly' || tool === 'pline') {
+    } else if (tool === 'poly' || tool === 'pline' || tool === 'spline') {
       if (!drawing) drawing = { kind: tool, pts: [ws], cur: ws };
+      else if (tool === 'spline') { if (G.dist(ws, drawing.pts[0]) < 6 / view.scale && drawing.pts.length > 2) { drawing.closeIt = true; finishSpline(); } else drawing.pts.push(ws); }
       else { if (G.dist(ws, drawing.pts[0]) < 4 / view.scale && drawing.pts.length > 2 && tool === 'poly') finishPoly(); else drawing.pts.push(ws); }
       draw();
     }
@@ -568,8 +574,9 @@
       }
       drag = null; refreshList(); refreshProps(); draw(); return;
     }
-    if (drawing && (drawing.kind === 'rect' || drawing.kind === 'circle')) {
+    if (drawing && (drawing.kind === 'rect' || drawing.kind === 'circle' || drawing.kind === 'ellipse')) {
       const d = drawing; drawing = null;
+      if (d.kind === 'ellipse') { finishEllipse(d); draw(); return; }
       if (d.kind === 'rect') { const w = Math.abs(d.b.x - d.a.x), h = Math.abs(d.b.y - d.a.y); if (w > 0.01 && h > 0.01) addShape(makeShape('rect', { x: Math.min(d.a.x, d.b.x), y: Math.min(d.a.y, d.b.y), w, h, r: 0 })); }
       else { const r = G.dist(d.a, d.b); if (r > 0.01) addShape(makeShape('circle', { x: d.a.x, y: d.a.y, r })); }
       draw();
@@ -589,7 +596,7 @@
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
     if (e.key === 'Shift') { orthoTemp = true; draw(); }
     if (e.key === 'Escape') { drawing = null; measure = null; dimDraft = null; setTool('select'); draw(); }
-    if (e.key === 'Enter' && drawing) finishPoly();
+    if (e.key === 'Enter' && drawing) { if (drawing.kind === 'spline') finishSpline(); else finishPoly(); }
     if (e.key === 'Delete' || e.key === 'Backspace') { if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.shiftKey ? redo() : undo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { redo(); e.preventDefault(); }
@@ -606,6 +613,8 @@
     }
     if (e.key.toLowerCase() === 'v') setTool('select'); if (e.key.toLowerCase() === 'r') setTool('rect'); if (e.key.toLowerCase() === 'c') setTool('circle'); if (e.key.toLowerCase() === 'p') setTool('poly'); if (e.key.toLowerCase() === 'l') setTool('pline');
     if (e.key.toLowerCase() === 'a') setTool('arc');
+    if (e.key.toLowerCase() === 'e') setTool('ellipse');
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') { e.shiftKey ? ungroupSel() : groupSel(); e.preventDefault(); }
     if (e.key.toLowerCase() === 'm') setTool('measure');
     if (e.key.toLowerCase() === 'd' && !e.ctrlKey && !e.metaKey) setTool('dim');
     if (e.key.toLowerCase() === 'g' && sel.size) { openMoveBy(); e.preventDefault(); }
@@ -666,6 +675,9 @@
       const rc = sh.rc || [null, null, null, null]; const lab = ['BL', 'BR', 'TR', 'TL'];
       h += `<div class="row"><label>Corner R</label>` + lab.map((l, i) => `<span class="muted">${l}</span><input type="number" step="0.0625" data-rc="${i}" value="${rc[i] != null ? fmtIn(rc[i]) : ''}" placeholder="${fmtIn(sh.r || 0)}" style="width:58px">`).join('') + `</div>`;
     }
+    if (!multi && sh.kind === 'ellipse') h += num('rx', 'Radius X', 0.0625) + num('ry', 'Radius Y', 0.0625);
+    if (!multi && sh.textSpec) h += `<div class="row"><button class="small" id="btnEditText">Edit text…</button></div>`;
+    if (!multi && sh.group) h += `<div class="row muted">In group ${esc(sh.group)}</div>`;
     if (!multi && sh.kind === 'circle') h += num('r', 'Radius', 0.0625) + `<div class="row"><label>Diameter</label><input type="number" step="0.125" data-k="dia" value="${fmtIn(sh.r * 2)}"></div>`;
     if (!multi && sh.kind === 'poly' && !sh.open) h += `<div class="row"><label>All corners R</label><input type="number" step="0.0625" data-k="allr" value="${fmtIn(sh.pts[0].r || 0)}"></div>`;
     if (!multi && sh.kind === 'poly') h += polyTable(sh);
@@ -683,6 +695,7 @@
     el.querySelectorAll('[data-rc]').forEach(inp => inp.addEventListener('change', () => { snapshot(); sh.rc = sh.rc || [null, null, null, null]; sh.rc[+inp.dataset.rc] = inp.value === '' ? null : parseFloat(inp.value); delete sh.startPt; refresh(); }));
     el.querySelectorAll('[data-pv]').forEach(inp => inp.addEventListener('change', () => { snapshot(); polyEdit(sh, inp.dataset.pv, +inp.dataset.i, parseFloat(inp.value)); delete sh.startPt; refresh(); }));
     const pb = $('#btnPolyBuild'); if (pb) pb.onclick = () => openPolyBuilder(sh);
+    const et = $('#btnEditText'); if (et) et.onclick = () => openText({ ...sh.textSpec, x: (sh.textAt || sh).x, y: (sh.textAt || sh).y, group: sh.group });
     el.querySelectorAll('[data-k]').forEach(inp => {
       inp.addEventListener('change', () => {
         snapshot();
@@ -1121,6 +1134,198 @@
       });
   }
   $('#btnTrim').onclick = openTrimJoin;
+
+  // ================= PUSH 3: text, groups, curves =================
+
+  // ---------- groups ----------
+  let nextGroup = 1;
+  function groupSel() {
+    const shs = selInOrder();
+    if (shs.length < 2) return toast('Select two or more parts to group');
+    snapshot();
+    const gid = 'g' + (nextGroup++);
+    shs.forEach(s => s.group = gid);
+    LOG.action(`Grouped ${shs.length} parts as ${gid}`);
+    refresh();
+  }
+  function ungroupSel() {
+    const shs = selInOrder().filter(s => s.group);
+    if (!shs.length) return toast('Nothing grouped in the selection');
+    snapshot();
+    const gids = new Set(shs.map(s => s.group));
+    job.shapes.forEach(s => { if (gids.has(s.group)) delete s.group; });
+    LOG.action(`Ungrouped ${gids.size} group(s)`);
+    refresh();
+  }
+  // expand a selection to whole groups, so a plate and its holes move together
+  function expandGroups() {
+    const gids = new Set();
+    for (const sh of job.shapes) if (sel.has(sh.id) && sh.group) gids.add(sh.group);
+    if (!gids.size) return false;
+    let added = false;
+    for (const sh of job.shapes) if (sh.group && gids.has(sh.group) && !sel.has(sh.id)) { sel.add(sh.id); added = true; }
+    return added;
+  }
+  $('#btnGroup').onclick = groupSel;
+  $('#btnUngroup').onclick = ungroupSel;
+
+  // ---------- fonts ----------
+  const loadedFonts = {};       // name -> parsed font
+  let lastFontName = '';
+  function fontOptions() {
+    return `<option value="">Single-line engraving (built in)</option>` +
+      Object.keys(loadedFonts).map(n => `<option value="${esc(n)}" ${n === lastFontName ? 'selected' : ''}>${esc(n)} (outline)</option>`).join('');
+  }
+  function loadFontFile(file, then) {
+    const fr = new FileReader();
+    fr.onload = () => {
+      try {
+        const f = FONT.parse(fr.result);
+        const name = file.name.replace(/\.(ttf|ttc)$/i, '');
+        loadedFonts[name] = f;
+        lastFontName = name;
+        LOG.action(`Font loaded: ${name} (${f.numGlyphs} glyphs, ${f.unitsPerEm} units/em)`);
+        toast(`Loaded ${name}`);
+        then && then(name);
+      } catch (err) {
+        LOG.error(`Could not read font "${file.name}"`, err);
+        toast(err.message);
+      }
+    };
+    fr.onerror = () => { LOG.error(`Could not read font file "${file.name}"`); toast('Could not read that file'); };
+    fr.readAsArrayBuffer(file);
+  }
+
+  // ---------- text ----------
+  function openText(existing) {
+    const m = S.machine;
+    modal(`<h3>${existing ? 'Edit' : 'Add'} text</h3>
+      <div class="row"><label>Text</label><textarea id="txT" style="flex:1;min-height:52px">${existing ? esc(existing.text) : ''}</textarea></div>
+      <div class="row"><label>Font</label><select id="txFont" style="flex:1">${fontOptions()}</select>
+        <button class="small" id="txLoad">Load .ttf…</button><input type="file" id="txFile" accept=".ttf,.ttc" style="display:none"></div>
+      <div class="row"><label>Cap height</label><input type="number" step="0.125" id="txH" value="${existing ? fmtIn(existing.height) : '1'}"> in</div>
+      <div class="row"><label>Letter gap</label><input type="number" step="0.01" id="txTr" value="${existing ? fmtIn(existing.tracking || 0) : '0'}"> in</div>
+      <div class="row"><label>Align</label><select id="txAl">
+        <option value="left">Left</option><option value="center">Centre</option><option value="right">Right</option></select></div>
+      <div class="row"><label>Cut as</label><select id="txOp">
+        <option value="on">Engrave along the line (V-bit / small endmill)</option>
+        <option value="inside">Pocket the letters out</option>
+        <option value="outside">Cut the letters free</option></select></div>
+      <p class="muted" id="txNote" style="font-size:11px"></p>
+      <div class="row" style="margin-top:10px"><button class="primary" id="txOk">${existing ? 'Update' : 'Add text'}</button><button id="txCancel">Cancel</button></div>`,
+      (ov, close) => {
+        const F = ov.querySelector('#txFont'), OP = ov.querySelector('#txOp'), NOTE = ov.querySelector('#txNote');
+        if (existing) { ov.querySelector('#txAl').value = existing.align || 'left'; OP.value = existing.op || 'on'; if (existing.font) F.value = existing.font; }
+        const syncNote = () => {
+          const single = !F.value;
+          NOTE.innerHTML = single
+            ? 'The built-in font is a <b>single-line</b> font: each letter is one open stroke that the tool follows down the middle. That is what you want for engraving a part number. It cannot be pocketed or cut free, so those options are disabled.'
+            : 'A normal font gives <b>closed outlines</b>. Engraving along the line traces around each letter rather than drawing it — pick "pocket" or "cut free" unless you actually want the outline traced.';
+          for (const o of OP.options) o.disabled = single && o.value !== 'on';
+          if (single) OP.value = 'on';
+        };
+        F.onchange = syncNote; syncNote();
+        ov.querySelector('#txLoad').onclick = () => ov.querySelector('#txFile').click();
+        ov.querySelector('#txFile').onchange = (e) => {
+          const f = e.target.files && e.target.files[0];
+          if (f) loadFontFile(f, (name) => { F.innerHTML = fontOptions(); F.value = name; syncNote(); });
+        };
+        ov.querySelector('#txCancel').onclick = close;
+        ov.querySelector('#txOk').onclick = () => {
+          const spec = {
+            text: ov.querySelector('#txT').value,
+            font: F.value,
+            height: parseFloat(ov.querySelector('#txH').value) || 1,
+            tracking: parseFloat(ov.querySelector('#txTr').value) || 0,
+            align: ov.querySelector('#txAl').value,
+            op: OP.value,
+          };
+          if (!spec.text.trim()) { toast('Type some text first'); return; }
+          if (spec.height <= 0) { toast('Cap height must be positive'); return; }
+          const at = existing ? { x: existing.x, y: existing.y } : { x: S.nest.margin, y: Math.min(m.bedH / 2, 12) };
+          if (existing) removeTextGroup(existing.group);
+          const made = buildText(spec, at);
+          if (!made) return;
+          close(); refresh();
+        };
+      });
+  }
+  function removeTextGroup(gid) {
+    if (!gid) return;
+    job.shapes = job.shapes.filter(s => s.group !== gid);
+  }
+  /* Turn a text spec into shapes. Every letter becomes its own part, all tied
+     into one group so the block moves as a unit and can be re-opened later. */
+  function buildText(spec, at) {
+    let res;
+    try {
+      res = spec.font && loadedFonts[spec.font]
+        ? FONT.outlineText(loadedFonts[spec.font], spec.text, spec)
+        : FONT.strokeText(spec.text, spec);
+    } catch (err) { LOG.error('Text layout failed', err); toast('Could not lay out that text'); return 0; }
+
+    if (!res.paths.length) { toast('That text produced nothing to cut'); return 0; }
+    if (res.missing.length) {
+      const list = res.missing.join(' ');
+      LOG.warn(`Text: ${res.missing.length} character(s) not in this font were skipped: ${list}`);
+      toast(`Skipped unsupported character(s): ${list}`);
+    }
+    snapshot();
+    const gid = 'g' + (nextGroup++);
+    const loops = res.paths.map(p => ({ loop: FONT.toLoop(p.pts, p.closed), closed: p.closed }));
+    // for outline fonts, a contour inside an odd number of others is a counter
+    const depth = loops.map((L, i) => {
+      if (!L.closed) return 0;
+      const pt = G.pointAt(L.loop[0], 0.5);
+      let d = 0;
+      loops.forEach((O, j) => { if (i !== j && O.closed && G.pointInLoop(pt, O.loop)) d++; });
+      return d;
+    });
+    let n = 0;
+    loops.forEach((L, i) => {
+      if (!L.loop.length) return;
+      const isHole = L.closed && (depth[i] % 2 === 1);
+      const op = !L.closed ? 'on' : (spec.op === 'on' ? 'on' : (isHole ? (spec.op === 'inside' ? 'outside' : 'inside') : spec.op));
+      const sh = pathShape(L.loop.map(s => G.line(G.P(s.a.x + at.x, s.a.y + at.y), G.P(s.b.x + at.x, s.b.y + at.y))), {
+        name: 'text', open: !L.closed, op, group: gid,
+        text: i === 0 ? spec.text : undefined,
+      });
+      // Keep the spec on the first shape so the block can be re-opened.
+      // The anchor is stored separately, NOT as sh.x/sh.y: the loop points
+      // are already offset by `at`, and worldLoop would add it a second time.
+      if (i === 0) Object.assign(sh, { textSpec: { ...spec }, textAt: { x: at.x, y: at.y } });
+      job.shapes.push(sh); n++;
+    });
+    sel.clear();
+    job.shapes.forEach(s => { if (s.group === gid) sel.add(s.id); });
+    LOG.action(`Text added: "${spec.text.replace(/\n/g, ' ')}" — ${n} part(s), ${spec.font || 'single-line'} at ${spec.height} in`);
+    return n;
+  }
+  $('#btnText').onclick = () => {
+    // re-open the dialog on an existing text block if one is selected
+    const cur = selInOrder().find(s => s.textSpec);
+    openText(cur ? { ...cur.textSpec, x: (cur.textAt || cur).x, y: (cur.textAt || cur).y, group: cur.group } : null);
+  };
+
+  // ---------- ellipse / spline ----------
+  function finishEllipse(d) {
+    const rx = Math.abs(d.b.x - d.a.x), ry = Math.abs(d.b.y - d.a.y);
+    if (rx < 0.01 || ry < 0.01) { draw(); return; }
+    addShape(makeShape('ellipse', { name: 'ellipse', x: d.a.x, y: d.a.y, rx, ry }));
+    LOG.action(`Ellipse added: ${fmtIn(rx * 2)} × ${fmtIn(ry * 2)} in`);
+  }
+  function finishSpline() {
+    const d = drawing; drawing = null;
+    if (!d || d.pts.length < 3) { draw(); return; }
+    const x0 = Math.min(...d.pts.map(p => p.x)), y0 = Math.min(...d.pts.map(p => p.y));
+    const closed = !!d.closeIt;
+    addShape(makeShape('spline', {
+      name: 'spline', x: x0, y: y0, open: !closed, op: closed ? 'outside' : 'on',
+      pts: d.pts.map(p => ({ x: p.x - x0, y: p.y - y0 })),
+    }));
+    LOG.action(`Spline added through ${d.pts.length} points${closed ? ' (closed)' : ''}`);
+  }
+
 
   function joinSelected(tol) {
     const shs = selInOrder().filter(s => s.open);
@@ -1621,5 +1826,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   ICONS.apply(document);
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, gripsOf, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, gripsOf, buildText, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();

@@ -130,6 +130,48 @@ app.whenReady().then(async () => {
       return CNC.PO.generate(j).gcode; })()`);
     ok(typeof gc === 'string' && gc.length > 50, 'TAP still generates with a dimension present');
 
+    console.log('push 3: text');
+    ok(await run('!!CNC.FONT && !!CNC.FONT.strokeText'), 'font module reached the bundle');
+    await run('(() => { CNC.job.shapes.length = 0; CNC.job.dims = []; CNC.refresh(); return true; })()');
+    const made = await run(`CNC.buildText({text:'PART 12', font:'', height:0.5, tracking:0, align:'left', op:'on'}, {x:2,y:2})`);
+    ok(typeof made === 'number' && made > 0, 'single-line text produced parts', String(made));
+    ok((await run('CNC.job.shapes.every(s => s.open)')) === true, 'engraving text is all OPEN paths (centreline)');
+    ok((await run("CNC.job.shapes.every(s => s.op === 'on')")) === true, 'engraving text cuts on the line');
+    const grp = await run('new Set(CNC.job.shapes.map(s=>s.group)).size');
+    ok(grp === 1, 'the whole text block shares one group', String(grp));
+    const th = await run(`(() => { const ys = CNC.job.shapes.flatMap(s => CNC.worldLoop(s).flatMap(g => [g.a.y, g.b.y]));
+      return Math.max(...ys) - Math.min(...ys); })()`);
+    ok(Math.abs(th - 0.5) < 1e-6, 'text cap height is exactly as asked (0.5 in)', String(th));
+
+    console.log('push 3: text still posts to TAP');
+    const tg = await run(`(() => { const j={shapes:CNC.job.shapes.map(s=>({loop:CNC.worldLoop(s),op:s.op,toolId:1,open:s.open})),
+      tools:CNC.S.tools, material:{thickness:0.25}, cutThrough:0, machine:CNC.S.machine};
+      return CNC.PO.generate(j).gcode.length; })()`);
+    ok(typeof tg === 'number' && tg > 200, 'engraved text generates real G-code', String(tg));
+
+    console.log('push 3: groups');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      for (let i=0;i<3;i++) CNC.job.shapes.push({id:700+i,name:'g'+i,kind:'rect',x:i*3,y:0,rot:0,w:2,h:2,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const gsel = await run(`(() => { const CNCsel = CNC.job.shapes; CNC.job.shapes.forEach(s=>s.group='gX'); return CNC.job.shapes.filter(s=>s.group==='gX').length; })()`);
+    ok(gsel === 3, 'shapes can carry a group id', String(gsel));
+
+    console.log('push 3: ellipse + spline');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:800,name:'e',kind:'ellipse',x:5,y:5,rot:0,rx:4,ry:2,op:'outside',toolId:1,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const ea = await run('Math.abs(CNC.G.signedArea(CNC.worldLoop(CNC.job.shapes[0])))');
+    ok(Math.abs(ea - Math.PI * 8) < 0.05, 'ellipse area is about pi*rx*ry', String(ea));
+    const eb = JSON.parse(await run('JSON.stringify(CNC.G.bbox(CNC.worldLoop(CNC.job.shapes[0])))'));
+    ok(Math.abs(eb.w - 8) < 0.01 && Math.abs(eb.h - 4) < 0.01, 'ellipse bounding box is 8 x 4', eb.w + 'x' + eb.h);
+
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:801,name:'s',kind:'spline',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:2,y:3},{x:5,y:1},{x:8,y:4}]});
+      CNC.refresh(); return true; })()`);
+    const sl = await run('CNC.worldLoop(CNC.job.shapes[0]).length');
+    ok(sl > 10, 'spline flattens to many segments', String(sl));
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
