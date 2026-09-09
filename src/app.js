@@ -11,7 +11,7 @@
     materials: PO.DEFAULT_MATERIALS.map(m => ({ ...m })),
     nest: { gap: 0.5, margin: 0.375, rotate: false },
     ai: { key: '', model: 'claude-sonnet-4-5' },
-    snap: { on: true, ortho: false, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
+    snap: { on: true, ortho: false, trimTol: 0.125, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
   };
   let S = loadSettings();
   function loadSettings() {
@@ -109,6 +109,21 @@
   window.addEventListener('resize', resize);
 
   function snapV() { return parseFloat($('#selSnap').value) || 0; }
+  // decimals worth showing: enough for the current snap, capped at the post's 4
+  function coordDp() {
+    const s = snapV();
+    if (!s) return 4;
+    if (s >= 0.0625) return 4;
+    return 4;
+  }
+  let zoomToast = 0;
+  function showZoomLimit(atMax) {
+    if (Date.now() - zoomToast < 1500) return;
+    zoomToast = Date.now();
+    toast(atMax
+      ? 'Maximum zoom — 0.001 in is already about a pixel here'
+      : 'Minimum zoom — the whole bed is in view');
+  }
 
   // ---------- object snapping ----------
   let lastSnap = null;          // {p,type} of the most recent snap, for the marker + status
@@ -413,7 +428,15 @@
   cv.addEventListener('contextmenu', e => e.preventDefault());
   cv.addEventListener('wheel', e => {
     e.preventDefault(); const r = cv.getBoundingClientRect(); const px = (e.clientX - r.left) * devicePixelRatio, py = (e.clientY - r.top) * devicePixelRatio;
-    const before = S2W({ x: px, y: py }); const f = e.deltaY < 0 ? 1.15 : 1 / 1.15; view.scale *= f;
+    /* Zoom is clamped. MAX puts 0.001 in at ~1.2 screen px, which is as fine as
+       the post's 4-decimal output can express - going deeper only costs
+       precision in the view transform without buying accuracy. MIN keeps the
+       whole bed reachable. */
+    const MAXZ = 1200, MINZ = 1.5;
+    const before = S2W({ x: px, y: py }); const f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const want = view.scale * f;
+    if ((want > MAXZ && f > 1) || (want < MINZ && f < 1)) { showZoomLimit(want > MAXZ); return; }
+    view.scale = Math.max(MINZ, Math.min(MAXZ, want));
     const after = S2W({ x: px, y: py }); view.ox += (after.x - before.x) * view.scale; view.oy += (after.y - before.y) * view.scale; draw();
   }, { passive: false });
   function evPos(e) { const r = cv.getBoundingClientRect(); const p = { x: (e.clientX - r.left) * devicePixelRatio, y: (e.clientY - r.top) * devicePixelRatio }; return { s: p, w: S2W(p) }; }
@@ -509,7 +532,7 @@
     const ws = resolvePoint(w, { from: drawAnchor(), polar: e.altKey, exclude: excl });
     $('#stX').textContent = ws.x.toFixed(4); $('#stY').textContent = ws.y.toFixed(4);
     const tag = $('#cursorTag'); tag.style.display = 'block'; tag.style.left = (s.x / devicePixelRatio + 16) + 'px'; tag.style.top = (s.y / devicePixelRatio + 16) + 'px';
-    tag.textContent = `${ws.x.toFixed(3)}, ${ws.y.toFixed(3)}` + (lastSnap && lastSnap.type !== 'grid' ? `  ${SNAP_LABEL[lastSnap.type]}` : '');
+    tag.textContent = `${ws.x.toFixed(coordDp())}, ${ws.y.toFixed(coordDp())}` + (lastSnap && lastSnap.type !== 'grid' ? `  ${SNAP_LABEL[lastSnap.type]}` : '');
     $('#stSnap').textContent = (S.snap.ortho || orthoTemp ? 'ORTHO ' : '') + (lastSnap ? SNAP_LABEL[lastSnap.type] : '');
     if (drag) {
       if (drag.kind === 'pan') { view.ox = drag.ox + (s.x - drag.sx); view.oy = drag.oy - (s.y - drag.sy); }
@@ -1127,6 +1150,7 @@
   $('#btnFillet').onclick = () => openCorner('fillet');
 
   // ---------- trim / extend / join ----------
+  function trimTol() { return S.snap.trimTol || 0.125; }
   function openTrimJoin() {
     const shs = selInOrder();
     const opens = shs.filter(s => s.open);
@@ -1137,12 +1161,15 @@
       <div class="row"><button class="small" id="tjClose">Force close</button><span class="muted">connect the two ends of one open path with a straight segment</span></div>
       <div class="row"><button class="small" id="tjTrim">Trim tool</button><span class="muted">then click the piece of an open path to remove, between its crossings</span></div>
       <div class="row"><button class="small" id="tjExtend">Extend tool</button><span class="muted">then click near the end of an open path to run it out to the next shape it meets</span></div>
-      <div class="row"><label>Join tolerance</label><input type="number" step="0.001" id="tjTol" value="0.01"> in</div>
-      <p class="muted" style="font-size:11px">Imported DXFs often have ends that nearly meet but do not. Raise the tolerance to pull those together.</p>
+      <div class="row"><button class="small" id="tjHeal">Snap loose ends to edges</button><span class="muted">pull endpoints that stop just short onto the line they should meet</span></div>
+      <div class="row"><label>Tolerance</label><input type="number" step="0.001" id="tjTol" value="${fmtIn(trimTol())}"> in</div>
+      <p class="muted" style="font-size:11px">Used for joining, healing and trimming. Drawn or imported paths often stop a few thousandths short of the line they were meant to meet — geometrically that is not a crossing, so trim would have nothing to cut back to. Anything within this distance is treated as touching.</p>
       <div class="row" style="margin-top:10px"><button id="tjCancel">Close</button></div>`,
       (ov, close) => {
         ov.querySelector('#tjCancel').onclick = close;
-        const tol = () => parseFloat(ov.querySelector('#tjTol').value) || 0.01;
+        const tol = () => { const v = parseFloat(ov.querySelector('#tjTol').value); return isFinite(v) && v > 0 ? v : 0.125; };
+        ov.querySelector('#tjTol').addEventListener('change', () => { S.snap.trimTol = tol(); saveSettings(); });
+        ov.querySelector('#tjHeal').onclick = () => { S.snap.trimTol = tol(); saveSettings(); healSelection(tol()); close(); };
         ov.querySelector('#tjErase').onclick = () => { setTool('trim'); close(); toast('Click the edge you want to remove'); };
         ov.querySelector('#tjJoin').onclick = () => { joinSelected(tol()); close(); };
         ov.querySelector('#tjClose').onclick = () => { forceClose(); close(); };
@@ -1668,6 +1695,69 @@
 
   /* Trim: split the clicked open path at every crossing with other geometry
      and drop the span the user clicked on. */
+
+  /* ---------- heal endpoints ----------
+     Drawn or imported paths often stop a few thousandths short of the line
+     they were meant to meet. Geometrically that is not a crossing, so trim has
+     nothing to cut back to and joins refuse to chain. Pull any endpoint that
+     lands within `tol` of another shape's edge onto that edge. */
+  function healEndsOf(sh, tol, exclude) {
+    if (!sh.open) return null;
+    let loop;
+    try { loop = worldLoop(sh); } catch (e) { return null; }
+    if (!loop.length) return null;
+    const others = job.shapes.filter(o => o.id !== sh.id && !(exclude && exclude.has(o.id)));
+    let moved = 0;
+    const pull = (pt) => {
+      let best = null;
+      for (const o of others) {
+        let ol;
+        try { ol = worldLoop(o); } catch (e) { continue; }
+        for (const t of ol) {
+          const q = SNAP.nearestOnSeg(t, pt);
+          const d = G.dist(q, pt);
+          if (d > 1e-9 && d <= tol && (!best || d < best.d)) best = { q, d };
+        }
+      }
+      return best;
+    };
+    const first = loop[0], last = loop[loop.length - 1];
+    const a = pull(first.a);
+    if (a) { if (first.type === 'line') first.a = a.q; else { first.a = a.q; } moved++; }
+    const b = pull(last.b);
+    if (b) { if (last.type === 'line') last.b = b.q; else { last.b = b.q; } moved++; }
+    if (!moved) return null;
+    return { loop, moved, da: a && a.d, db: b && b.d };
+  }
+  // replace a shape in place with a healed version, keeping its cut settings
+  function replaceWithLoop(sh, loop, nameSuffix) {
+    const idx = job.shapes.findIndex(s => s.id === sh.id);
+    const ns = pathShape(loop, {
+      name: sh.name + (nameSuffix || ''), open: sh.open, op: sh.op,
+      toolId: sh.toolId, climb: sh.climb, group: sh.group,
+    });
+    if (idx >= 0) job.shapes.splice(idx, 1, ns); else job.shapes.push(ns);
+    return ns;
+  }
+  function healSelection(tol) {
+    const shs = selInOrder().filter(s => s.open);
+    const targets = shs.length ? shs : job.shapes.filter(s => s.open);
+    if (!targets.length) return toast('No open paths to heal');
+    snapshot();
+    let n = 0, worst = 0;
+    for (const sh of targets.slice()) {
+      const r = healEndsOf(sh, tol);
+      if (!r) continue;
+      worst = Math.max(worst, r.da || 0, r.db || 0);
+      replaceWithLoop(sh, r.loop);
+      n += r.moved;
+    }
+    if (!n) { toast(`No loose ends within ${fmtIn(tol)} in`); LOG.info(`Heal ends: nothing within ${tol} in`); refresh(); return; }
+    LOG.action(`Healed ${n} loose end(s) onto nearby edges (largest move ${fmtIn(worst)} in)`);
+    toast(`Pulled ${n} end${n > 1 ? 's' : ''} onto the nearest edge`);
+    refresh();
+  }
+
   // every point where this shape crosses any other, as {segment index, param}
   function crossingsOf(target, loop) {
     const others = job.shapes.filter(s => s.id !== target.id).map(s => { try { return worldLoop(s); } catch (e) { return []; } });
@@ -1725,15 +1815,30 @@
     refresh();
   }
 
-  function trimAt(wp) {
-    const target = hitShape(wp);
+  function trimAt(wp, forced) {
+    const target = forced || hitShape(wp);
     if (!target) return toast('Click the edge you want to remove');
     const loop = worldLoop(target);
     if (!loop.length) return;
     /* No crossings to trim back to? Then the operator means "delete this
        edge" - e.g. dropping one side of a rectangle to leave a C. That is far
        less work than rebuilding the shape as a 3-sided polyline. */
-    if (!crossingsOf(target, loop).length) return eraseEdgeAt(target, loop, wp);
+    if (!crossingsOf(target, loop).length) {
+      /* Nearly-touching counts. Pull a loose end onto the edge it was meant to
+         meet (within the trim tolerance) and look again before falling back to
+         deleting the clicked edge. */
+      const tol = trimTol();
+      const healed = healEndsOf(target, tol);
+      if (healed && crossingsOf(target, healed.loop).length) {
+        snapshot();
+        const ns = replaceWithLoop(target, healed.loop);
+        LOG.action(`Trim: pulled a loose end ${fmtIn(Math.max(healed.da || 0, healed.db || 0))} in onto the crossing edge first`);
+        toast('Pulled the loose end onto the line, then trimmed');
+        invalidateLoops();
+        return trimAt(wp, ns);
+      }
+      return eraseEdgeAt(target, loop, wp);
+    }
     const cuts = crossingsOf(target, loop);
     cuts.sort((a, b) => (a.i - b.i) || (a.u - b.u));
     // build spans between consecutive cuts
@@ -2178,5 +2283,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, lastSnapInfo: () => lastSnap, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();

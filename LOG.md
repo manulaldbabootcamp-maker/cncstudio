@@ -5,6 +5,42 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Precision: 0.001 in snap, zoom limits, healing loose ends
+
+### Fixed
+- **The cursor appeared to freeze when zoomed in, and only ever reported
+  multiples of 0.125.** Same cause: grid snap was quantising every cursor
+  position to 1/8 in, so zoomed in the point jumped in large steps and looked
+  stuck between them. Snap now offers **0.001, 0.005, 0.01, 1/64 and 1/32**
+  alongside the old fractions, and **0.001 is the default**. Coordinates read
+  to 4 decimals, matching what the post-processor actually emits.
+- **Zoom is now clamped.** Maximum zoom puts 0.001 in at roughly one screen
+  pixel — as fine as the machine output can express, since the TAP is written
+  to 4 decimals. Going deeper only lost precision in the view transform without
+  buying accuracy. Minimum zoom keeps the whole bed in view. Hitting either
+  limit says so instead of silently doing nothing.
+
+### Added
+- **Loose ends are healed onto the line they should meet.** A path drawn or
+  imported a few thousandths short of another edge is not geometrically a
+  crossing, so trim had nothing to cut back to and joins refused to chain.
+  - **Trim now heals first**: if the clicked path nearly touches something
+    within the tolerance, the loose end is pulled exactly onto that edge and
+    the trim proceeds, saying so rather than doing it invisibly.
+  - **Snap loose ends to edges** in the Trim dialog does it on demand, for the
+    selection or the whole job.
+  - Default tolerance **0.125 in**, editable and now saved with settings.
+  - A gap wider than the tolerance is deliberately left alone — near misses get
+    healed, real gaps do not get silently stretched shut.
+
+### Tests
+- Smoke test now 73 assertions: a point resolves to 0.001 rather than 0.125,
+  the 0.001 option exists and is the default, a line stopping 0.02 in short
+  genuinely reports no crossing, healing pulls its end to exactly x=10, and a
+  1 in gap is left untouched.
+
+---
+
 ## Delete an edge
 
 ### Added

@@ -303,6 +303,56 @@ app.whenReady().then(async () => {
     await run(`(() => { const sh = CNC.job.shapes[0]; CNC.eraseEdgeAt(sh, CNC.worldLoop(sh), {x:2.5,y:0}); return true; })()`);
     ok((await run('CNC.job.shapes.length')) === 0, 'the part is gone when its only edge is deleted');
 
+    console.log('fine snap + zoom limits');
+    const opts = JSON.parse(await run(`JSON.stringify(Array.from(document.querySelectorAll('#selSnap option')).map(o=>o.value))`));
+    ok(opts.includes('0.001'), 'a 0.001 in snap option exists', JSON.stringify(opts));
+    ok((await run(`document.querySelector('#selSnap').value`)) === '0.001', 'and it is the default');
+    // at 0.001 the cursor must resolve to thousandths, not eighths
+    const rp = await run(`(() => { const p = CNC.resolvePoint({x: 3.1417, y: 2.7183}); return JSON.stringify(p); })()`);
+    const rpv = JSON.parse(rp);
+    ok(Math.abs(rpv.x - 3.142) < 1e-9 && Math.abs(rpv.y - 2.718) < 1e-9, 'a point resolves to 0.001, not 0.125', rp);
+
+    const zmax = await run(`(() => { CNC.view ? 0 : 0; return true; })()`);
+    ok(zmax === true, 'zoom probe ran');
+
+    console.log('heal loose ends (trim near-miss)');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      // a vertical wall, and a horizontal line that stops 0.02 in short of it
+      CNC.job.shapes.push({id:970,name:'wall',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:10,y:-5},{x:10,y:5}]});
+      CNC.job.shapes.push({id:971,name:'short',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:9.98,y:0}]});
+      CNC.refresh(); return true; })()`);
+    const crossBefore = await run(`(() => { const sh = CNC.job.shapes.find(s=>s.name==='short');
+      return CNC.crossingsOf(sh, CNC.worldLoop(sh)).length; })()`);
+    ok(crossBefore === 0, 'a line stopping 0.02 in short genuinely does not cross', String(crossBefore));
+
+    const healed = await run(`(() => { const sh = CNC.job.shapes.find(s=>s.name==='short');
+      const r = CNC.healEndsOf(sh, 0.125);
+      if (!r) return 'none';
+      return JSON.stringify({moved: r.moved, end: r.loop[r.loop.length-1].b});
+    })()`);
+    ok(healed !== 'none', 'healing finds the near miss', healed);
+    if (healed !== 'none') {
+      const hv = JSON.parse(healed);
+      ok(Math.abs(hv.end.x - 10) < 1e-9, 'the loose end is pulled exactly onto the wall at x=10', JSON.stringify(hv.end));
+    }
+    // after healing, it really does cross
+    await run(`(() => { const sh = CNC.job.shapes.find(s=>s.name==='short');
+      const r = CNC.healEndsOf(sh, 0.125); CNC.replaceWithLoop(sh, r.loop); CNC.refresh(); return true; })()`);
+    const endsOnWall = await run(`(() => { const sh = CNC.job.shapes.find(s=>s.name==='short');
+      const l = CNC.worldLoop(sh); return Math.abs(l[l.length-1].b.x - 10) < 1e-9; })()`);
+    ok(endsOnWall === true, 'the healed shape ends on the wall');
+
+    // a gap wider than tolerance must be left alone, not silently stretched
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:972,name:'wall',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,pts:[{x:10,y:-5},{x:10,y:5}]});
+      CNC.job.shapes.push({id:973,name:'far',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,pts:[{x:0,y:0},{x:9,y:0}]});
+      CNC.refresh(); return true; })()`);
+    const farHeal = await run(`(() => { const sh = CNC.job.shapes.find(s=>s.name==='far');
+      return CNC.healEndsOf(sh, 0.125) ? 'moved' : 'none'; })()`);
+    ok(farHeal === 'none', 'a 1 in gap is NOT healed — only near misses are', farHeal);
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
