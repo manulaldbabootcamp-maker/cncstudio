@@ -73,6 +73,12 @@
   td input { width:100%; }
   td input[type=number] { width:80px; }
   #props td input[type=number] { width:62px; padding:2px 4px; }
+  tr.edgeRow { cursor:pointer; }
+  tr.edgeRow:hover td { background:#20262e; }
+  tr.edgeSel td { background:#3a2f18; color:var(--warn) !important; }
+  input[type=range].slider { -webkit-appearance:none; appearance:none; width:100%; height:18px; background:transparent; padding:0; border:none; }
+  input[type=range].slider::-webkit-slider-runnable-track { height:4px; background:var(--panel2); border:1px solid var(--border); border-radius:3px; }
+  input[type=range].slider::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:14px; height:14px; margin-top:-6px; border-radius:50%; background:var(--accent); border:1px solid #0b1520; cursor:pointer; }
   textarea { width:100%; min-height:70px; font: 12px ui-monospace, Consolas, monospace; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:14px; max-width:980px; }
   .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
@@ -145,7 +151,7 @@
     <div class="row"><label>Cut-through</label><input type="number" id="inCutThrough" step="0.005" value="0"> in</div>
     <div class="row"><label>Snap</label><select id="selSnap"><option value="0">off (free)</option><option value="0.001" selected>0.001</option><option value="0.005">0.005</option><option value="0.01">0.01</option><option value="0.015625">1/64</option><option value="0.03125">1/32</option><option value="0.0625">1/16</option><option value="0.125">1/8</option><option value="0.25">1/4</option><option value="0.5">1/2</option><option value="1">1</option></select></div>
     <div class="row"><label><input type="checkbox" id="chkPaths" checked> Toolpaths</label><label><input type="checkbox" id="chkKerf"> Kerf</label></div>
-    <div class="row"><label><input type="checkbox" id="chkCentres" checked> Centre marks</label></div>
+    <div class="row"><label><input type="checkbox" id="chkCentres" checked> Centre marks</label><label><input type="checkbox" id="chkPtNums" checked> Point numbers</label></div>
     <h3>Parts <span id="partCount" class="muted"></span></h3>
     <div id="shapeList" class="list"></div>
     <div class="row" style="margin-top:8px">

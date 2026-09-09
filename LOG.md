@@ -5,6 +5,42 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Select and edit one side of a shape
+
+### Added
+- **Edge sub-selection.** Click a part to select it, then click one of its
+  sides to select just that side — so one side of a triangle can be worked on
+  by itself. The chosen side is highlighted in orange, and its row in the
+  points table is highlighted to match. Clicking a row in that table selects
+  the side too. Escape steps back out to the whole part.
+- **Delete removes only that side.** With a side selected, Delete (or the
+  *Delete this side* button) removes it and leaves the rest — a triangle minus
+  one side becomes a two-segment open path.
+- **Length, angle and bulge for the selected side**, on the right, each with a
+  number field *and* a slider. Type an exact value, or drag the slider to feel
+  the shape out with the drawing updating live. Changing length or angle moves
+  the far point and the rest of the part follows.
+- **Point numbers on the canvas** (P1, P2, …) matching the points table, so the
+  rows on the right map onto what is on screen. Toggle with *Point numbers* in
+  the left panel.
+- **Rectangles and `path` shapes become editable on demand.** Clicking a side
+  of a boolean result, imported outline or text converts it to a polygon,
+  carrying its arcs across as per-edge bulges so no curve is lost. Logged when
+  it happens.
+
+### Changed
+- The points table no longer scrolls inside its own 320 px window; the whole
+  right-hand panel scrolls as one column, so parts with many points are usable.
+
+### Tests
+- Smoke test now 94 assertions: clicking the bottom of a triangle picks side 0,
+  the right-hand side picks side 1, clicking the middle picks none; typing 20
+  makes the side exactly 20 in and 30 sets exactly 30°; all three sliders are
+  present; deleting the side leaves a 2-segment open path; and a `path` shape
+  converts to a 4-point polygon.
+
+---
+
 ## Snap reach is a real distance, not a screen distance
 
 ### Fixed

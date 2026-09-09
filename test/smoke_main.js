@@ -393,6 +393,66 @@ app.whenReady().then(async () => {
     ok((await run('CNC.snapTol()')) >= 0.5 - 1e-9, 'a custom snap radius is used', String(await run('CNC.snapTol()')));
     await run(`(() => { CNC.S.snap.radius = 0.125; return true; })()`);
 
+    console.log('edge sub-selection (one side of a triangle)');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:990,name:'tri',kind:'poly',x:0,y:0,rot:0,open:false,op:'outside',toolId:1,climb:false,
+        pts:[{x:0,y:0,r:0,arcR:0},{x:12,y:0,r:0,arcR:0},{x:6,y:8,r:0,arcR:0}]});
+      CNC.refresh(); return true; })()`);
+    ok((await run('CNC.worldLoop(CNC.job.shapes[0]).length')) === 3, 'triangle has 3 sides');
+
+    // clicking the middle of the bottom side finds side 0
+    const idx = await run(`CNC.edgeIndexAt(CNC.job.shapes[0], {x:6, y:0})`);
+    ok(idx === 0, 'clicking the bottom side identifies side 0', String(idx));
+    const idx2 = await run(`CNC.edgeIndexAt(CNC.job.shapes[0], {x:9, y:4})`);
+    ok(idx2 === 1, 'clicking the right side identifies side 1', String(idx2));
+    const idxNone = await run(`CNC.edgeIndexAt(CNC.job.shapes[0], {x:6, y:4})`);
+    ok(idxNone === -1, 'clicking the middle of the part selects no side', String(idxNone));
+
+    console.log('editing the selected side');
+    await run(`(() => { CNC.setSelEdge(990, 0); return true; })()`);
+    // set side 0 to exactly 20 in long
+    const beforeLen = await run(`CNC.G.segLen(CNC.worldLoop(CNC.job.shapes[0])[0])`);
+    ok(Math.abs(beforeLen - 12) < 1e-9, 'side 0 starts at 12 in', String(beforeLen));
+    const hasField = await run(`!!document.querySelector('#props [data-ev="len"]')`);
+    ok(hasField === true, 'the selected side shows a Length field on the right');
+    await run(`(() => { const el = document.querySelector('#props [data-ev="len"]');
+      if (!el) return false;
+      el.value = '20'; el.dispatchEvent(new Event('change', {bubbles:true})); return true; })()`);
+    const afterLen = await run(`CNC.G.segLen(CNC.worldLoop(CNC.job.shapes[0])[0])`);
+    ok(Math.abs(afterLen - 20) < 1e-6, 'typing 20 makes side 0 exactly 20 in', String(afterLen));
+
+    // angle
+    await run(`(() => { const el = document.querySelector('#props [data-ev="ang"]');
+      if (!el) return false;
+      el.value = '30'; el.dispatchEvent(new Event('change', {bubbles:true})); return true; })()`);
+    const ang = await run(`(() => { const s = CNC.worldLoop(CNC.job.shapes[0])[0];
+      return Math.atan2(s.b.y-s.a.y, s.b.x-s.a.x) * 180/Math.PI; })()`);
+    ok(Math.abs(ang - 30) < 1e-6, 'typing 30 sets side 0 to exactly 30 deg', String(ang));
+
+    console.log('sliders exist for the selected side');
+    const sliders = await run(`document.querySelectorAll('#props input[type=range].slider').length`);
+    ok(sliders >= 3, 'length, angle and bulge sliders are shown', String(sliders));
+
+    console.log('delete just that side');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:991,name:'tri',kind:'poly',x:0,y:0,rot:0,open:false,op:'outside',toolId:1,climb:false,
+        pts:[{x:0,y:0,r:0,arcR:0},{x:12,y:0,r:0,arcR:0},{x:6,y:8,r:0,arcR:0}]});
+      CNC.refresh(); return true; })()`);
+    await run(`(() => { CNC.setSelEdge(991, 0); return true; })()`);
+    const del = await run('CNC.deleteSelectedEdge()');
+    ok(del === true, 'deleting the selected side reports success');
+    ok((await run('CNC.job.shapes.length')) === 1, 'the part survives with one side gone');
+    const rem = JSON.parse(await run(`JSON.stringify({n: CNC.worldLoop(CNC.job.shapes[0]).length, open: CNC.job.shapes[0].open})`));
+    ok(rem.n === 2 && rem.open === true, 'a triangle minus one side is a 2-segment open path', JSON.stringify(rem));
+
+    console.log('path shapes become editable too');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      const loop = CNC.G.rectLoop(0,0,10,6);
+      CNC.job.shapes.push({id:992,name:'p',kind:'path',x:0,y:0,rot:0,open:false,op:'outside',toolId:1,climb:false,loop});
+      CNC.refresh(); return true; })()`);
+    const conv = await run(`(() => { const sh = CNC.job.shapes[0]; CNC.makeEditable(sh); return sh.kind + ':' + (sh.pts ? sh.pts.length : 0); })()`);
+    ok(conv === 'poly:4', 'a path shape converts to an editable 4-point polygon', conv);
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

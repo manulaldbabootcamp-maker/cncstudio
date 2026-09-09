@@ -270,6 +270,8 @@
     // centre marks, then dimensions (both annotation only - never posted)
     drawCentreMarks();
     drawDims();
+    // selected side + point numbers
+    drawEdgeSelection();
     // grips on a single selected shape
     drawGrips();
     // snap marker last, so it sits on top of everything
@@ -488,11 +490,20 @@
       }
       const hit = hitShape(w);
       if (hit) {
-        if (e.shiftKey) { sel.has(hit.id) ? sel.delete(hit.id) : sel.add(hit.id); }
-        else if (!sel.has(hit.id)) { sel.clear(); sel.add(hit.id); }
+        const alreadyOnly = sel.size === 1 && sel.has(hit.id) && !e.shiftKey;
+        if (e.shiftKey) { sel.has(hit.id) ? sel.delete(hit.id) : sel.add(hit.id); clearEdge(); }
+        else if (!sel.has(hit.id)) { sel.clear(); sel.add(hit.id); clearEdge(); }
+        /* Second click on a part you already have selected drills into it and
+           picks the side under the cursor, so one side of a triangle can be
+           worked on by itself. */
+        if (alreadyOnly) {
+          const ed = makeEditable(hit);
+          const i = ed ? edgeIndexAt(ed, w) : -1;
+          if (i >= 0) { selEdge = { id: ed.id, i }; drag = null; refreshList(); refreshProps(); draw(); return; }
+        }
         expandGroups();
         drag = { kind: 'move', start: w, orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false };
-      } else { if (!e.shiftKey) sel.clear(); drag = { kind: 'marquee', a: w, cur: w }; }
+      } else { if (!e.shiftKey) sel.clear(); clearEdge(); drag = { kind: 'marquee', a: w, cur: w }; }
       refreshList(); refreshProps(); draw();
     } else if (tool === 'rect' || tool === 'circle' || tool === 'ellipse') {
       drawing = { kind: tool, a: ws, b: ws };
@@ -653,9 +664,9 @@
     }
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
     if (e.key === 'Shift') { orthoTemp = true; draw(); }
-    if (e.key === 'Escape') { drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
+    if (e.key === 'Escape') { if (clearEdge()) { refreshProps(); draw(); return; } drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
     if (e.key === 'Enter' && drawing) { if (drawing.kind === 'spline') finishSpline(); else finishPoly(); }
-    if (e.key === 'Delete' || e.key === 'Backspace') { if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
+    if (e.key === 'Delete' || e.key === 'Backspace') { if (selEdge && deleteSelectedEdge()) return; if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.shiftKey ? redo() : undo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { redo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { duplicateSel(); e.preventDefault(); }
@@ -727,6 +738,7 @@
     const sh = shs[0]; const multi = shs.length > 1;
     const num = (k, label, step = 0.125) => `<div class="row"><label>${label}</label><input type="number" step="${step}" data-k="${k}" value="${fmtIn(sh[k] ?? 0)}"></div>`;
     let h = `<h3>${multi ? shs.length + ' parts' : esc(sh.kind)}</h3>`;
+    if (!multi) h = edgePanel(sh) + h;
     if (!multi) h += `<div class="row"><label>Name</label><input type="text" data-k="name" value="${esc(sh.name)}" style="flex:1"></div>`;
     h += num('x', 'X') + num('y', 'Y');
     if (!multi && sh.kind === 'rect') {
@@ -754,6 +766,13 @@
     el.querySelectorAll('[data-rc]').forEach(inp => inp.addEventListener('change', () => { snapshot(); sh.rc = sh.rc || [null, null, null, null]; sh.rc[+inp.dataset.rc] = inp.value === '' ? null : parseFloat(inp.value); delete sh.startPt; refresh(); }));
     el.querySelectorAll('[data-pv]').forEach(inp => inp.addEventListener('change', () => { snapshot(); polyEdit(sh, inp.dataset.pv, +inp.dataset.i, parseFloat(inp.value)); delete sh.startPt; refresh(); }));
     const pb = $('#btnPolyBuild'); if (pb) pb.onclick = () => openPolyBuilder(sh);
+    el.querySelectorAll('tr.edgeRow').forEach(tr => tr.addEventListener('click', (ev) => {
+      if (ev.target.tagName === 'INPUT') return;      // let the number fields work
+      makeEditable(sh);
+      selEdge = { id: sh.id, i: +tr.dataset.edge };
+      refreshProps(); draw();
+    }));
+    wireEdgePanel(el, sh);
     const et = $('#btnEditText'); if (et) et.onclick = () => openText({ ...sh.textSpec, x: (sh.textAt || sh).x, y: (sh.textAt || sh).y, group: sh.group });
     el.querySelectorAll('[data-k]').forEach(inp => {
       inp.addEventListener('change', () => {
@@ -777,13 +796,13 @@
   const deg = (r) => r * 180 / Math.PI, rad = (d) => d * Math.PI / 180;
   function polyTable(sh) {
     const pts = sh.pts, n = pts.length; const closed = !sh.open;
-    let h = `<h3>Points &amp; edges <span class="muted">(from part origin)</span></h3><div style="overflow:auto;max-height:320px"><table style="font-size:11px"><thead><tr><th>#</th><th>X</th><th>Y</th><th>Fillet R</th><th>Angle</th></tr><tr><th></th><th>edge len</th><th>dir °</th><th>arc R</th><th>bulge</th></tr></thead><tbody>`;
+    let h = `<h3>Points &amp; edges <span class="muted">(from part origin)</span></h3><div><table style="font-size:11px" id="ptTable"><thead><tr><th>#</th><th>X</th><th>Y</th><th>Fillet R</th><th>Angle</th></tr><tr><th></th><th>edge len</th><th>dir °</th><th>arc R</th><th>bulge</th></tr></thead><tbody>`;
     for (let i = 0; i < n; i++) {
       const p = pts[i], q = pts[(i + 1) % n];
       let ia = '';
       if (closed || (i > 0 && i < n - 1)) { const a = pts[(i - 1 + n) % n]; const d1 = G.norm(G.sub(a, p)), d2 = G.norm(G.sub(q, p)); const ang = deg(Math.acos(Math.max(-1, Math.min(1, G.dot(d1, d2))))); const cr = G.cross(d1, d2); ia = (cr < 0 ? ang : 360 - ang).toFixed(1) + '°'; }
       h += `<tr><td>P${i + 1}</td><td><input type="number" step="0.125" data-pv="x" data-i="${i}" value="${fmtIn(p.x)}"></td><td><input type="number" step="0.125" data-pv="y" data-i="${i}" value="${fmtIn(p.y)}"></td><td>${closed ? `<input type="number" step="0.0625" data-pv="r" data-i="${i}" value="${fmtIn(p.r || 0)}">` : ''}</td><td class="muted">${ia}</td></tr>`;
-      if (closed || i < n - 1) { const L = G.dist(p, q), A = deg(Math.atan2(q.y - p.y, q.x - p.x)); const sg = edgeSagitta(sh, i); h += `<tr style="color:var(--muted)"><td>→P${(i + 1) % n + 1}</td><td><input type="number" step="0.125" data-pv="len" data-i="${i}" value="${fmtIn(L)}"></td><td><input type="number" step="1" data-pv="ang" data-i="${i}" value="${(+A.toFixed(2))}"></td><td><input type="number" step="0.125" data-pv="arcR" data-i="${i}" value="${p.arcR ? fmtIn(p.arcR) : ''}" placeholder="0"></td><td><input type="number" step="0.0625" data-pv="sag" data-i="${i}" value="${sg ? fmtIn(sg) : ''}" placeholder="0"></td></tr>`; }
+      if (closed || i < n - 1) { const L = G.dist(p, q), A = deg(Math.atan2(q.y - p.y, q.x - p.x)); const sg = edgeSagitta(sh, i); h += `<tr class="edgeRow${selEdge && selEdge.id === sh.id && selEdge.i === i ? ' edgeSel' : ''}" data-edge="${i}" style="color:var(--muted)"><td title="Click to select this side">→P${(i + 1) % n + 1}</td><td><input type="number" step="0.125" data-pv="len" data-i="${i}" value="${fmtIn(L)}"></td><td><input type="number" step="1" data-pv="ang" data-i="${i}" value="${(+A.toFixed(2))}"></td><td><input type="number" step="0.125" data-pv="arcR" data-i="${i}" value="${p.arcR ? fmtIn(p.arcR) : ''}" placeholder="0"></td><td><input type="number" step="0.0625" data-pv="sag" data-i="${i}" value="${sg ? fmtIn(sg) : ''}" placeholder="0"></td></tr>`; }
     }
     h += `</tbody></table></div><div class="row"><button class="small" id="btnPolyBuild">Edit by lengths &amp; angles…</button></div><p class="muted" style="font-size:11px">Edge dir: 0° = right, 90° = up. Angle column = inside angle at the point.<br><b>Bulge</b> is how far the edge bows out from its straight chord — the distance you can measure on the part. Type it here, or drag the round grip at the middle of the edge. <b>Arc R</b> is the same curve expressed as a radius. + bulges out, − bulges in.</p>`;
     return h;
@@ -1199,6 +1218,154 @@
       });
   }
   $('#btnTrim').onclick = openTrimJoin;
+
+
+  // ================= edge sub-selection =================
+  /* Click a part once to select it, click one of its sides again to select
+     just that side. The selected edge can be deleted on its own, or have its
+     length and angle typed or dragged. */
+  let selEdge = null;   // {id, i}
+
+  function clearEdge() { if (selEdge) { selEdge = null; return true; } return false; }
+  function selEdgeShape() { return selEdge ? job.shapes.find(s => s.id === selEdge.id) : null; }
+
+  // index of the edge nearest wp on this shape, or -1
+  function edgeIndexAt(sh, wp, tolPx = 8) {
+    let loop;
+    try { loop = worldLoop(sh); } catch (e) { return -1; }
+    const tol = Math.max(tolPx * devicePixelRatio / view.scale, 0.02);
+    let bi = -1, bd = Infinity;
+    loop.forEach((s, i) => { const d = distToLoopSeg(wp, s); if (d < bd) { bd = d; bi = i; } });
+    return bd <= tol ? bi : -1;
+  }
+
+  /* Make a shape's individual edges editable. Rectangles become polygons;
+     'path' shapes (boolean results, text, imports) become polygons carrying
+     the same arcs as per-edge bulges, so nothing is lost in the conversion. */
+  function makeEditable(sh) {
+    if (sh.kind === 'poly') return sh;
+    if (sh.kind === 'rect') { convertRectToPoly(sh); return sh; }
+    if (sh.kind === 'path' && sh.loop && sh.loop.length) {
+      const loop = sh.loop;
+      const pts = loop.map(s => {
+        const p = { x: s.a.x, y: s.a.y, r: 0, arcR: 0 };
+        if (s.type === 'arc') {
+          const chord = G.dist(s.a, s.b);
+          const sag = G.cross(G.norm(G.sub(s.b, s.a)), G.sub(G.pointAt(s, 0.5), s.a));
+          p.arcR = sagittaToArcR(chord, sag);
+        }
+        return p;
+      });
+      const closed = G.same(loop[loop.length - 1].b, loop[0].a, 1e-6);
+      if (!closed) pts.push({ x: loop[loop.length - 1].b.x, y: loop[loop.length - 1].b.y, r: 0, arcR: 0 });
+      const x0 = Math.min(...pts.map(p => p.x)), y0 = Math.min(...pts.map(p => p.y));
+      sh.kind = 'poly';
+      sh.pts = pts.map(p => ({ ...p, x: p.x - x0, y: p.y - y0 }));
+      sh.x = x0; sh.y = y0; sh.rot = 0;
+      sh.open = !closed;
+      delete sh.loop;
+      LOG.info(`"${sh.name}" converted to an editable polygon (${sh.pts.length} points)`);
+      return sh;
+    }
+    return null;
+  }
+
+  // ---- delete just the selected edge
+  function deleteSelectedEdge() {
+    const sh = selEdgeShape();
+    if (!sh) return false;
+    let loop;
+    try { loop = worldLoop(sh); } catch (e) { return false; }
+    const i = selEdge.i;
+    if (i < 0 || i >= loop.length) { clearEdge(); return false; }
+    const mid = G.pointAt(loop[i], 0.5);
+    clearEdge();
+    eraseEdgeAt(sh, loop, mid);
+    return true;
+  }
+
+  // ---- highlight + point numbers
+  function drawEdgeSelection() {
+    const dpr = devicePixelRatio;
+    const sh = selEdgeShape();
+    if (sh) {
+      let loop;
+      try { loop = worldLoop(sh); } catch (e) { loop = null; }
+      if (loop && loop[selEdge.i]) {
+        ctx.save();
+        ctx.strokeStyle = '#ffb84d'; ctx.lineWidth = 3.2 * dpr; ctx.setLineDash([]);
+        ctx.lineCap = 'round';
+        tracePath([loop[selEdge.i]], true);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    // number the points of a singly-selected part, matching the table on the right
+    if (sel.size === 1) {
+      const s0 = job.shapes.find(x => sel.has(x.id));
+      if (s0 && (s0.kind === 'poly' || s0.kind === 'rect') && $('#chkPtNums') && $('#chkPtNums').checked) {
+        const pts = gripPts(s0);
+        ctx.save();
+        ctx.font = `${11 * dpr}px ui-monospace, monospace`;
+        pts.forEach((p, i) => {
+          const w = localToWorld(s0, p), q = W2S(w);
+          const label = 'P' + (i + 1);
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = 'rgba(20,22,26,.85)';
+          ctx.fillRect(q.x + 7, q.y - 17 * dpr, tw + 6, 14 * dpr);
+          ctx.fillStyle = '#8cc4ff';
+          ctx.fillText(label, q.x + 10, q.y - 6 * dpr);
+        });
+        ctx.restore();
+      }
+    }
+  }
+
+  // ---- right-hand panel for the selected edge
+  function edgePanel(sh) {
+    if (!selEdge || selEdge.id !== sh.id) return '';
+    const pts = sh.pts;
+    if (!pts) return '';
+    const n = pts.length, i = selEdge.i;
+    if (i < 0 || i >= (sh.open ? n - 1 : n)) return '';
+    const a = pts[i], b = pts[(i + 1) % n];
+    const L = G.dist(a, b);
+    const A = ((Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI) % 360 + 360) % 360;
+    const sag = edgeSagitta(sh, i);
+    const maxL = Math.max(1, Math.ceil(L * 2));
+    return `<h3>Side ${i + 1} <span class="muted">P${i + 1} → P${(i + 1) % n + 1}</span></h3>
+      <div class="row"><label>Length</label><input type="number" step="0.001" data-ev="len" value="${fmtIn(L)}"> in</div>
+      <div class="row"><input type="range" class="slider" data-es="len" min="0.01" max="${maxL}" step="0.001" value="${L}"></div>
+      <div class="row"><label>Angle</label><input type="number" step="1" data-ev="ang" value="${(+A.toFixed(3))}"> °</div>
+      <div class="row"><input type="range" class="slider" data-es="ang" min="0" max="360" step="0.1" value="${A}"></div>
+      <div class="row"><label>Bulge</label><input type="number" step="0.0625" data-ev="sag" value="${sag ? fmtIn(sag) : ''}" placeholder="0"> in</div>
+      <div class="row"><input type="range" class="slider" data-es="sag" min="${-(L / 2).toFixed(4)}" max="${(L / 2).toFixed(4)}" step="0.001" value="${sag || 0}"></div>
+      <div class="row"><button class="small" id="btnDelEdge">Delete this side</button><span class="muted">or press Delete</span></div>
+      <p class="muted" style="font-size:11px">Changing the length or angle moves P${(i + 1) % n + 1}; the rest of the part follows. Drag a slider to feel it out, or type an exact value.</p>`;
+  }
+  function wireEdgePanel(el, sh) {
+    if (!selEdge || selEdge.id !== sh.id) return;
+    const apply = (k, v, live) => {
+      if (!isFinite(v)) return;
+      if (!live) snapshot();
+      polyEdit(sh, k, selEdge.i, v);
+      delete sh.startPt;
+      invalidateLoops();
+      if (live) { updateStats(); draw(); } else refresh();
+    };
+    el.querySelectorAll('[data-ev]').forEach(inp => inp.addEventListener('change', () => apply(inp.dataset.ev, parseFloat(inp.value), false)));
+    el.querySelectorAll('[data-es]').forEach(sl => {
+      sl.addEventListener('pointerdown', () => { snapshot(); });
+      sl.addEventListener('input', () => {
+        apply(sl.dataset.es, parseFloat(sl.value), true);
+        const num = el.querySelector(`[data-ev="${sl.dataset.es}"]`);
+        if (num) num.value = sl.dataset.es === 'ang' ? (+parseFloat(sl.value).toFixed(3)) : fmtIn(parseFloat(sl.value));
+      });
+      sl.addEventListener('change', () => { updateStats(); refreshList(); });
+    });
+    const del = el.querySelector('#btnDelEdge');
+    if (del) del.onclick = () => deleteSelectedEdge();
+  }
 
   // ---------- centre marks ----------
   /* Permanent centre crosses on anything round, so a centre is visible without
@@ -2310,5 +2477,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdge = { id, i }; refresh(); }, getSelEdge: () => selEdge, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();
