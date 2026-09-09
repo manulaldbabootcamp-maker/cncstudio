@@ -5,6 +5,38 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Circles stay circles
+
+### Fixed
+- **A circle crossed by a line was being cut into arc pieces and demoted from a
+  `circle` to a polygon.** From that moment it was fragile: grips appeared on
+  the rim, its `R` label became W x H, and any nudge - a grabbed rim grip, a
+  retyped width - moved a chord while the arc kept its radius. That is the
+  "circle turns into an ellipse with intersecting corners" report.
+  The segmentation rule was only ever meant for lines and their intersection
+  points, so circles and ellipses are now **left whole**. Lines still split
+  where they cross a circle; the circle itself is never cut by a crossing.
+  Trim (`K`) still cuts a circle when that is what is asked for explicitly.
+- **Retyping the width or height of a part that contains arcs is refused**,
+  with a pointer to the Scale dialog. Changing one axis alone is a non-uniform
+  scale, which turns arcs into ellipses the post cannot cut.
+- **Part ids can no longer collide.** A job file that predates `nextId`, or has
+  one behind its own shapes, could hand a new part an id already in use - and a
+  duplicate id makes selection and splitting silently skip a part. `makeShape`
+  now always issues an id above every existing one.
+
+### Tests
+- Smoke test now 255 assertions. The reported case is driven with real mouse
+  events: three spokes drawn from a circle's centre leave it kind `circle`,
+  still 12 x 12, still enclosing pi*36, with no draggable grips - while the
+  spokes themselves still split where they cross the rim. Plus the refused
+  one-axis resize on a bowed part, and that a new part never reuses an id.
+- The harness now only counts errors raised during its own run. The activity
+  log persists across restarts by design, and every headless run shares one
+  userData folder, so a broken probe from earlier was leaking into later runs.
+
+---
+
 ## Circle snap points, and PDF options matching the design view
 
 ### Fixed

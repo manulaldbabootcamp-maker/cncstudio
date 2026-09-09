@@ -38,6 +38,11 @@
 
   // shape: {id,name,kind:'rect'|'circle'|'poly'|'path', x,y,rot, w,h,r, pts, loop(local), open, op, toolId, climb}
   function makeShape(kind, props) {
+    // a stale job file may lack nextId or have one behind its own shapes;
+    // a duplicate id makes selection and splitting silently skip a part
+    let maxId = 0;
+    for (const s0 of job.shapes) if (typeof s0.id === 'number' && s0.id > maxId) maxId = s0.id;
+    if (!(job.nextId > maxId)) job.nextId = maxId + 1;
     const id = job.nextId++;
     const base = { id, name: `${kind} ${id}`, kind, x: 0, y: 0, rot: 0, op: 'outside', toolId: S.tools[0]?.id || 1, climb: false, open: false };
     return Object.assign(base, props);
@@ -506,6 +511,13 @@
       const cur = key === 'w' ? b.w : b.h;
       if (!(cur > 1e-9)) { LOG.warn('Cannot resize a part with no extent'); return; }
       const f = v / cur;
+      // one axis only is a non-uniform scale, which turns arcs into ellipses
+      const curvy = (sh.pts || []).some(p => p.r || p.arcR) || (sh.loop || []).some(g => g.type === 'arc');
+      if (curvy && Math.abs(f - 1) > 1e-9) {
+        toast('This part has arcs - use Scale (keeps proportions) so they stay round');
+        LOG.warn(`Refused a one-axis resize of "${sh.name}": it contains arcs`);
+        return;
+      }
       scaleShape(sh, key === 'w' ? f : 1, key === 'h' ? f : 1, b);
     }
     delete sh.startPt;
@@ -2501,7 +2513,14 @@
      vertex and each piece is its own selectable side. This is what makes a
      junction behave like two lines instead of one long one. */
   function splitAtIntersections(shapes, tol) {
-    const targets = shapes.length ? shapes : job.shapes.slice();
+    /* A circle stays a circle. Cutting it into arc pieces where a line crosses
+       it turned it into a polygon: rim grips appeared, its R label became W x H,
+       and any nudge afterwards moved a chord while the arc kept its radius -
+       which is how a circle ends up looking like an ellipse with corners.
+       Lines still split where they cross a circle; the circle is left whole.
+       (Trim / K still cuts a circle deliberately, as an explicit action.) */
+    const keepWhole = (sh) => sh.kind === 'circle' || sh.kind === 'ellipse';
+    const targets = (shapes.length ? shapes : job.shapes.slice()).filter(sh => !keepWhole(sh));
     if (!targets.length) return 0;
     const all = job.shapes.map(sh => { try { return { id: sh.id, loop: worldLoop(sh) }; } catch (e) { return { id: sh.id, loop: [] }; } });
     let total = 0;

@@ -26,6 +26,7 @@ app.whenReady().then(async () => {
   win.webContents.on('render-process-gone', (_e, d) => problems.push('renderer gone: ' + JSON.stringify(d)));
   win.webContents.on('preload-error', (_e, f, err) => problems.push('preload error: ' + err));
 
+  const loadedAt = Date.now() - 2000;   // margin: renderer clock vs main clock
   await win.loadFile(PAGE);
   await new Promise(r => setTimeout(r, 900));   // let init settle
 
@@ -39,7 +40,7 @@ app.whenReady().then(async () => {
     ok(await run('!!document.querySelector("#logBody")'), 'activity log panel exists');
 
     console.log('startup errors');
-    const errs = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error"))');
+    const errs = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error" && e.t >= ${loadedAt}))`);
     ok(errs === '[]', 'no errors logged during startup', errs);
 
     console.log('geometry helpers');
@@ -680,17 +681,14 @@ app.whenReady().then(async () => {
         pts:[{x:10,y:4},{x:10,y:16}]};
       CNC.job.shapes.push(sh); CNC.autoSplitAround(sh); CNC.refresh(); return true; })()`);
 
-    const shape2 = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s => ({name:s.name, n: CNC.worldLoop(s).length})))`));
+    const shape2 = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s => ({name:s.name, kind:s.kind, n: CNC.worldLoop(s).length})))`));
     const circ2 = shape2.find(x => x.name === 'circle');
-    ok(circ2 && circ2.n === 4, 'two diameters split the circle into 4 quadrant arcs', JSON.stringify(shape2));
-    ok(shape2.filter(x => x.name === 'h' || x.name === 'v').every(x => x.n === 2), 'each diameter becomes 2 radii', JSON.stringify(shape2));
+    // the rule is "lines and intersection points": lines split, the circle is left whole
+    ok(circ2 && circ2.kind === 'circle', 'the circle stays a circle when lines cross it', JSON.stringify(circ2));
+    ok(circ2 && circ2.n === 2, 'and keeps its two native arcs, not pieces', JSON.stringify(circ2));
+    ok(shape2.filter(x => x.name === 'h' || x.name === 'v').every(x => x.n === 2), 'each diameter still becomes 2 radii', JSON.stringify(shape2));
     const circArea = await run(`Math.abs(CNC.G.signedArea(CNC.worldLoop(CNC.job.shapes.find(s=>s.name==='circle'))))`);
-    ok(Math.abs(circArea - Math.PI * 36) < 0.05, 'and the circle still encloses pi*r^2 after splitting', String(circArea));
-    ok((await run(`CNC.job.shapes.find(s=>s.name==='circle').open`)) === false, 'the split circle is still a closed part');
-
-    // each quadrant arc is now individually selectable
-    await run(`(() => { CNC.setSelEdge(CNC.job.shapes.find(s=>s.name==='circle').id, 1); return true; })()`);
-    ok((await run('CNC.getSelEdges().length')) === 1, 'a single quadrant arc can be selected on its own');
+    ok(Math.abs(circArea - Math.PI * 36) < 0.05, 'and the circle still encloses pi*r^2', String(circArea));
 
     console.log('segmentation rule: a line runs between contact points');
     /* The rule, stated plainly: a single continuous line is one line. Wherever
@@ -1229,8 +1227,56 @@ app.whenReady().then(async () => {
     ok(dh.kerfDefault === false, 'kerf defaults off, matching the design view where it is unticked', String(dh.kerfDefault));
     }
 
+    { // scoped
+    console.log('spokes from the centre leave the circle a circle (the ellipse-with-corners report)');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      const c = {id:2100,name:'circle',kind:'circle',x:20,y:20,rot:0,r:6,op:'outside',toolId:2,climb:false,open:false};
+      CNC.job.shapes.push(c); CNC.job.nextId = 2101; CNC.refresh(); return true; })()`);
+    const spoke = (tx, ty) => run(`(() => {
+      const __at = (wx, wy, type) => { const cv = document.querySelector('#cv'), r = cv.getBoundingClientRect();
+        const sp = CNC.W2S({x:wx,y:wy}); const ev = new MouseEvent(type, { clientX: r.left + sp.x/devicePixelRatio,
+          clientY: r.top + sp.y/devicePixelRatio, bubbles:true, button:0 }); cv.dispatchEvent(ev); if (type==='mouseup') window.dispatchEvent(ev); };
+      document.querySelector('button.tool[data-tool="pline"]').click();
+      __at(20.02, 20.01, 'mousedown'); __at(20.02, 20.01, 'mouseup');
+      __at(${tx}, ${ty}, 'mousemove'); __at(${tx}, ${ty}, 'mousedown'); __at(${tx}, ${ty}, 'mouseup');
+      window.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true})); return true; })()`);
+    await spoke(28, 24); await spoke(14, 26); await spoke(20, 12);
+    const st = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s => { const l = CNC.worldLoop(s); const b = CNC.G.bbox(l);
+      return { n: s.name, kind: s.kind, segs: l.length, area: +Math.abs(CNC.G.signedArea(l)).toFixed(3), w: +b.w.toFixed(3), h: +b.h.toFixed(3) }; }))`));
+    const circ = st.find(x => x.n === 'circle');
+    ok(circ && circ.kind === 'circle', 'after three spokes the circle is still kind "circle"', JSON.stringify(circ));
+    ok(circ && Math.abs(circ.area - Math.PI * 36) < 0.01, 'and still encloses pi*36', String(circ && circ.area));
+    ok(circ && Math.abs(circ.w - 12) < 1e-6 && Math.abs(circ.h - 12) < 1e-6, 'and is still 12 x 12, not an ellipse', JSON.stringify(circ));
+    const spokes = st.filter(x => x.n !== 'circle');
+    ok(spokes.length === 3, 'three spokes were drawn', String(spokes.length));
+    ok(spokes.filter(x => x.segs === 2).length >= 2, 'spokes that cross the rim are split there (inside piece + outside piece)', JSON.stringify(spokes));
+    // no rim grips on a circle, so a click near the rim cannot deform it
+    await run(`(() => { document.querySelector('button.tool[data-tool="select"]').click(); CNC.selectShape(2100); return true; })()`);
+    ok((await run('CNC.gripsOf(CNC.job.shapes.find(s=>s.name==="circle")).length')) === 0, 'a circle exposes no draggable grips');
+
+    console.log('a one-axis resize is refused on arc-bearing parts');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:2110,name:'rounded',kind:'poly',x:0,y:0,rot:0,open:false,op:'outside',toolId:2,climb:false,
+        pts:[{x:0,y:0,r:0,arcR:0},{x:10,y:0,r:0,arcR:3},{x:10,y:6,r:0,arcR:0},{x:0,y:6,r:0,arcR:0}]});
+      CNC.refresh(); CNC.selectShape(2110); return true; })()`);
+    const before = await run('Math.abs(CNC.G.signedArea(CNC.worldLoop(CNC.job.shapes[0]))).toFixed(4)');
+    await run(`CNC.applySize(CNC.job.shapes[0], 'w', 20)`);
+    const after = await run('Math.abs(CNC.G.signedArea(CNC.worldLoop(CNC.job.shapes[0]))).toFixed(4)');
+    ok(before === after, 'retyping the width of a part with a bowed edge is refused rather than distorting the arc', before + ' -> ' + after);
+    const warned = await run(`JSON.stringify(CNC.LOG.entries().filter(e => /Refused a one-axis resize/.test(e.msg)).length)`);
+    ok(warned !== '0', 'and it says why in the activity log');
+
+    console.log('duplicate ids cannot happen');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.nextId = 1;
+      CNC.job.shapes.push({id:7,name:'existing',kind:'rect',x:0,y:0,rot:0,w:2,h:2,r:0,op:'outside',toolId:2,climb:false,open:false});
+      return true; })()`);
+    const newId = await run(`(() => { CNC.buildFromOffsets([{s:0,o:1},{s:1,o:1.2},{s:2,o:1}], {alongY:false, closeIt:true, fitArcs:false, tol:0.01});
+      return CNC.job.shapes[CNC.job.shapes.length - 1].id; })()`);
+    ok(newId > 7, 'a new part never reuses an id already on the job', String(newId));
+    }
+
     console.log('no errors accumulated');
-    const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
+    const errs2 = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error" && e.t >= ${loadedAt}).map(e=>e.msg))`);
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
   } catch (e) {
     fail++; console.log('  FAIL harness threw: ' + (e && e.message));
