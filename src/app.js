@@ -559,6 +559,7 @@
       refreshList(); refreshProps(); draw();
     } else if (tool === 'rect' || tool === 'circle' || tool === 'ellipse') {
       drawing = { kind: tool, a: ws, b: ws };
+      syncDyn();
     } else if (tool === 'arc') {
       // 3 clicks: start, end, then a point the arc passes through
       if (!drawing) drawing = { kind: 'arc', stage: 1, a: ws, b: null, cur: ws };
@@ -764,7 +765,7 @@
 
   window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    if (drawAnchor() && /^[0-9.]$/.test(e.key)) {
+    if ((drawAnchor() || (drawing && ['rect', 'circle', 'ellipse'].includes(drawing.kind))) && /^[0-9.]$/.test(e.key)) {
       const el = $('#dynLen'); if (el) { el.value = e.key; el.focus(); dynActive = true; e.preventDefault(); return; }
     }
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
@@ -832,8 +833,29 @@
     $('#partCount').textContent = job.shapes.length ? `(${job.shapes.length})` : '';
     for (const sh of job.shapes) {
       const d = document.createElement('div'); d.className = 'item' + (sel.has(sh.id) ? ' sel' : '');
-      d.innerHTML = `<span>${esc(sh.name)}</span><span class="op">${sh.op}</span>`;
-      d.onclick = (e) => { if (e.shiftKey) { sel.has(sh.id) ? sel.delete(sh.id) : sel.add(sh.id); } else { sel.clear(); sel.add(sh.id); } refreshList(); refreshProps(); draw(); };
+      d.innerHTML = `<span class="nm" title="Double-click to rename">${esc(sh.name)}</span><span class="op">${sh.op}</span>`;
+      d.onclick = (e) => { if (e.shiftKey) { sel.has(sh.id) ? sel.delete(sh.id) : sel.add(sh.id); } else { sel.clear(); sel.add(sh.id); } clearEdge(); refreshList(); refreshProps(); draw(); };
+      // double-click the name to rename in place
+      d.querySelector('.nm').ondblclick = (e) => {
+        e.stopPropagation();
+        const span = e.currentTarget;
+        const inp = document.createElement('input');
+        inp.type = 'text'; inp.value = sh.name; inp.className = 'rename';
+        span.replaceWith(inp); inp.focus(); inp.select();
+        let done = false;
+        const commit = (save) => {
+          if (done) return; done = true;
+          const v = inp.value.trim();
+          if (save && v && v !== sh.name) { snapshot(); sh.name = v; LOG.action(`Renamed part to "${v}"`); }
+          refreshList(); refreshProps();
+        };
+        inp.addEventListener('keydown', ev => {
+          ev.stopPropagation();
+          if (ev.key === 'Enter') { ev.preventDefault(); commit(true); }
+          if (ev.key === 'Escape') { ev.preventDefault(); commit(false); }
+        });
+        inp.addEventListener('blur', () => commit(true));
+      };
       el.appendChild(d);
     }
   }
@@ -1926,9 +1948,9 @@
      looks broken. Show what finishes the current tool, on screen. */
   const TOOL_HINTS = {
     select: 'Click a <b>line</b> to select it (then <span class="k">Del</span>) · double-click for the whole part · <span class="k">Alt</span>+click to skip lines',
-    rect: 'Drag a rectangle. <span class="k">Shift</span> for ortho',
-    circle: 'Drag from the centre',
-    ellipse: 'Drag from the centre',
+    rect: 'Drag a rectangle, or type the <b>width</b>, <span class="k">Tab</span>, the <b>height</b>, <span class="k">Enter</span>',
+    circle: 'Drag from the centre, or type the <b>radius</b> and press <span class="k">Enter</span>',
+    ellipse: 'Drag from the centre, or type <b>radius X</b>, <span class="k">Tab</span>, <b>radius Y</b>, <span class="k">Enter</span>',
     arc: 'Click <b>start</b>, then <b>end</b>, then a point <b>on the curve</b>',
     poly: 'Click corners · type a <b>length</b> then <span class="k">Tab</span> for the angle · <span class="k">Enter</span> or double-click to close',
     pline: 'Click points · type a <b>length</b> then <span class="k">Tab</span> for the angle · <span class="k">Enter</span>, double-click or right-click to finish',
@@ -1958,39 +1980,92 @@
     el.style.display = 'flex';
   }
   function placeDyn() {
-    const el = dynEl(), a = dynAnchor();
+    const el = dynEl();
+    const a = dynAnchor() || (drawing && drawing.a);
     if (!el || !a) return;
     const p = W2S(a);
     el.style.left = Math.round(p.x / devicePixelRatio + 18) + 'px';
     el.style.top = Math.round(p.y / devicePixelRatio - 34) + 'px';
   }
-  function refreshDynValues() {
+  function refreshDynValues(mode) {
     if (dynActive) return;                    // don't fight the operator's typing
-    const a = dynAnchor(); if (!a) return;
-    const cur = drawing ? (drawing.cur || drawing.b) : null;
-    if (!cur) return;
-    const L = G.dist(a, cur);
-    const A = ((Math.atan2(cur.y - a.y, cur.x - a.x) * 180 / Math.PI) % 360 + 360) % 360;
-    $('#dynLen').value = fmtIn(L);
-    $('#dynAng').value = (+A.toFixed(2)).toString();
+    mode = mode || dynMode(); if (!mode) return;
+    if (mode.kind === 'polar') {
+      const a = dynAnchor(); if (!a) return;
+      const cur = drawing ? (drawing.cur || drawing.b) : null;
+      if (!cur) return;
+      $('#dynLen').value = fmtIn(G.dist(a, cur));
+      $('#dynAng').value = (+(((Math.atan2(cur.y - a.y, cur.x - a.x) * 180 / Math.PI) % 360 + 360) % 360).toFixed(2)).toString();
+      return;
+    }
+    if (!drawing || !drawing.a || !drawing.b) return;
+    const dx = Math.abs(drawing.b.x - drawing.a.x), dy = Math.abs(drawing.b.y - drawing.a.y);
+    if (mode.kind === 'circle') { $('#dynLen').value = fmtIn(G.dist(drawing.a, drawing.b)); }
+    else { $('#dynLen').value = fmtIn(dx); $('#dynAng').value = fmtIn(dy); }
+  }
+  /* What the two boxes mean depends on the tool:
+       poly / pline / spline / arc -> length + angle from the last point
+       rect                        -> width + height
+       circle                      -> radius (second box hidden)
+       ellipse                     -> radius X + radius Y
+     "7 rectangles 6.5 x 7" is the common job, so a rectangle should not have
+     to be dragged to an exact size. */
+  function dynMode() {
+    if (drawing && drawing.kind === 'rect') return { kind: 'rect', l1: 'w', l2: 'h' };
+    if (drawing && drawing.kind === 'circle') return { kind: 'circle', l1: 'R', l2: null };
+    if (drawing && drawing.kind === 'ellipse') return { kind: 'ellipse', l1: 'rX', l2: 'rY' };
+    if (dynAnchor() && ['poly', 'pline', 'spline', 'arc'].includes(tool)) return { kind: 'polar', l1: 'len', l2: 'ang' };
+    return null;
   }
   function syncDyn() {
-    const a = dynAnchor();
-    const wants = !!a && ['poly', 'pline', 'spline', 'arc'].includes(tool);
-    if (!wants) { showDyn(false); return; }
-    showDyn(true); placeDyn(); refreshDynValues();
+    const mode = dynMode();
+    if (!mode) { showDyn(false); return; }
+    showDyn(true);
+    const el = dynEl();
+    const labs = el.querySelectorAll('label');
+    if (labs[0]) labs[0].textContent = mode.l1;
+    if (labs[1]) { labs[1].textContent = mode.l2 || ''; labs[1].style.display = mode.l2 ? '' : 'none'; }
+    $('#dynAng').style.display = mode.l2 ? '' : 'none';
+    const deg = el.querySelector('.deg');
+    if (deg) deg.style.display = mode.kind === 'polar' ? '' : 'none';
+    placeDyn(); refreshDynValues(mode);
   }
   function commitDyn() {
-    const a = dynAnchor(); if (!a) return;
-    const L = parseFloat($('#dynLen').value);
-    const A = parseFloat($('#dynAng').value);
-    if (!isFinite(L) || !isFinite(A)) { toast('Enter a length and an angle'); return; }
-    const rad = A * Math.PI / 180;
-    const p = { x: a.x + L * Math.cos(rad), y: a.y + L * Math.sin(rad) };
+    const mode = dynMode(); if (!mode) return;
+    const v1 = parseFloat($('#dynLen').value);
+    const v2 = parseFloat($('#dynAng').value);
     dynActive = false;
-    $('#dynLen').blur();
-    commitPoint(p);
-    draw(); syncDyn();
+    $('#dynLen').blur(); $('#dynAng').blur();
+
+    if (mode.kind === 'polar') {
+      const a = dynAnchor(); if (!a) return;
+      if (!isFinite(v1) || !isFinite(v2)) { toast('Enter a length and an angle'); return; }
+      const rad = v2 * Math.PI / 180;
+      commitPoint({ x: a.x + v1 * Math.cos(rad), y: a.y + v1 * Math.sin(rad) });
+      draw(); syncDyn();
+      return;
+    }
+    // drag tools: the typed numbers ARE the finished size, measured from the
+    // point that was clicked (a corner for a rectangle, the centre otherwise)
+    const origin = drawing && drawing.a;
+    if (!origin) return;
+    if (mode.kind === 'rect') {
+      if (!(v1 > 0) || !(v2 > 0)) { toast('Enter a width and a height'); return; }
+      drawing = null; showDyn(false);
+      addShape(makeShape('rect', { x: origin.x, y: origin.y, w: v1, h: v2, r: 0 }));
+      LOG.action('Rectangle ' + fmtIn(v1) + ' x ' + fmtIn(v2) + ' in entered by size');
+    } else if (mode.kind === 'circle') {
+      if (!(v1 > 0)) { toast('Enter a radius'); return; }
+      drawing = null; showDyn(false);
+      addShape(makeShape('circle', { x: origin.x, y: origin.y, r: v1 }));
+      LOG.action('Circle R ' + fmtIn(v1) + ' in entered by size');
+    } else {
+      if (!(v1 > 0) || !(v2 > 0)) { toast('Enter both radii'); return; }
+      drawing = null; showDyn(false);
+      addShape(makeShape('ellipse', { name: 'ellipse', x: origin.x, y: origin.y, rx: v1, ry: v2 }));
+      LOG.action('Ellipse ' + fmtIn(v1 * 2) + ' x ' + fmtIn(v2 * 2) + ' in entered by size');
+    }
+    draw();
   }
   // route a placed point to whichever click-sequence tool is active
   function commitPoint(ws) {
@@ -2722,12 +2797,8 @@
       if (sh.kind === 'circle' || (sh.kind === 'ellipse' && Math.abs(sh.rx - sh.ry) < 1e-9)) {
         const r = sh.kind === 'circle' ? sh.r : sh.rx;
         // diameter across the centre, plus the radius value beside it
-        drawDimLine({ x: sh.x - r, y: sh.y }, { x: sh.x + r, y: sh.y }, 0, `Ø ${fmtIn(r * 2)}"`, '#7fd8a0');
-        const p = W2S({ x: sh.x, y: sh.y });
-        const rl = `R ${fmtIn(r)}"`;
-        const w = ctx.measureText(rl).width;
-        ctx.fillStyle = 'rgba(20,22,26,.85)'; ctx.fillRect(p.x - w / 2 - 4, p.y + 6 * dpr, w + 8, 16 * dpr);
-        ctx.fillStyle = '#7fd8a0'; ctx.fillText(rl, p.x - w / 2, p.y + 19 * dpr);
+        // radius, drawn from the centre out - not the diameter
+        drawDimLine({ x: sh.x, y: sh.y }, { x: sh.x + r, y: sh.y }, 0, `R ${fmtIn(r)}"`, '#7fd8a0');
         continue;
       }
       if (sh.kind === 'ellipse') {
@@ -2846,13 +2917,14 @@
   }
   function machineForPost() { const m = { ...S.machine }; m.lineEnding = S.machine.eol === 'lf' ? '\n' : '\r\n'; return m; }
   let lastGcode = null;
+  let lastStats = null;   // last post stats, quoted in the PDF title block
   function updateStats() {
     const el = $('#jobStats');
     const m = S.machine; const bad = job.shapes.filter(s => { const bb = shapeBBox(s); return bb.x0 < -1e-6 || bb.y0 < -1e-6 || bb.x1 > m.bedW + 1e-6 || bb.y1 > m.bedH + 1e-6; });
-    if (!job.shapes.length) { el.textContent = '—'; lastGcode = null; return; }
+    if (!job.shapes.length) { el.textContent = '—'; lastGcode = null; lastStats = null; return; }
     try {
       const out = PO.generate(buildJob()); lastGcode = out.gcode;
-      const st = out.stats;
+      const st = out.stats; lastStats = st;
       el.innerHTML = `${job.shapes.length} parts · ${st.passes} passes · ${st.tools.map(esc).join(', ')}<br>Cut length ${st.length.toFixed(1)} in · est. ${st.timeMin.toFixed(1)} min<br>Material ${esc(job.material.name)} (${job.material.thickness}")` + (bad.length ? `<br><span class="warnbox">⚠ ${bad.length} part(s) outside the bed</span>` : '');
     } catch (e) { el.innerHTML = `<span class="warnbox">Toolpath error: ${esc(e.message)}</span>`; console.error(e); }
   }
@@ -2971,6 +3043,138 @@
     showPage('sim'); simLoadText(text, name);
   }
   function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 2200); }
+
+
+  // ---------- PDF drawing ----------
+  /* A shop drawing, not a screenshot: vector output that prints to a true
+     scale, with the parts, their sizes, part names and a title block giving
+     material, tool and cut time. */
+  function openPdf() {
+    if (!job.shapes.length) return toast('Nothing to draw');
+    modal(`<h3>Export drawing as PDF</h3>
+      <div class="row"><label>Page</label><select id="pdPage" style="flex:1">
+        <option value="letter">Letter 8.5 x 11</option>
+        <option value="legal">Legal 8.5 x 14</option>
+        <option value="tabloid">Tabloid 11 x 17</option>
+        <option value="a4">A4</option>
+        <option value="a3">A3</option>
+      </select>
+      <label style="min-width:0"><input type="checkbox" id="pdLand" checked> Landscape</label></div>
+      <div class="row"><label>Scale</label><select id="pdScale" style="flex:1">
+        <option value="fit">Fit to page</option>
+        <option value="1">Full size (1:1)</option>
+        <option value="0.5">Half size (1:2)</option>
+        <option value="0.25">Quarter size (1:4)</option>
+      </select></div>
+      <div class="row"><label>Include</label>
+        <label style="min-width:0"><input type="checkbox" id="pdSizes" checked> Sizes</label>
+        <label style="min-width:0"><input type="checkbox" id="pdNames" checked> Part names</label>
+        <label style="min-width:0"><input type="checkbox" id="pdBed"> Bed outline</label>
+        <label style="min-width:0"><input type="checkbox" id="pdPaths"> Toolpaths</label></div>
+      <p class="muted" id="pdNote" style="font-size:11px"></p>
+      <div class="row" style="margin-top:10px"><button class="primary" id="pdOk">Export PDF</button><button id="pdCancel">Cancel</button></div>`,
+      (ov, close) => {
+        const note = () => {
+          const sc = ov.querySelector('#pdScale').value;
+          ov.querySelector('#pdNote').innerHTML = sc === 'fit'
+            ? 'Scaled to fill the page. The scale actually used is printed in the title block, so a print can still be measured knowingly.'
+            : 'Fixed scale. If the job does not fit the page at this scale the export will say so rather than silently shrinking it.';
+        };
+        ov.querySelector('#pdScale').onchange = note; note();
+        ov.querySelector('#pdCancel').onclick = close;
+        ov.querySelector('#pdOk').onclick = async () => {
+          const opts = {
+            page: ov.querySelector('#pdPage').value,
+            landscape: ov.querySelector('#pdLand').checked,
+            scale: ov.querySelector('#pdScale').value,
+            sizes: ov.querySelector('#pdSizes').checked,
+            names: ov.querySelector('#pdNames').checked,
+            bed: ov.querySelector('#pdBed').checked,
+            paths: ov.querySelector('#pdPaths').checked,
+          };
+          close();
+          const name = await askText('Export PDF', 'File name', jobName());
+          if (name === null) return;
+          buildPdf(opts, (name.trim() || jobName()).replace(/\.pdf$/i, '') + '.pdf');
+        };
+      });
+  }
+
+  function buildPdf(opts, filename) {
+    try {
+      const d = PDFDOC.doc({ page: opts.page, landscape: opts.landscape });
+      // what has to fit: the parts, or the whole bed if it is being drawn
+      let box;
+      if (opts.bed) box = { x0: 0, y0: 0, x1: S.machine.bedW, y1: S.machine.bedH, w: S.machine.bedW, h: S.machine.bedH };
+      else {
+        const shs = job.shapes;
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const sh of shs) { const b = shapeBBox(sh); x0 = Math.min(x0, b.x0); y0 = Math.min(y0, b.y0); x1 = Math.max(x1, b.x1); y1 = Math.max(y1, b.y1); }
+        if (!isFinite(x0)) return toast('Nothing to draw');
+        const pad = Math.max(0.5, (x1 - x0) * 0.04);
+        box = { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad, w: (x1 - x0) + pad * 2, h: (y1 - y0) + pad * 2 };
+      }
+      let used;
+      if (opts.scale === 'fit') used = d.fit(box, 0.6);
+      else {
+        used = d.setScale(parseFloat(opts.scale), box, 0.6);
+        const needW = box.w * used * PDFDOC.PT + 1.2 * PDFDOC.PT;
+        const needH = box.h * used * PDFDOC.PT + 1.2 * PDFDOC.PT;
+        if (needW > d.W + 1 || needH > d.H + 1) {
+          toast(`Job is ${fmtIn(box.w)} x ${fmtIn(box.h)} in — too big for this page at that scale`);
+          LOG.warn(`PDF export: ${fmtIn(box.w)}x${fmtIn(box.h)} in does not fit ${opts.page} at ${opts.scale}`);
+          return;
+        }
+      }
+
+      if (opts.bed) {
+        d.gray(0.6).width(0.8).dash(0);
+        d.rect(0, S.machine.bedH, S.machine.bedW, S.machine.bedH); d.stroke();
+      }
+
+      for (const sh of job.shapes) {
+        let loop;
+        try { loop = worldLoop(sh); } catch (e) { continue; }
+        if (!loop.length) continue;
+        if (opts.paths) {
+          const tp = toolpathOf(sh);
+          if (tp && tp.length) {
+            d.gray(0.65).width(0.5).dash(3, 2);
+            PDFDOC.tracePath(d, tp, G, !sh.open); d.stroke(); d.dash(0);
+          }
+        }
+        d.gray(0).width(sh.open ? 0.9 : 1.2).dash(0);
+        PDFDOC.tracePath(d, loop, G, !sh.open);
+        d.stroke();
+
+        const b = G.bbox(loop);
+        if (opts.names) d.text((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, sh.name, 8, 'center', 0, -3);
+        if (opts.sizes) {
+          if (sh.kind === 'circle') d.text(sh.x, sh.y, 'R ' + fmtIn(sh.r) + '"', 8, 'center', 0, 8);
+          else d.text((b.x0 + b.x1) / 2, b.y0, fmtIn(b.w) + '" x ' + fmtIn(b.h) + '"', 8, 'center', 0, -11);
+        }
+      }
+
+      // title block along the bottom
+      const st = lastStats || {};
+      const line1 = `${job.name || 'Untitled job'}  ·  ${job.shapes.length} part(s)  ·  ${S.materials.find(m => m.name === job.material.name) ? job.material.name : 'material'} ${fmtIn(job.material.thickness)}"`;
+      const line2 = `Scale ${used >= 0.999 ? '1:1 (full size)' : '1:' + (1 / used).toFixed(2)}  ·  ${fmtIn(box.w)} x ${fmtIn(box.h)} in  ·  ${new Date().toLocaleString()}`;
+      const line3 = st.tools ? `Tools: ${st.tools.join(', ')}  ·  cut ${st.length ? fmtIn(st.length) : '?'} in  ·  est ${st.timeMin ? st.timeMin.toFixed(1) : '?'} min` : '';
+      d.gray(0.35);
+      d.textPt(36, 40, line1, 10);
+      d.textPt(36, 27, line2, 8);
+      if (line3) d.textPt(36, 16, line3, 8);
+
+      const out = d.build(job.name || 'CNC Studio drawing');
+      download(filename, out, 'application/pdf');
+      LOG.action(`Exported ${filename} — ${job.shapes.length} part(s), scale 1:${(1 / used).toFixed(2)}`);
+      toast('PDF exported: ' + filename);
+    } catch (err) {
+      LOG.error('PDF export failed', err);
+      toast('Could not build the PDF: ' + err.message);
+    }
+  }
+  $('#btnPdf').onclick = openPdf;
 
   // ---------- nesting ----------
   $('#btnNest').onclick = () => nestAll();
@@ -3162,5 +3366,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();

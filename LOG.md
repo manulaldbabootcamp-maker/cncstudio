@@ -5,6 +5,52 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Typed sizes, PDF drawings, part renaming
+
+### Added
+- **Type the size instead of dragging it.** The entry box that already served
+  the polyline tools now serves the drag tools, relabelled per tool:
+  - **Rectangle** — `w` then Tab then `h`, Enter. "6.5 x 7" is typed, not dragged.
+  - **Circle** — `R` and Enter. The second box hides itself.
+  - **Ellipse** — `rX` and `rY`.
+  Click once to set the corner (or centre), start typing, press Enter. The
+  boxes still track the cursor until you type, so they double as a live readout.
+- **Export the drawing as a PDF** (`src/pdf.js`, new). Written by hand rather
+  than pulled from a library — the app is dependency-free and offline, and a
+  drawing needs only lines, Beziers and Helvetica.
+  Vector, not a screenshot: it prints to a true scale and stays sharp at any
+  size, which matters when someone measures off the print at the machine.
+  - Letter / Legal / Tabloid / A4 / A3, portrait or landscape
+  - Fit to page, or a fixed 1:1, 1:2 or 1:4
+  - Optional part names, sizes, bed outline and toolpaths
+  - A title block giving job name, part count, material, the scale actually
+    used, overall size, tools, cut length and estimated time
+  - A fixed scale that will not fit **says so and stops**, rather than silently
+    shrinking the drawing — a print that claims 1:1 but is not is worse than
+    no print at all.
+- **Rename a part by double-clicking its name** in the parts list. Enter
+  commits, Escape cancels, and the rename is one undo step.
+
+### Changed
+- Circles now label the **radius** on the drawing, measured from the centre
+  out, instead of the diameter across.
+
+### Tests
+- `test/pdf_test.js`, 22 assertions on the things a PDF reader actually needs:
+  the header and `%%EOF`, a catalog and page object, the correct MediaBox, and
+  crucially **that seeking to `startxref` lands on the xref table and every
+  xref offset lands exactly on its object header** — a file that downloads but
+  will not open is worse than no feature. Also checks the declared stream
+  `/Length` matches reality, parentheses and backslashes in text are escaped
+  (unescaped ones corrupt the file), and that 1:1 with a 1 in margin puts x=0
+  at exactly 72 pt.
+- Smoke test now 191 assertions: the size box relabels itself per tool, a typed
+  6.5 x 7 rectangle really is 6.5 x 7, a typed R 2.75 circle really is 2.75,
+  renaming works through a real double-click, the PDF export writes a file and
+  logs its scale, and an oversized job at a fixed 1:1 is refused.
+
+---
+
 ## Size labels and sliders for rectangles and circles
 
 ### Added

@@ -898,6 +898,81 @@ app.whenReady().then(async () => {
     ok(String(dia) === '7', 'the diameter field follows the radius slider', String(dia));
     }
 
+    { // scoped
+    console.log('typed size entry for rect / circle');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      document.querySelector('button.tool[data-tool="rect"]').click(); return true; })()`);
+    // start a rect at 2,3 then type 6.5 x 7 instead of dragging
+    await run(`(() => { window.__click(2, 3, 'mousedown'); return true; })()`);
+    ok((await run(`document.querySelector('#dynIn').style.display`)) === 'flex', 'the size box appears for a rectangle');
+    ok((await run(`document.querySelectorAll('#dynIn label')[0].textContent`)) === 'w', 'first box is labelled w');
+    ok((await run(`document.querySelectorAll('#dynIn label')[1].textContent`)) === 'h', 'second box is labelled h');
+    await run(`(() => { document.querySelector('#dynLen').value = '6.5';
+      document.querySelector('#dynAng').value = '7'; CNC.commitDyn2(); return true; })()`);
+    const r = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s=>({k:s.kind,w:s.w,h:s.h,x:s.x,y:s.y})))`));
+    ok(r.length === 1 && r[0].k === 'rect', 'a rectangle is created', JSON.stringify(r));
+    ok(Math.abs(r[0].w - 6.5) < 1e-9 && Math.abs(r[0].h - 7) < 1e-9, 'exactly 6.5 x 7 as typed', JSON.stringify(r[0]));
+    // the synthetic click goes through integer screen pixels, so allow the
+    // round-trip error; what matters is that it lands where it was clicked
+    ok(Math.abs(r[0].x - 2) < 0.2 && Math.abs(r[0].y - 3) < 0.2, 'placed at the clicked corner', JSON.stringify(r[0]));
+
+    await run(`(() => { CNC.job.shapes.length = 0;
+      document.querySelector('button.tool[data-tool="circle"]').click();
+      window.__click(10, 10, 'mousedown'); return true; })()`);
+    ok((await run(`document.querySelectorAll('#dynIn label')[0].textContent`)) === 'R', 'a circle asks for R');
+    ok((await run(`document.querySelector('#dynAng').style.display`)) === 'none', 'and hides the second box');
+    await run(`(() => { document.querySelector('#dynLen').value = '2.75'; CNC.commitDyn2(); return true; })()`);
+    const c = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s=>({k:s.kind,r:s.r})))`));
+    ok(c.length === 1 && Math.abs(c[0].r - 2.75) < 1e-9, 'a circle of exactly R 2.75 is created', JSON.stringify(c));
+    await run(`(() => { document.querySelector('button.tool[data-tool="select"]').click(); return true; })()`);
+
+    console.log('rename a part from the list');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:1800,name:'old name',kind:'rect',x:0,y:0,rot:0,w:5,h:5,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const renamed = await run(`(() => {
+      const nm = document.querySelector('#shapeList .nm');
+      if (!nm) return 'no name element';
+      nm.dispatchEvent(new MouseEvent('dblclick', {bubbles:true}));
+      const inp = document.querySelector('#shapeList input.rename');
+      if (!inp) return 'no rename input';
+      inp.value = 'window blank';
+      inp.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true}));
+      return CNC.job.shapes[0].name;
+    })()`);
+    ok(renamed === 'window blank', 'double-clicking the name renames the part', String(renamed));
+
+    console.log('PDF export');
+    ok(await run(`!!CNC.PDFDOC || typeof PDFDOC !== 'undefined'`), 'the pdf module reached the bundle');
+    const pdfCap = await run(`(() => {
+      let captured = null;
+      const realCreate = document.createElement.bind(document);
+      document.createElement = (t) => { const el = realCreate(t);
+        if (t === 'a') el.click = () => { captured = { name: el.download, len: (el.href||'').length }; };
+        return el; };
+      try { CNC.buildPdf({page:'letter', landscape:true, scale:'fit', sizes:true, names:true, bed:false, paths:false}, 'drawing-test.pdf'); }
+      finally { document.createElement = realCreate; }
+      return JSON.stringify(captured);
+    })()`);
+    ok(/drawing-test\.pdf/.test(pdfCap || ''), 'the PDF export writes a .pdf file', pdfCap);
+    const pdfLog = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>/Exported drawing-test/.test(e.msg)).map(e=>e.msg))`);
+    ok(/scale 1:/.test(pdfLog), 'and records the scale it used in the log', pdfLog);
+
+    // a fixed scale that cannot fit must refuse, not silently shrink
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:1810,name:'big',kind:'rect',x:0,y:0,rot:0,w:50,h:100,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const refused = await run(`(() => {
+      let captured = false;
+      const realCreate = document.createElement.bind(document);
+      document.createElement = (t) => { const el = realCreate(t); if (t === 'a') el.click = () => { captured = true; }; return el; };
+      try { CNC.buildPdf({page:'letter', landscape:false, scale:'1', sizes:false, names:false, bed:false, paths:false}, 'too-big.pdf'); }
+      finally { document.createElement = realCreate; }
+      return captured;
+    })()`);
+    ok(refused === false, 'a 50 x 100 in job at 1:1 on Letter is refused, not silently scaled', String(refused));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

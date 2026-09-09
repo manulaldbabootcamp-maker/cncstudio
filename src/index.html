@@ -66,6 +66,8 @@
   .list div.item:hover { background:var(--panel2); }
   .list div.item.sel { background:#1f3a5a; }
   .list .op { color:var(--muted); font-size:11px; }
+  .list .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .list input.rename { width:100%; padding:1px 4px; font:inherit; }
   .page { display:none; position:absolute; inset:0; overflow:auto; padding:16px 20px; background:var(--bg); }
   .page.active { display:block; }
   table { border-collapse:collapse; width:100%; }
@@ -136,6 +138,7 @@
     <span class="sep"></span>
     <button id="btnNest" class="ico" data-icon="nest" title="Auto-arrange all parts from bottom-left"></button>
     <button id="btnDxf" class="ico" data-icon="dxf" title="Export DXF"></button>
+    <button id="btnPdf" class="ico" data-icon="new" title="Export the drawing as a PDF"></button>
     <button id="btnTap" class="primary" data-icon="tap" title="Generate and export .TAP">TAP</button>
     <div class="tabs">
       <div class="tab active" data-page="design">Design</div>
