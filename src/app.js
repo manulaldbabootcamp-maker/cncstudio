@@ -586,7 +586,8 @@
     if (tool === 'dim') { dimClick(ws); draw(); return; }
     if (tool === 'select') {
       const sizeHit = hitSizeLabel(s);
-      if (sizeHit) { openSizeEditor(sizeHit); return; }
+      if (sizeHit) { clearDynTarget(); openSizeEditor(sizeHit); return; }
+      clearDynTarget();
       // a grip under the cursor takes precedence over selecting/moving the shape
       const g = hitGrip(w);
       if (g) {
@@ -713,6 +714,7 @@
       if (hs) { const i = edgeIndexAt(hs, w); if (i >= 0) hoverEdge = { id: hs.id, i }; }
     }
     cv.style.cursor = hitSizeLabel(s) ? 'text' : hoverGrip ? (hoverGrip.kind === 'edge' ? 'ns-resize' : 'move') : 'crosshair';
+    if (dynTarget && !drawing && !dynActive) placeDyn();
     if (measure && !measure.b) measure.cur = axisLock(measure.a, ws, e.altKey);
     if (dimDraft && dimDraft.b) { const d = dimDraft, dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1; d.off = ((ws.x - d.a.x) * (-dy / L)) + ((ws.y - d.a.y) * (dx / L)); }
     else if (dimDraft) dimDraft.b = null;
@@ -777,9 +779,15 @@
     }
     if (drawing && (drawing.kind === 'rect' || drawing.kind === 'circle' || drawing.kind === 'ellipse')) {
       const d = drawing; drawing = null;
-      if (d.kind === 'ellipse') { finishEllipse(d); draw(); return; }
-      if (d.kind === 'rect') { const w = Math.abs(d.b.x - d.a.x), h = Math.abs(d.b.y - d.a.y); if (w > 0.01 && h > 0.01) addShape(makeShape('rect', { x: Math.min(d.a.x, d.b.x), y: Math.min(d.a.y, d.b.y), w, h, r: 0 })); }
-      else { const r = G.dist(d.a, d.b); if (r > 0.01) addShape(makeShape('circle', { x: d.a.x, y: d.a.y, r })); }
+      if (d.kind === 'ellipse') { finishEllipse(d); syncDyn(); draw(); return; }
+      if (d.kind === 'rect') {
+        const w = Math.abs(d.b.x - d.a.x), h = Math.abs(d.b.y - d.a.y);
+        if (w > 0.01 && h > 0.01) { const sh = makeShape('rect', { x: Math.min(d.a.x, d.b.x), y: Math.min(d.a.y, d.b.y), w, h, r: 0 }); addShape(sh); dynTarget = sh.id; }
+      } else {
+        const r = G.dist(d.a, d.b);
+        if (r > 0.01) { const sh = makeShape('circle', { x: d.a.x, y: d.a.y, r }); addShape(sh); dynTarget = sh.id; }
+      }
+      syncDyn();
       draw();
     }
   });
@@ -828,12 +836,12 @@
 
   window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    if ((drawAnchor() || (drawing && ['rect', 'circle', 'ellipse'].includes(drawing.kind))) && /^[0-9.]$/.test(e.key)) {
+    if ((drawAnchor() || dynTarget || (drawing && ['rect', 'circle', 'ellipse'].includes(drawing.kind))) && /^[0-9.]$/.test(e.key)) {
       const el = $('#dynLen'); if (el) { el.value = e.key; el.focus(); dynActive = true; e.preventDefault(); return; }
     }
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
     if (e.key === 'Shift') { orthoTemp = true; draw(); }
-    if (e.key === 'Escape') { if (clearEdge()) { refreshProps(); draw(); return; } drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
+    if (e.key === 'Escape') { if (clearDynTarget()) { draw(); return; } if (clearEdge()) { refreshProps(); draw(); return; } drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
     if (e.key === 'Enter' && drawing) { if (drawing.kind === 'spline') finishSpline(); else finishPoly(); }
     if (e.key === 'Delete' || e.key === 'Backspace') { if (selEdges.length && deleteSelectedEdge()) return; if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.shiftKey ? redo() : undo(); e.preventDefault(); }
@@ -868,7 +876,7 @@
     if (e.key === 'Shift') { orthoTemp = false; draw(); }
   });
   window.addEventListener('blur', () => { orthoTemp = false; spaceDown = false; });
-  function setTool(t) { tool = t; $$('button.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t)); $('#stTool').textContent = t === 'select' ? '' : `Tool: ${t}`; updateHint(); syncDyn(); }
+  function setTool(t) { clearDynTarget(); tool = t; $$('button.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t)); $('#stTool').textContent = t === 'select' ? '' : `Tool: ${t}`; updateHint(); syncDyn(); }
   $$('button.tool').forEach(b => b.addEventListener('click', () => { drawing = null; setTool(b.dataset.tool); draw(); }));
 
   function rotateSel(deg) {
@@ -2036,6 +2044,11 @@
      hoping. This is how a corner at a known angle actually gets drawn. */
   const dynEl = () => $('#dynIn');
   let dynActive = false;
+  /* After a rect/circle/ellipse is drawn, the entry box stays open next to the
+     cursor holding the size just drawn, so it can be corrected to exact numbers
+     without going near the panel. It used to vanish on mouse-up, which left no
+     moment in which it could be typed into at all. */
+  let dynTarget = null;      // id of the shape the box is currently editing
   function dynAnchor() { return drawAnchor(); }
   function showDyn(show) {
     const el = dynEl(); if (!el) return;
@@ -2044,8 +2057,15 @@
   }
   function placeDyn() {
     const el = dynEl();
+    if (!el) return;
+    // while editing a drawn part, sit just above-right of the cursor
+    if (dynTarget && !drawing) {
+      el.style.left = Math.round(mouse.x / devicePixelRatio + 18) + 'px';
+      el.style.top = Math.round(mouse.y / devicePixelRatio - 34) + 'px';
+      return;
+    }
     const a = dynAnchor() || (drawing && drawing.a);
-    if (!el || !a) return;
+    if (!a) return;
     const p = W2S(a);
     el.style.left = Math.round(p.x / devicePixelRatio + 18) + 'px';
     el.style.top = Math.round(p.y / devicePixelRatio - 34) + 'px';
@@ -2059,6 +2079,13 @@
       if (!cur) return;
       $('#dynLen').value = fmtIn(G.dist(a, cur));
       $('#dynAng').value = (+(((Math.atan2(cur.y - a.y, cur.x - a.x) * 180 / Math.PI) % 360 + 360) % 360).toFixed(2)).toString();
+      return;
+    }
+    if (mode.edit) {
+      const t = mode.edit;
+      if (t.kind === 'rect') { $('#dynLen').value = fmtIn(t.w); $('#dynAng').value = fmtIn(t.h); }
+      else if (t.kind === 'circle') { $('#dynLen').value = fmtIn(t.r); }
+      else { $('#dynLen').value = fmtIn(t.rx); $('#dynAng').value = fmtIn(t.ry); }
       return;
     }
     if (!drawing || !drawing.a || !drawing.b) return;
@@ -2078,8 +2105,17 @@
     if (drawing && drawing.kind === 'circle') return { kind: 'circle', l1: 'R', l2: null };
     if (drawing && drawing.kind === 'ellipse') return { kind: 'ellipse', l1: 'rX', l2: 'rY' };
     if (dynAnchor() && ['poly', 'pline', 'spline', 'arc'].includes(tool)) return { kind: 'polar', l1: 'len', l2: 'ang' };
+    // no drag in progress, but a freshly drawn part is still on the hook
+    const t = dynTargetShape();
+    if (t) {
+      if (t.kind === 'rect') return { kind: 'rect', l1: 'w', l2: 'h', edit: t };
+      if (t.kind === 'circle') return { kind: 'circle', l1: 'R', l2: null, edit: t };
+      if (t.kind === 'ellipse') return { kind: 'ellipse', l1: 'rX', l2: 'rY', edit: t };
+    }
     return null;
   }
+  function dynTargetShape() { return dynTarget ? job.shapes.find(x => x.id === dynTarget) : null; }
+  function clearDynTarget() { if (dynTarget) { dynTarget = null; showDyn(false); return true; } return false; }
   function syncDyn() {
     const mode = dynMode();
     if (!mode) { showDyn(false); return; }
@@ -2106,6 +2142,27 @@
       const rad = v2 * Math.PI / 180;
       commitPoint({ x: a.x + v1 * Math.cos(rad), y: a.y + v1 * Math.sin(rad) });
       draw(); syncDyn();
+      return;
+    }
+    if (mode.edit) {
+      const t = mode.edit;
+      snapshot();
+      if (t.kind === 'rect') {
+        if (v1 > 0) t.w = v1;
+        if (v2 > 0) t.h = v2;
+        LOG.action('Resized "' + t.name + '" to ' + fmtIn(t.w) + ' x ' + fmtIn(t.h) + ' in');
+      } else if (t.kind === 'circle') {
+        if (!(v1 > 0)) { toast('Enter a radius'); return; }
+        t.r = v1;
+        LOG.action('Resized "' + t.name + '" to R ' + fmtIn(v1) + ' in');
+      } else {
+        if (v1 > 0) t.rx = v1;
+        if (v2 > 0) t.ry = v2;
+        LOG.action('Resized "' + t.name + '" to ' + fmtIn(t.rx * 2) + ' x ' + fmtIn(t.ry * 2) + ' in');
+      }
+      delete t.startPt;
+      clearDynTarget();
+      invalidateLoops(); refresh();
       return;
     }
     // drag tools: the typed numbers ARE the finished size, measured from the
@@ -2338,7 +2395,8 @@
   function finishEllipse(d) {
     const rx = Math.abs(d.b.x - d.a.x), ry = Math.abs(d.b.y - d.a.y);
     if (rx < 0.01 || ry < 0.01) { draw(); return; }
-    addShape(makeShape('ellipse', { name: 'ellipse', x: d.a.x, y: d.a.y, rx, ry }));
+    const sh = makeShape('ellipse', { name: 'ellipse', x: d.a.x, y: d.a.y, rx, ry });
+    addShape(sh); dynTarget = sh.id;
     LOG.action(`Ellipse added: ${fmtIn(rx * 2)} × ${fmtIn(ry * 2)} in`);
   }
   function finishSpline() {
@@ -3448,5 +3506,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();

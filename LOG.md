@@ -5,6 +5,36 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## The size box stays after the drag
+
+### Fixed
+- **The entry box beside the cursor vanished on mouse-up.** It appeared while
+  the button was held and disappeared the moment it was released, so there was
+  never a point at which it could be typed into. That was the actual complaint;
+  the previous attempt added editable labels on the drawing, which is useful but
+  was not the thing being asked for.
+
+### Changed
+- After drawing a rectangle, circle or ellipse, **the box stays open next to the
+  cursor**, prefilled with the size just drawn. Type the real numbers and press
+  Enter and the part is resized — it does not create a second one. Tab moves
+  between width and height (or the two radii); a circle shows a single `R`.
+- It follows the cursor while open, so it never ends up somewhere awkward, and
+  closes on Enter, Escape, a click elsewhere, or switching tools.
+- Typing a digit focuses it, so the flow is: drag a rough shape, type the exact
+  size, Enter. No reaching for the panel.
+
+Both routes now exist and neither is wasted: the box for the part you just
+drew, and clicking a dimension on the bed for a part drawn earlier.
+
+### Tests
+- Smoke test now 224 assertions, driven as a real drag: the box is still on
+  screen after mouse-up, bound to the drawn part and prefilled; typing 6.5 and 7
+  resizes that part rather than adding another; a circle asks for `R` and
+  retypes to 2.375; and Escape dismisses the box while leaving the part as drawn.
+
+---
+
 ## Resize by clicking the dimension on the drawing
 
 ### Fixed

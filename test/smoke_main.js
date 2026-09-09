@@ -1045,6 +1045,68 @@ app.whenReady().then(async () => {
     ok(Math.abs(tb.h - 8) < 1e-6, 'without stretching the other axis', String(tb.h));
     }
 
+    { // scoped
+    console.log('the size box stays after the drag, next to the cursor');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      document.querySelector('button.tool[data-tool="rect"]').click(); return true; })()`);
+    // drag out a rough rectangle and release
+    await run(`(() => {
+      const cv = document.querySelector('#cv'), r = cv.getBoundingClientRect();
+      const at = (wx, wy, type) => { const sp = CNC.W2S({x:wx,y:wy});
+        const ev = new MouseEvent(type, { clientX: r.left + sp.x/devicePixelRatio,
+          clientY: r.top + sp.y/devicePixelRatio, bubbles:true, button:0 });
+        cv.dispatchEvent(ev); if (type === 'mouseup') window.dispatchEvent(ev); };
+      at(2, 2, 'mousedown'); at(9, 6, 'mousemove'); at(9, 6, 'mouseup');
+      return true; })()`);
+    ok((await run('CNC.job.shapes.length')) === 1, 'the drag created a rectangle');
+    ok((await run('CNC.dynTargetInfo()')) !== null, 'the box stays bound to what was just drawn');
+    ok((await run(`document.querySelector('#dynIn').style.display`)) === 'flex', 'and is still on screen after the mouse is released');
+    ok((await run(`document.querySelectorAll('#dynIn label')[0].textContent`)) === 'w', 'showing w');
+    ok((await run(`document.querySelectorAll('#dynIn label')[1].textContent`)) === 'h', 'and h');
+    const shown = await run(`JSON.stringify([document.querySelector('#dynLen').value, document.querySelector('#dynAng').value])`);
+    ok(/\d/.test(shown), 'prefilled with the size just drawn', shown);
+
+    // now type exact numbers into it
+    await run(`(() => { document.querySelector('#dynLen').value = '6.5';
+      document.querySelector('#dynAng').value = '7'; CNC.commitDyn2(); return true; })()`);
+    const rr = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s=>({k:s.kind,w:s.w,h:s.h})))`));
+    ok(rr.length === 1, 'it resized the part rather than creating a second one', JSON.stringify(rr));
+    ok(Math.abs(rr[0].w - 6.5) < 1e-9 && Math.abs(rr[0].h - 7) < 1e-9, 'now exactly 6.5 x 7', JSON.stringify(rr[0]));
+    ok((await run('CNC.dynTargetInfo()')) === null, 'and the box closes once applied');
+
+    console.log('same for a circle');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      document.querySelector('button.tool[data-tool="circle"]').click(); return true; })()`);
+    await run(`(() => {
+      const cv = document.querySelector('#cv'), r = cv.getBoundingClientRect();
+      const at = (wx, wy, type) => { const sp = CNC.W2S({x:wx,y:wy});
+        const ev = new MouseEvent(type, { clientX: r.left + sp.x/devicePixelRatio,
+          clientY: r.top + sp.y/devicePixelRatio, bubbles:true, button:0 });
+        cv.dispatchEvent(ev); if (type === 'mouseup') window.dispatchEvent(ev); };
+      at(10, 10, 'mousedown'); at(13, 10, 'mousemove'); at(13, 10, 'mouseup');
+      return true; })()`);
+    ok((await run('CNC.dynTargetInfo()')) !== null, 'the box stays after drawing a circle');
+    ok((await run(`document.querySelectorAll('#dynIn label')[0].textContent`)) === 'R', 'asking for R');
+    await run(`(() => { document.querySelector('#dynLen').value = '2.375'; CNC.commitDyn2(); return true; })()`);
+    ok(Math.abs((await run('CNC.job.shapes[0].r')) - 2.375) < 1e-9, 'typing R 2.375 resizes the circle', String(await run('CNC.job.shapes[0].r')));
+    ok((await run('CNC.job.shapes.length')) === 1, 'still one circle, not two');
+
+    console.log('the box gets out of the way');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      document.querySelector('button.tool[data-tool="rect"]').click();
+      const cv = document.querySelector('#cv'), r = cv.getBoundingClientRect();
+      const at = (wx, wy, type) => { const sp = CNC.W2S({x:wx,y:wy});
+        const ev = new MouseEvent(type, { clientX: r.left + sp.x/devicePixelRatio,
+          clientY: r.top + sp.y/devicePixelRatio, bubbles:true, button:0 });
+        cv.dispatchEvent(ev); if (type === 'mouseup') window.dispatchEvent(ev); };
+      at(1,1,'mousedown'); at(5,4,'mousemove'); at(5,4,'mouseup'); return true; })()`);
+    ok((await run('CNC.dynTargetInfo()')) !== null, 'box is open');
+    await run(`(() => { window.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true})); return true; })()`);
+    ok((await run('CNC.dynTargetInfo()')) === null, 'Escape dismisses it, leaving the part as drawn');
+    ok((await run('CNC.job.shapes.length')) === 1, 'and the part survives');
+    await run(`(() => { document.querySelector('button.tool[data-tool="select"]').click(); return true; })()`);
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
