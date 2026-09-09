@@ -5,6 +5,38 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Resize by clicking the dimension on the drawing
+
+### Fixed
+- **The typed size box only existed during the drag.** It appeared on mouse-down
+  and vanished on release, so there was no moment in which it could actually be
+  typed into. Drawing a rectangle roughly and then correcting the numbers is the
+  real workflow, and it had no home.
+
+### Added
+- **Click a dimension on the bed and retype it.** With a part selected, its size
+  labels are live: click the width, type `14.25`, press Enter, and the part is
+  14.25 in wide. Escape cancels. The cursor turns into a text caret over a label
+  so it reads as editable.
+  - A **rectangle** grows from the corner it was placed at, not its centre
+  - A **circle** keeps its centre and takes a radius
+  - An **ellipse** takes each axis
+  - Anything else — a traced template, a boolean result — is scaled to the typed
+    width or height about its lower-left bound, so it stays where it was nested
+- Dimension labels on features too small to draw arrows into now **keep the
+  label and drop the arrows**, instead of disappearing. A small circle's radius
+  line is barely any length on screen, and hiding the label left no way to click
+  and retype it.
+
+### Tests
+- Smoke test now 208 assertions, driving it as a click: the label is hit-tested
+  (and a click 200 px away correctly misses), a real mouse-down opens the editor,
+  Enter resizes the geometry to 14.25 in *and* leaves the placed corner where it
+  was, Escape cancels without resizing, a circle keeps its centre, and a polygon
+  scales on one axis without stretching the other.
+
+---
+
 ## Typed sizes, PDF drawings, part renaming
 
 ### Added

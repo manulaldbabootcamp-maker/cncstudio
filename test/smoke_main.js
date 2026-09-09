@@ -973,6 +973,78 @@ app.whenReady().then(async () => {
     ok(refused === false, 'a 50 x 100 in job at 1:1 on Letter is refused, not silently scaled', String(refused));
     }
 
+    { // scoped
+    console.log('resize by clicking the dimension on the bed');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      document.querySelector('button.tool[data-tool="select"]').click();
+      CNC.job.shapes.push({id:1900,name:'plate',kind:'rect',x:2,y:2,rot:0,w:10,h:6,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.refresh(); CNC.selectShape(1900); return true; })()`);
+    const hits = JSON.parse(await run('JSON.stringify(CNC.sizeHitsInfo())'));
+    ok(hits.length === 2, 'a selected rectangle exposes two clickable dimensions', JSON.stringify(hits.map(h=>h.key)));
+    ok(hits.some(h => h.key === 'w') && hits.some(h => h.key === 'h'), 'one for width, one for height');
+    const wHit = hits.find(h => h.key === 'w');
+    ok(Math.abs(wHit.value - 10) < 1e-9, 'the width label reports the real width', String(wHit.value));
+
+    // clicking inside the label box must be recognised, outside must not
+    const inside = await run(`JSON.stringify(CNC.hitSizeLabel({x:${wHit.x + wHit.w/2}, y:${wHit.y + wHit.h/2}}))`);
+    ok(inside && inside !== 'null', 'clicking the label registers a hit');
+    const outside = await run(`JSON.stringify(CNC.hitSizeLabel({x:${wHit.x - 200}, y:${wHit.y}}))`);
+    ok(outside === 'null', 'clicking away from it does not');
+
+    // a real click should open the inline editor
+    await run(`(() => { const cv = document.querySelector('#cv'); const r = cv.getBoundingClientRect();
+      const hit = CNC.sizeHitsInfo().find(h => h.key === 'w');
+      cv.dispatchEvent(new MouseEvent('mousedown', {
+        clientX: r.left + (hit.x + hit.w/2) / devicePixelRatio,
+        clientY: r.top  + (hit.y + hit.h/2) / devicePixelRatio,
+        bubbles: true, button: 0 }));
+      return true; })()`);
+    ok(await run(`!!document.querySelector('#sizeEdit')`), 'clicking the width on the bed opens an editor there');
+    await run(`(() => { const i = document.querySelector('#sizeEdit');
+      i.value = '14.25'; i.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true})); return true; })()`);
+    ok((await run(`!document.querySelector('#sizeEdit')`)) === true, 'Enter closes the editor');
+    ok(Math.abs((await run('CNC.job.shapes[0].w')) - 14.25) < 1e-9, 'and the rectangle is now 14.25 in wide', String(await run('CNC.job.shapes[0].w')));
+    const nb = JSON.parse(await run(`JSON.stringify(CNC.G.bbox(CNC.worldLoop(CNC.job.shapes[0])))`));
+    ok(Math.abs(nb.w - 14.25) < 1e-6, 'the geometry really changed', String(nb.w));
+    ok(Math.abs(nb.x0 - 2) < 1e-9, 'and it grew from the corner it was placed at, not the centre', String(nb.x0));
+
+    console.log('Escape leaves the size alone');
+    await run(`(() => { const hit = CNC.sizeHitsInfo().find(h => h.key === 'h');
+      CNC.hitSizeLabel({x: hit.x + 1, y: hit.y + 1}); return true; })()`);
+    const before = await run('CNC.job.shapes[0].h');
+    await run(`(() => { const cv = document.querySelector('#cv'); const r = cv.getBoundingClientRect();
+      const hit = CNC.sizeHitsInfo().find(h => h.key === 'h');
+      cv.dispatchEvent(new MouseEvent('mousedown', {
+        clientX: r.left + (hit.x + hit.w/2) / devicePixelRatio,
+        clientY: r.top  + (hit.y + hit.h/2) / devicePixelRatio, bubbles: true, button: 0 }));
+      const i = document.querySelector('#sizeEdit');
+      i.value = '999'; i.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+      return true; })()`);
+    ok(Math.abs((await run('CNC.job.shapes[0].h')) - before) < 1e-9, 'Escape cancels without resizing', String(await run('CNC.job.shapes[0].h')));
+
+    console.log('circles resize by radius');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:1901,name:'hole',kind:'circle',x:10,y:10,rot:0,r:2,op:'inside',toolId:2,climb:false,open:false});
+      CNC.refresh(); CNC.selectShape(1901); return true; })()`);
+    const ch = JSON.parse(await run('JSON.stringify(CNC.sizeHitsInfo())'));
+    ok(ch.length === 1 && ch[0].key === 'r', 'a circle exposes one clickable radius', JSON.stringify(ch.map(h=>h.key)));
+    await run(`CNC.applySize(CNC.job.shapes[0], 'r', 3.125)`);
+    ok(Math.abs((await run('CNC.job.shapes[0].r')) - 3.125) < 1e-9, 'radius retypes to 3.125');
+    const cb = JSON.parse(await run(`JSON.stringify(CNC.G.bbox(CNC.worldLoop(CNC.job.shapes[0])))`));
+    ok(Math.abs(cb.w - 6.25) < 1e-6, 'the circle is now 6.25 in across', String(cb.w));
+    ok(Math.abs((cb.x0 + cb.x1) / 2 - 10) < 1e-9, 'and kept its centre', String((cb.x0 + cb.x1) / 2));
+
+    console.log('a traced or boolean part resizes by scaling');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:1902,name:'tri',kind:'poly',x:0,y:0,rot:0,open:false,op:'outside',toolId:2,climb:false,
+        pts:[{x:0,y:0,r:0,arcR:0},{x:12,y:0,r:0,arcR:0},{x:6,y:8,r:0,arcR:0}]});
+      CNC.refresh(); CNC.selectShape(1902); return true; })()`);
+    await run(`CNC.applySize(CNC.job.shapes[0], 'w', 24)`);
+    const tb = JSON.parse(await run(`JSON.stringify(CNC.G.bbox(CNC.worldLoop(CNC.job.shapes[0])))`));
+    ok(Math.abs(tb.w - 24) < 1e-6, 'a polygon scales to the typed width', String(tb.w));
+    ok(Math.abs(tb.h - 8) < 1e-6, 'without stretching the other axis', String(tb.h));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

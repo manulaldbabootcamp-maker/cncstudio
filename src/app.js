@@ -453,6 +453,67 @@
       ctx.strokeStyle = '#0b1520'; ctx.lineWidth = 1.2 * dpr; ctx.stroke();
     }
   }
+  /* Click a dimension on the drawing and retype it. Drawing a rectangle
+     roughly and then correcting the numbers on the bed is how this actually
+     gets used - the panel on the right is the long way round, and the entry
+     box that appears mid-drag disappears the moment the button is released. */
+  function hitSizeLabel(sp) {
+    for (const h of sizeHits) {
+      if (sp.x >= h.x && sp.x <= h.x + h.w && sp.y >= h.y && sp.y <= h.y + h.h) return h;
+    }
+    return null;
+  }
+  function openSizeEditor(hit) {
+    const sh = job.shapes.find(x => x.id === hit.id);
+    if (!sh) return;
+    const dpr = devicePixelRatio;
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.id = 'sizeEdit';
+    inp.value = fmtIn(hit.value);
+    inp.title = hit.label;
+    inp.style.left = Math.round(hit.x / dpr - 2) + 'px';
+    inp.style.top = Math.round(hit.y / dpr - 2) + 'px';
+    inp.style.width = Math.max(58, Math.round(hit.w / dpr) + 22) + 'px';
+    $('#center').appendChild(inp);
+    inp.focus(); inp.select();
+    let done = false;
+    const finish = (save) => {
+      if (done) return; done = true;
+      const v = parseFloat(inp.value);
+      inp.remove();
+      if (save && isFinite(v) && v > 0) applySize(sh, hit.key, v);
+      draw();
+    };
+    inp.addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    inp.addEventListener('blur', () => finish(true));
+  }
+  /* Apply a retyped dimension. A rectangle keeps its bottom-left corner and a
+     circle keeps its centre, since those are the points the operator placed.
+     Anything else is scaled about its lower-left bound, which keeps it where
+     it was nested. */
+  function applySize(sh, key, v) {
+    snapshot();
+    if (sh.kind === 'rect' && (key === 'w' || key === 'h')) sh[key] = v;
+    else if (sh.kind === 'circle' && key === 'r') sh.r = v;
+    else if (sh.kind === 'ellipse') { if (key === 'dx') sh.rx = v / 2; else sh.ry = v / 2; }
+    else {
+      const b = shapeBBox(sh);
+      const cur = key === 'w' ? b.w : b.h;
+      if (!(cur > 1e-9)) { LOG.warn('Cannot resize a part with no extent'); return; }
+      const f = v / cur;
+      scaleShape(sh, key === 'w' ? f : 1, key === 'h' ? f : 1, b);
+    }
+    delete sh.startPt;
+    invalidateLoops();
+    LOG.action(`Set ${key === 'r' ? 'radius' : key === 'h' || key === 'dy' ? 'height' : 'width'} of "${sh.name}" to ${fmtIn(v)} in`);
+    refresh();
+  }
+
   function hitGrip(wp) {
     const sh = gripShape();
     if (!sh) return null;
@@ -524,6 +585,8 @@
     if (tool === 'extend') { extendAt(w); return; }
     if (tool === 'dim') { dimClick(ws); draw(); return; }
     if (tool === 'select') {
+      const sizeHit = hitSizeLabel(s);
+      if (sizeHit) { openSizeEditor(sizeHit); return; }
       // a grip under the cursor takes precedence over selecting/moving the shape
       const g = hitGrip(w);
       if (g) {
@@ -649,7 +712,7 @@
       const hs = hitShape(w);
       if (hs) { const i = edgeIndexAt(hs, w); if (i >= 0) hoverEdge = { id: hs.id, i }; }
     }
-    cv.style.cursor = hoverGrip ? (hoverGrip.kind === 'edge' ? 'ns-resize' : 'move') : 'crosshair';
+    cv.style.cursor = hitSizeLabel(s) ? 'text' : hoverGrip ? (hoverGrip.kind === 'edge' ? 'ns-resize' : 'move') : 'crosshair';
     if (measure && !measure.b) measure.cur = axisLock(measure.a, ws, e.altKey);
     if (dimDraft && dimDraft.b) { const d = dimDraft, dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1; d.off = ((ws.x - d.a.x) * (-dy / L)) + ((ws.y - d.a.y) * (dx / L)); }
     else if (dimDraft) dimDraft.b = null;
@@ -2750,7 +2813,17 @@
     const A = { x: a.x + nx * off, y: a.y + ny * off }, B = { x: b.x + nx * off, y: b.y + ny * off };
     const pa = W2S(A), pb = W2S(B), qa = W2S(a), qb = W2S(b);
     const span = Math.hypot(pb.x - pa.x, pb.y - pa.y);
-    if (span < 24 * dpr) return;                 // too small on screen to read
+    /* Too short to draw arrows into without a mess - but still label it. A
+       small circle's radius line is barely any length on screen, and dropping
+       the label entirely would leave no way to click and retype it. */
+    if (span < 24 * dpr) {
+      const m0 = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 };
+      const tw = ctx.measureText(label).width;
+      const b0 = { x: m0.x - tw / 2 - 4, y: m0.y - 9 * dpr, w: tw + 8, h: 16 * dpr };
+      ctx.fillStyle = 'rgba(20,22,26,.85)'; ctx.fillRect(b0.x, b0.y, b0.w, b0.h);
+      ctx.fillStyle = colour; ctx.fillText(label, m0.x - tw / 2, m0.y + 4 * dpr);
+      return b0;
+    }
     ctx.strokeStyle = colour; ctx.lineWidth = 1.2 * dpr; ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(qa.x, qa.y); ctx.lineTo(pa.x, pa.y); ctx.moveTo(qb.x, qb.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
@@ -2761,8 +2834,10 @@
     ctx.stroke();
     const mid = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 };
     const w = ctx.measureText(label).width;
-    ctx.fillStyle = 'rgba(20,22,26,.85)'; ctx.fillRect(mid.x - w / 2 - 4, mid.y - 9 * dpr, w + 8, 16 * dpr);
+    const box = { x: mid.x - w / 2 - 4, y: mid.y - 9 * dpr, w: w + 8, h: 16 * dpr };
+    ctx.fillStyle = 'rgba(20,22,26,.85)'; ctx.fillRect(box.x, box.y, box.w, box.h);
     ctx.fillStyle = colour; ctx.fillText(label, mid.x - w / 2, mid.y + 4 * dpr);
+    return box;                       // so a size label can be hit-tested and edited
   }
 
   function drawDims() {
@@ -2779,7 +2854,9 @@
 
   /* Size labels on the selected part, so width/height/diameter read off the
      drawing the way an edge length does - without hunting the panel for them. */
+  let sizeHits = [];   // clickable dimension labels, in device pixels
   function drawSizeLabels() {
+    sizeHits = [];
     const el = $('#chkSizes');
     if (el && !el.checked) return;
     if (!sel.size || sel.size > 3) return;         // a crowd of labels helps nobody
@@ -2798,19 +2875,24 @@
         const r = sh.kind === 'circle' ? sh.r : sh.rx;
         // diameter across the centre, plus the radius value beside it
         // radius, drawn from the centre out - not the diameter
-        drawDimLine({ x: sh.x, y: sh.y }, { x: sh.x + r, y: sh.y }, 0, `R ${fmtIn(r)}"`, '#7fd8a0');
+        const rb = drawDimLine({ x: sh.x, y: sh.y }, { x: sh.x + r, y: sh.y }, 0, `R ${fmtIn(r)}"`, '#7fd8a0');
+        if (rb) sizeHits.push({ ...rb, id: sh.id, key: 'r', value: r, label: 'Radius' });
         continue;
       }
       if (sh.kind === 'ellipse') {
-        drawDimLine({ x: sh.x - sh.rx, y: sh.y }, { x: sh.x + sh.rx, y: sh.y }, 0, `${fmtIn(sh.rx * 2)}"`, '#7fd8a0');
-        drawDimLine({ x: sh.x, y: sh.y - sh.ry }, { x: sh.x, y: sh.y + sh.ry }, 0, `${fmtIn(sh.ry * 2)}"`, '#7fd8a0');
+        const eb1 = drawDimLine({ x: sh.x - sh.rx, y: sh.y }, { x: sh.x + sh.rx, y: sh.y }, 0, `${fmtIn(sh.rx * 2)}"`, '#7fd8a0');
+        if (eb1) sizeHits.push({ ...eb1, id: sh.id, key: 'dx', value: sh.rx * 2, label: 'Width' });
+        const eb2 = drawDimLine({ x: sh.x, y: sh.y - sh.ry }, { x: sh.x, y: sh.y + sh.ry }, 0, `${fmtIn(sh.ry * 2)}"`, '#7fd8a0');
+        if (eb2) sizeHits.push({ ...eb2, id: sh.id, key: 'dy', value: sh.ry * 2, label: 'Height' });
         continue;
       }
       // everything else: overall width and height across the bounding box
       const wLabel = (sh.kind === 'rect' && !sh.rot) ? fmtIn(sh.w) + '"' : fmtIn(b.w) + '"';
       const hLabel = (sh.kind === 'rect' && !sh.rot) ? fmtIn(sh.h) + '"' : fmtIn(b.h) + '"';
-      drawDimLine({ x: b.x0, y: b.y0 }, { x: b.x1, y: b.y0 }, -gap, wLabel, '#7fd8a0');
-      drawDimLine({ x: b.x0, y: b.y1 }, { x: b.x0, y: b.y0 }, -gap, hLabel, '#7fd8a0');
+      const wb = drawDimLine({ x: b.x0, y: b.y0 }, { x: b.x1, y: b.y0 }, -gap, wLabel, '#7fd8a0');
+      if (wb) sizeHits.push({ ...wb, id: sh.id, key: 'w', value: (sh.kind === 'rect' && !sh.rot) ? sh.w : b.w, label: 'Width' });
+      const hb = drawDimLine({ x: b.x0, y: b.y1 }, { x: b.x0, y: b.y0 }, -gap, hLabel, '#7fd8a0');
+      if (hb) sizeHits.push({ ...hb, id: sh.id, key: 'h', value: (sh.kind === 'rect' && !sh.rot) ? sh.h : b.h, label: 'Height' });
       // corner radius, when there is one and it is uniform
       if (sh.kind === 'rect' && sh.r > 0 && !(sh.rc || []).some(v => v != null)) {
         const p = W2S({ x: b.x0 + sh.r * 0.3, y: b.y1 - sh.r * 0.3 });
@@ -3366,5 +3448,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();
