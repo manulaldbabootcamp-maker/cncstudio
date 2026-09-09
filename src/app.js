@@ -630,6 +630,7 @@
     if (e.key.toLowerCase() === 'e') setTool('ellipse');
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') { e.shiftKey ? ungroupSel() : groupSel(); e.preventDefault(); }
     if (e.key.toLowerCase() === 'm') setTool('measure');
+    if (e.key.toLowerCase() === 'k') { setTool('trim'); toast('Click the edge you want to remove'); }
     if (e.key.toLowerCase() === 'd' && !e.ctrlKey && !e.metaKey) setTool('dim');
     if (e.key.toLowerCase() === 'g' && sel.size) { openMoveBy(); e.preventDefault(); }
     if (e.key === 'F8') { S.snap.ortho = !S.snap.ortho; saveSettings(); syncSnapUI(); toast('Ortho ' + (S.snap.ortho ? 'on' : 'off')); e.preventDefault(); }
@@ -1131,6 +1132,7 @@
     const opens = shs.filter(s => s.open);
     modal(`<h3>Trim, extend &amp; join</h3>
       <p class="muted">Selected: ${shs.length} part${shs.length === 1 ? '' : 's'} (${opens.length} open path${opens.length === 1 ? '' : 's'}).</p>
+      <div class="row"><button class="small" id="tjErase">Delete an edge</button><span class="muted">then click a side to remove it — e.g. drop one side of a rectangle to leave a C</span></div>
       <div class="row"><button class="small" id="tjJoin">Join open paths</button><span class="muted">chain touching ends into one path; closes it if the ends meet</span></div>
       <div class="row"><button class="small" id="tjClose">Force close</button><span class="muted">connect the two ends of one open path with a straight segment</span></div>
       <div class="row"><button class="small" id="tjTrim">Trim tool</button><span class="muted">then click the piece of an open path to remove, between its crossings</span></div>
@@ -1141,6 +1143,7 @@
       (ov, close) => {
         ov.querySelector('#tjCancel').onclick = close;
         const tol = () => parseFloat(ov.querySelector('#tjTol').value) || 0.01;
+        ov.querySelector('#tjErase').onclick = () => { setTool('trim'); close(); toast('Click the edge you want to remove'); };
         ov.querySelector('#tjJoin').onclick = () => { joinSelected(tol()); close(); };
         ov.querySelector('#tjClose').onclick = () => { forceClose(); close(); };
         ov.querySelector('#tjTrim').onclick = () => { setTool('trim'); close(); toast('Click the part of a path to remove'); };
@@ -1343,7 +1346,7 @@
     spline: 'Click points · <span class="k">Enter</span> to finish · click the first point to close',
     measure: 'Click two points',
     dim: 'Click two points, then a third to place the line',
-    trim: 'Click the part of a path to remove',
+    trim: 'Click an <b>edge to delete it</b> — or, where paths cross, the span to trim away',
     extend: 'Click near the end of a path to extend it',
   };
   function updateHint() {
@@ -1665,12 +1668,9 @@
 
   /* Trim: split the clicked open path at every crossing with other geometry
      and drop the span the user clicked on. */
-  function trimAt(wp) {
-    const target = hitShape(wp);
-    if (!target || !target.open) return toast('Click an open path (trim works on open paths)');
-    const loop = worldLoop(target);
-    const others = job.shapes.filter(s => s.id !== target.id).map(s => worldLoop(s));
-    // collect split parameters per segment index
+  // every point where this shape crosses any other, as {segment index, param}
+  function crossingsOf(target, loop) {
+    const others = job.shapes.filter(s => s.id !== target.id).map(s => { try { return worldLoop(s); } catch (e) { return []; } });
     const cuts = [];
     loop.forEach((s, i) => {
       for (const o of others) for (const t of o) {
@@ -1680,7 +1680,61 @@
         }
       }
     });
-    if (!cuts.length) return toast('That path does not cross anything, so there is nothing to trim to');
+    cuts.sort((a, b) => (a.i - b.i) || (a.u - b.u));
+    return cuts;
+  }
+
+  /* Delete the one segment under the cursor.
+     A closed shape becomes an open path that simply stops short of the gap -
+     drop one side of a rectangle and you get a C. An open path splits in two
+     (or loses an end). Fillet arcs count as their own segments, so clicking a
+     straight side of a rounded rectangle removes only that side. */
+  function eraseEdgeAt(target, loop, wp) {
+    let bi = -1, bd = Infinity;
+    loop.forEach((s, i) => { const d = distToLoopSeg(wp, s); if (d < bd) { bd = d; bi = i; } });
+    if (bi < 0) return toast('Click closer to the edge you want to remove');
+    const n = loop.length;
+    const wasClosed = !target.open;
+    const pieces = [];
+    if (wasClosed) {
+      // reopen the loop starting just after the deleted edge
+      const rest = [];
+      for (let k = 1; k < n; k++) rest.push(loop[(bi + k) % n]);
+      if (rest.length) pieces.push(rest);
+    } else {
+      const before = loop.slice(0, bi), after = loop.slice(bi + 1);
+      if (before.length) pieces.push(before);
+      if (after.length) pieces.push(after);
+    }
+    snapshot();
+    job.shapes = job.shapes.filter(s => s.id !== target.id);
+    sel.clear();
+    if (!pieces.length) {
+      LOG.action(`Deleted the last edge of "${target.name}", removing the part`);
+      refresh();
+      return;
+    }
+    for (const segs of pieces) {
+      const ns = pathShape(segs, { name: target.name, open: true, op: 'on', toolId: target.toolId, climb: target.climb, group: target.group });
+      job.shapes.push(ns); sel.add(ns.id);
+    }
+    const kind = loop[bi].type === 'arc' ? 'arc' : 'edge';
+    LOG.action(`Removed one ${kind} from "${target.name}"`
+      + (wasClosed ? ' — the part is now an open path, cut on the line' : ` — split into ${pieces.length} path(s)`));
+    if (wasClosed) toast('Edge removed — the part is now an open path (cut "on" the line)');
+    refresh();
+  }
+
+  function trimAt(wp) {
+    const target = hitShape(wp);
+    if (!target) return toast('Click the edge you want to remove');
+    const loop = worldLoop(target);
+    if (!loop.length) return;
+    /* No crossings to trim back to? Then the operator means "delete this
+       edge" - e.g. dropping one side of a rectangle to leave a C. That is far
+       less work than rebuilding the shape as a 3-sided polyline. */
+    if (!crossingsOf(target, loop).length) return eraseEdgeAt(target, loop, wp);
+    const cuts = crossingsOf(target, loop);
     cuts.sort((a, b) => (a.i - b.i) || (a.u - b.u));
     // build spans between consecutive cuts
     const spans = [];
@@ -2124,5 +2178,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, lastSnapInfo: () => lastSnap, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, lastSnapInfo: () => lastSnap, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();

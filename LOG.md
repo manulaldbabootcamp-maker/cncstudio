@@ -5,6 +5,36 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Delete an edge
+
+### Added
+- **Delete a single edge** from any shape — press `K`, or Trim → *Delete an
+  edge*, then click the side you want gone.
+  - A **closed** part becomes an open path that stops short of the gap: drop
+    one side of a rectangle and you get a C, without rebuilding it as a
+    three-sided polyline and re-entering every length and angle.
+  - An **open** path splits into two at that edge.
+  - Deleting a part's last remaining edge removes the part.
+  - Fillet arcs are their own segments, so clicking a straight side of a
+    rounded rectangle removes only that side and leaves the corners.
+  - The result switches to cutting **on** the line, since an open path has no
+    inside or outside, and that is stated in a toast rather than left to be
+    discovered at the machine.
+
+### Changed
+- The Trim tool used to refuse anything but an open path that crossed other
+  geometry. It now falls back to deleting the clicked edge when there is
+  nothing to trim back to, which is what "remove this line" usually means.
+  Where crossings do exist, the old span-trimming behaviour is unchanged.
+
+### Tests
+- Smoke test now 64 assertions: a rectangle really does become a continuous
+  3-segment open path with its ends where the deleted edge was and a total
+  length of 22 in, an open path splits in two, and a single-segment part
+  disappears.
+
+---
+
 ## Centre marks on all shapes, tool hints, typed length/angle
 
 ### Fixed

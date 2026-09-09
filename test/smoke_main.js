@@ -260,6 +260,49 @@ app.whenReady().then(async () => {
     await run(`(() => { document.querySelector('button.tool[data-tool="select"]').click(); return true; })()`);
     ok((await run(`document.querySelector('#toolHint').style.display`)) === 'none', 'no hint shown for the select tool');
 
+    console.log('delete an edge (rectangle -> C shape)');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:960,name:'plate',kind:'rect',x:0,y:0,rot:0,w:10,h:6,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    ok((await run('CNC.worldLoop(CNC.job.shapes[0]).length')) === 4, 'rectangle starts as 4 segments');
+    // click the middle of the bottom edge
+    await run(`(() => { const sh = CNC.job.shapes[0]; const loop = CNC.worldLoop(sh);
+      CNC.eraseEdgeAt(sh, loop, {x:5, y:0}); return true; })()`);
+    ok((await run('CNC.job.shapes.length')) === 1, 'still one part after deleting an edge');
+    const c = JSON.parse(await run(`JSON.stringify({open: CNC.job.shapes[0].open, op: CNC.job.shapes[0].op, n: CNC.worldLoop(CNC.job.shapes[0]).length})`));
+    ok(c.n === 3, 'the C shape has 3 segments', JSON.stringify(c));
+    ok(c.open === true, 'it became an open path');
+    ok(c.op === 'on', 'and is set to cut on the line, not as an outline');
+    // the remaining path must be continuous and must NOT include the deleted edge
+    const cont = await run(`(() => { const l = CNC.worldLoop(CNC.job.shapes[0]);
+      for (let i = 0; i + 1 < l.length; i++) if (CNC.G.dist(l[i].b, l[i+1].a) > 1e-9) return false;
+      return true; })()`);
+    ok(cont === true, 'the remaining path is continuous end to end');
+    const gapEnds = JSON.parse(await run(`(() => { const l = CNC.worldLoop(CNC.job.shapes[0]);
+      return JSON.stringify([l[0].a, l[l.length-1].b]); })()`));
+    ok(Math.abs(gapEnds[0].y) < 1e-9 && Math.abs(gapEnds[1].y) < 1e-9,
+      'the open ends sit where the deleted bottom edge used to be', JSON.stringify(gapEnds));
+    const per = await run(`(() => { const l = CNC.worldLoop(CNC.job.shapes[0]);
+      return l.reduce((s,g)=>s+CNC.G.segLen(g),0); })()`);
+    ok(Math.abs(per - 22) < 1e-6, 'remaining length is 6+10+6 = 22 in', String(per));
+
+    console.log('delete an edge from an open path splits it');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:961,name:'zig',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:4,y:0},{x:8,y:0},{x:12,y:0}]});
+      CNC.refresh(); return true; })()`);
+    await run(`(() => { const sh = CNC.job.shapes[0]; const loop = CNC.worldLoop(sh);
+      CNC.eraseEdgeAt(sh, loop, {x:6, y:0}); return true; })()`);
+    ok((await run('CNC.job.shapes.length')) === 2, 'deleting a middle edge splits an open path in two', String(await run('CNC.job.shapes.length')));
+
+    console.log('deleting the last edge removes the part');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:962,name:'one',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:5,y:0}]});
+      CNC.refresh(); return true; })()`);
+    await run(`(() => { const sh = CNC.job.shapes[0]; CNC.eraseEdgeAt(sh, CNC.worldLoop(sh), {x:2.5,y:0}); return true; })()`);
+    ok((await run('CNC.job.shapes.length')) === 0, 'the part is gone when its only edge is deleted');
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
