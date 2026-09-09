@@ -689,6 +689,7 @@
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') { e.shiftKey ? ungroupSel() : groupSel(); e.preventDefault(); }
     if (e.key.toLowerCase() === 'm') setTool('measure');
     if (e.key.toLowerCase() === 'k') { setTool('trim'); toast('Click the edge you want to remove'); }
+    if (e.key.toLowerCase() === 'j' && sel.size > 1) { mergeSelected(trimTol()); e.preventDefault(); }
     if (e.key.toLowerCase() === 'd' && !e.ctrlKey && !e.metaKey) setTool('dim');
     if (e.key.toLowerCase() === 'g' && sel.size) { openMoveBy(); e.preventDefault(); }
     if (e.key === 'F8') { S.snap.ortho = !S.snap.ortho; saveSettings(); syncSnapUI(); toast('Ortho ' + (S.snap.ortho ? 'on' : 'off')); e.preventDefault(); }
@@ -1202,7 +1203,7 @@
       <div class="row"><button class="small" id="tjErase">Delete an edge</button><span class="muted">then click a side to remove it — e.g. drop one side of a rectangle to leave a C</span></div>
       <div class="row"><button class="small" id="tjJoin">Join open paths</button><span class="muted">chain touching <b>ends</b> into one path; closes it if the ends meet</span></div>
       <div class="row"><button class="small" id="tjSplit">Split at intersections</button><span class="muted">turn every crossing into a vertex, so each piece is its own selectable side</span></div>
-      <div class="row"><button class="small" id="tjMerge">Merge into one part</button><span class="muted">also handles a line landing <b>partway along</b> another side: splits it there so the new line becomes a numbered side</span></div>
+      <div class="row"><button class="small" id="tjMerge">Merge into one part (J)</button><span class="muted">works on open <i>and</i> closed parts; also handles a line landing <b>partway along</b> another side: splits it there so the new line becomes a numbered side</span></div>
       <div class="row"><button class="small" id="tjClose">Force close</button><span class="muted">connect the two ends of one open path with a straight segment</span></div>
       <div class="row"><button class="small" id="tjTrim">Trim tool</button><span class="muted">then click the piece of an open path to remove, between its crossings</span></div>
       <div class="row"><button class="small" id="tjExtend">Extend tool</button><span class="muted">then click near the end of an open path to run it out to the next shape it meets</span></div>
@@ -2063,8 +2064,13 @@
   }
 
   function mergeSelected(tol) {
-    const shs = selInOrder().filter(s => s.open);
-    if (shs.length < 2) return toast('Select two or more open paths to merge');
+    /* Any shapes, open or closed. Restricting this to open paths meant a
+       leftover closed outline sitting next to an open piece could never be
+       welded into one part - which is the usual state after trimming. A closed
+       shape simply contributes its ring of segments; splitAtTouches then puts
+       a vertex wherever the other path meets it. */
+    const shs = selInOrder();
+    if (shs.length < 2) return toast('Select two or more parts to merge');
     const entries = shs.map(sh => { let segs = []; try { segs = worldLoop(sh); } catch (e) { } return { id: sh.id, segs }; })
       .filter(e => e.segs.length);
     if (entries.length < 2) return toast('Those paths have no geometry to merge');
@@ -2085,6 +2091,8 @@
     job.shapes = job.shapes.filter(x => !ids.has(x.id));
     const ordered = orderSegs(all, tol);
     const closed = G.dist(ordered[ordered.length - 1].b, ordered[0].a) <= tol && ordered.length > 2;
+    // pull the ends exactly together so the outline is genuinely closed, not nearly
+    if (closed) { const f = ordered[0], l = ordered[ordered.length - 1]; if (l.type === 'line') l.b = f.a; else if (f.type === 'line') f.a = l.b; }
     const ns = pathShape(ordered, {
       name: first.name, open: !closed, op: closed ? 'outside' : 'on',
       toolId: first.toolId, climb: first.climb, group: first.group,
@@ -2092,9 +2100,11 @@
     job.shapes.push(ns);
     sel.clear(); sel.add(ns.id); clearEdge();
     makeEditable(ns);
-    LOG.action('Merged ' + shs.length + ' paths into one part with ' + ordered.length + ' sides'
+    LOG.action('Merged ' + shs.length + ' parts into one ' + (closed ? 'closed' : 'open') + ' part with ' + ordered.length + ' sides'
       + (splits ? ' (' + splits + ' side(s) split where a line landed partway along)' : ''));
-    toast('Merged into one part - ' + ordered.length + ' sides' + (splits ? ', split at the junction' : ''));
+    toast(closed
+      ? 'Merged into one closed part - ' + ordered.length + ' sides, cutting outside'
+      : 'Merged into one open part - ' + ordered.length + ' sides (ends do not meet, so it cuts on the line)');
     refresh();
   }
 

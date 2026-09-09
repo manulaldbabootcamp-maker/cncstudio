@@ -5,6 +5,35 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Merge leftovers into one closed part
+
+### Fixed
+- **Merge silently refused to touch closed parts.** It filtered the selection
+  down to open paths only, so a leftover closed outline sitting beside an open
+  piece — the usual state after trimming — could never be welded into one part,
+  and the command appeared to do nothing. It now accepts any parts, open or
+  closed: a closed shape simply contributes its ring of segments, and the
+  junction split then puts a vertex wherever the other path meets it.
+- **Merged ends are now welded exactly together**, so an outline that comes
+  within tolerance of closing is genuinely closed rather than nearly closed —
+  which matters, because only a truly closed loop can be offset for tool
+  diameter.
+
+### Changed
+- A merge that closes the outline now switches it to **cut outside**, so it
+  profiles as a part instead of staying an on-the-line path, and the toast says
+  which happened: *"Merged into one closed part — 4 sides, cutting outside"* or
+  *"…one open part … (ends do not meet, so it cuts on the line)"*.
+- **`J`** merges the selection, next to `K` for the trim/erase tool.
+
+### Tests
+- Smoke test now 121 assertions: two open halves merge into one **closed**
+  4-sided part cutting outside and enclosing the correct area, and a closed
+  part plus an open one merges into a single 5-sided part instead of being
+  refused.
+
+---
+
 ## Box-select across parts, split at intersections, and a bbox bug
 
 ### Fixed

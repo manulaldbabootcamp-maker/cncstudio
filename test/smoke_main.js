@@ -551,6 +551,31 @@ app.whenReady().then(async () => {
     const halves = JSON.parse(await run(`JSON.stringify(CNC.worldLoop(CNC.job.shapes[0]).map(g => [g.a.x, g.b.x]))`));
     ok(Math.abs(halves[0][1] - 5) < 1e-6, 'the horizontal line is split exactly at the crossing (x=5)', JSON.stringify(halves));
 
+    console.log('merge two leftovers into one closed part');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:1200,name:'a',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:0,y:10},{x:10,y:10}]});
+      CNC.job.shapes.push({id:1201,name:'b',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:10,y:10},{x:10,y:0},{x:0,y:0}]});
+      CNC.refresh(); CNC.doMarquee(-99,-99,99,99); CNC.mergeSelected(0.125); return true; })()`);
+    ok((await run('CNC.job.shapes.length')) === 1, 'two open halves merge into a single part');
+    const m = JSON.parse(await run(`JSON.stringify({open: CNC.job.shapes[0].open, op: CNC.job.shapes[0].op, n: CNC.worldLoop(CNC.job.shapes[0]).length})`));
+    ok(m.open === false, 'the merged part is CLOSED, not an open path', JSON.stringify(m));
+    ok(m.op === 'outside', 'and switches to cutting outside, so it profiles as a part', m.op);
+    ok(m.n === 4, 'it has 4 sides', String(m.n));
+    const marea = await run(`Math.abs(CNC.G.signedArea(CNC.worldLoop(CNC.job.shapes[0])))`);
+    ok(Math.abs(marea - 100) < 1e-6, 'and encloses the right area (10x10 = 100)', String(marea));
+
+    console.log('merge accepts a CLOSED part too (was silently refusing)');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:1210,name:'closed',kind:'poly',x:0,y:0,rot:0,open:false,op:'outside',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:10,y:0},{x:10,y:10},{x:0,y:10}]});
+      CNC.job.shapes.push({id:1211,name:'tail',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:10,y:10},{x:16,y:10}]});
+      CNC.refresh(); CNC.doMarquee(-99,-99,99,99); CNC.mergeSelected(0.125); return true; })()`);
+    ok((await run('CNC.job.shapes.length')) === 1, 'a closed part and an open one merge into one');
+    ok((await run('CNC.worldLoop(CNC.job.shapes[0]).length')) === 5, 'giving 5 sides (square + tail)', String(await run('CNC.worldLoop(CNC.job.shapes[0]).length')));
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
