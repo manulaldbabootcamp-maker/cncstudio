@@ -189,11 +189,15 @@ const BOOL = (() => {
     const ctr = P(ux, uy);
     return { c: ctr, r: Math.hypot(a.x - ux, a.y - uy) };
   }
-  // arc from a to b passing through m (bulge = tan(theta/4) = 2*sagitta/chord)
+  /* Arc from a to b passing through m. The negation matters: bulgeArc's
+     positive bulge curves to the RIGHT of travel while this sagitta is
+     positive to the LEFT, so without it the arc is mirrored about its chord.
+     (refitLoop's orientation pass used to hide this by reversing the whole
+     loop, which happened to land on the right shape.) */
   function arcThroughPts(a, b, m) {
     const chord = G.dist(a, b);
     const sag = G.cross(G.norm(G.sub(b, a)), G.sub(P(m.x, m.y), a));
-    return G.bulgeArc(a, b, (2 * sag) / chord);
+    return G.bulgeArc(a, b, (-2 * sag) / chord);
   }
   function refit(poly, tol = 0.004, minRun = 5) {
     const n = poly.length;

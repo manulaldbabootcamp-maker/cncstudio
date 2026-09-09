@@ -5,6 +5,47 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Auto-split at crossings, and an inverted arc bug
+
+### Added
+- **Points are added automatically where a new line meets existing geometry.**
+  Draw a line across a circle and you now get the four quadrant arcs and the
+  four radii, each selectable and deletable on its own — instead of two
+  semicircles and two full diameters. Draw a line onto the side of a shape and
+  that side splits at the contact point, so the leftover can simply be clicked
+  and deleted.
+  Only the shapes the new one actually touches are examined, so drawing in
+  empty space costs nothing, and the split keeps a closed part closed.
+  Toggle with **Split at crossings when drawing** in the snap menu.
+- Split shapes keep their original id, so selection, grouping and undo stay
+  attached to them.
+
+### Fixed
+- **Arcs were being built mirrored about their own chord.** `bulgeArc` treats a
+  positive bulge as curving to the *right* of travel, while `sagitta()` is
+  positive to the *left*; the conversion between them was missing its negation.
+  The radius was always right, which is exactly why every existing test passed —
+  they only ever checked magnitude. Consequences:
+  - the **arc tool** drew the arc on the wrong side of the chord;
+  - converting a shape to editable per-edge bulges mirrored every curve, so a
+    circle split into quadrants enclosed **30.9 sq in instead of 113.1**.
+  The sign conversion now lives in one named place, `arcRFromGeometry`, with
+  the reason written down.
+- **A circle collapsed to zero area when made editable.** It is stored as two
+  semicircles, and a closed shape needs at least three points to survive as a
+  polygon, so it became a 2-point degenerate. Segments are now halved first.
+
+### Tests
+- Smoke test now 139 assertions. The gap that hid the arc bug is closed: there
+  are now assertions on arc **direction**, not just radius — an arc drawn
+  through a point above its chord must still bow upward, and a circle's area
+  must survive conversion to editable bulges. Plus the full case from the
+  screenshot: two diameters split a circle into 4 quadrant arcs and 4 radii,
+  the circle still encloses pi*r^2, stays closed, and a single quadrant arc can
+  be selected on its own.
+
+---
+
 ## Click a line to select it
 
 ### Changed

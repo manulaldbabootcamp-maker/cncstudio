@@ -11,7 +11,7 @@
     materials: PO.DEFAULT_MATERIALS.map(m => ({ ...m })),
     nest: { gap: 0.5, margin: 0.375, rotate: false },
     ai: { key: '', model: 'claude-sonnet-4-5' },
-    snap: { on: true, ortho: false, trimTol: 0.125, radius: 0.125, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
+    snap: { on: true, ortho: false, autoSplit: true, trimTol: 0.125, radius: 0.125, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
   };
   let S = loadSettings();
   function loadSettings() {
@@ -296,13 +296,17 @@
     if (L < 1e-9) return 0;
     return G.cross(G.norm(d), G.sub(p, a));      // signed: + is left of a->b
   }
-  // arc through 3 points (start, end, and a point on it). null if collinear.
+  /* Arc through 3 points (start, end, and a point on it). null if collinear.
+     NOTE the minus: bulgeArc's positive bulge curves to the RIGHT of travel,
+     while sagitta() is positive to the LEFT. Without the negation the arc comes
+     out mirrored about its own chord - it still has the right radius, which is
+     why a magnitude-only test never caught it. */
   function arcThrough(a, b, p) {
     const s = sagitta(a, b, p);
     if (Math.abs(s) < 1e-6) return null;
     const chord = G.dist(a, b);
     if (chord < 1e-9) return null;
-    return G.bulgeArc(a, b, (2 * s) / chord);    // bulge = tan(theta/4) = 2*sagitta/chord
+    return G.bulgeArc(a, b, (-2 * s) / chord);
   }
   // build an arc from a chord and a known bulge distance (sagitta)
   function arcFromSagitta(a, b, s) {
@@ -383,6 +387,18 @@
     const sag = RR - h;
     return R > 0 ? sag : -sag;
   }
+  /* Two different sign conventions meet here, and mixing them silently flips
+     which way an edge curves:
+       - the TYPED bulge column is positive when the edge bows OUTWARD from the
+         part, which is what an operator measures;
+       - a sagitta computed from geometry via cross(chord, mid) is positive to
+         the LEFT of travel, which for a CCW outline points INWARD.
+     sagittaToArcR takes the first. Anything handing it a geometric sagitta
+     must go through this, or the arc comes back mirrored - which is how a
+     circle split into quadrants ended up enclosing 30.9 sq in instead of
+     113.1. */
+  function arcRFromGeometry(chord, geomSag) { return sagittaToArcR(chord, -geomSag); }
+
   // sagitta -> arcR (the radius the geometry layer stores)
   function sagittaToArcR(chord, sag) {
     const s = Math.abs(sag);
@@ -550,7 +566,7 @@
     const sag = sagitta(d.a, d.b, p3);
     const sh = makeShape('poly', {
       name: 'arc', x: x0, y: y0, open: true, op: 'on',
-      pts: [{ x: d.a.x - x0, y: d.a.y - y0, r: 0, arcR: sagittaToArcR(G.dist(d.a, d.b), sag) },
+      pts: [{ x: d.a.x - x0, y: d.a.y - y0, r: 0, arcR: arcRFromGeometry(G.dist(d.a, d.b), sag) },
             { x: d.b.x - x0, y: d.b.y - y0, r: 0, arcR: 0 }],
     });
     LOG.action(`Arc added: R ${fmtIn(G.radius(seg))}, bulge ${fmtIn(sag)}`);
@@ -630,7 +646,7 @@
     } else {
       const a = pts[g.i], b = pts[(g.i + 1) % n];
       const sag = sagitta(a, b, local);
-      pts[g.i].arcR = sagittaToArcR(G.dist(a, b), sag);
+      pts[g.i].arcR = arcRFromGeometry(G.dist(a, b), sag);
       d.lastSag = sag;
     }
     // keep the local origin at the min corner so X/Y stay meaningful
@@ -683,7 +699,41 @@
     const x0 = Math.min(...d.pts.map(p => p.x)), y0 = Math.min(...d.pts.map(p => p.y));
     addShape(makeShape('poly', { x: x0, y: y0, pts: d.pts.map(p => ({ x: p.x - x0, y: p.y - y0, r: 0 })), open, op: open ? 'on' : 'outside' }));
   }
-  function addShape(sh) { snapshot(); if (sh.kind === 'poly') normalizePoly(sh); job.shapes.push(sh); sel.clear(); sel.add(sh.id); setTool('select'); refresh(); }
+  function addShape(sh) {
+    snapshot();
+    if (sh.kind === 'poly') normalizePoly(sh);
+    job.shapes.push(sh);
+    sel.clear(); sel.add(sh.id);
+    autoSplitAround(sh);
+    setTool('select');
+    refresh();
+  }
+
+  /* When a new line lands on existing geometry, put a point in at the crossing
+     and split BOTH sides of it. Without this a line drawn across a circle
+     leaves two semicircles and one long diameter; with it you get the four
+     quadrant arcs and the four radii, each selectable on its own.
+     Only the shapes the new one actually touches are considered, so drawing in
+     empty space costs nothing. */
+  function autoSplitAround(sh) {
+    if (S.snap.autoSplit === false) return 0;
+    let bb;
+    try { bb = G.bbox(worldLoop(sh)); } catch (e) { return 0; }
+    const pad = trimTol();
+    const near = job.shapes.filter(o => {
+      if (o.id === sh.id) return false;
+      let b;
+      try { b = shapeBBox(o); } catch (e) { return false; }
+      return !(b.x1 < bb.x0 - pad || b.x0 > bb.x1 + pad || b.y1 < bb.y0 - pad || b.y0 > bb.y1 + pad);
+    });
+    if (!near.length) return 0;
+    const n = splitAtIntersections([sh].concat(near), pad);
+    if (n) {
+      LOG.action('Added ' + n + ' point(s) where "' + sh.name + '" crosses existing geometry, so each piece can be selected on its own');
+      invalidateLoops();
+    }
+    return n;
+  }
   function normalizePoly(sh) { if (!sh.open && sh.pts && sh.pts.length >= 3) sh.pts = G.normalizePolyPts(sh.pts); }
 
   window.addEventListener('keydown', e => {
@@ -1327,13 +1377,21 @@
     if (sh.kind === 'poly') return sh;
     if (sh.kind === 'rect') { convertRectToPoly(sh); return sh; }
     if (sh.kind === 'path' && sh.loop && sh.loop.length) {
-      const loop = sh.loop;
+      let loop = sh.loop;
+      /* A closed shape needs at least 3 points to survive as a polygon - a
+         circle is stored as just two semicircles, which would collapse to a
+         2-point polygon with no area. Halve each segment first. */
+      if (loop.length < 3 && G.same(loop[loop.length - 1].b, loop[0].a, 1e-6)) {
+        const split = [];
+        for (const sg of loop) { const h1 = subSeg(sg, 0, 0.5), h2 = subSeg(sg, 0.5, 1); if (h1) split.push(h1); if (h2) split.push(h2); }
+        if (split.length >= 3) loop = split;
+      }
       const pts = loop.map(s => {
         const p = { x: s.a.x, y: s.a.y, r: 0, arcR: 0 };
         if (s.type === 'arc') {
           const chord = G.dist(s.a, s.b);
           const sag = G.cross(G.norm(G.sub(s.b, s.a)), G.sub(G.pointAt(s, 0.5), s.a));
-          p.arcR = sagittaToArcR(chord, sag);
+          p.arcR = arcRFromGeometry(chord, sag);
         }
         return p;
       });
@@ -2086,6 +2144,9 @@
       if (!splits) continue;
       total += splits;
       const ns = pathShape(out, { name: sh.name, open: sh.open, op: sh.op, toolId: sh.toolId, climb: sh.climb, group: sh.group });
+      // reuse the original id so selection, grouping and undo stay attached
+      ns.id = sh.id;
+      if (sh.startPt) ns.startPt = sh.startPt;
       const k = job.shapes.findIndex(x => x.id === sh.id);
       if (k >= 0) job.shapes.splice(k, 1, ns); else job.shapes.push(ns);
       makeEditable(ns);
@@ -2496,6 +2557,8 @@
       <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
       <label><input type="checkbox" data-s="ortho" ${S.snap.ortho ? 'checked' : ''}> Ortho lock <span class="muted">(F8)</span></label>
       <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
+      <label><input type="checkbox" data-s="autoSplit" ${S.snap.autoSplit !== false ? 'checked' : ''}> Split at crossings when drawing</label>
+      <p class="muted" style="font-size:11px;margin:2px 0 6px">Puts a point in wherever a new line meets existing geometry, so each piece can be picked separately.</p>
       <label style="display:flex;gap:6px;align-items:center">Snap within
         <input type="number" step="0.0625" id="snapRadius" value="${fmtIn(S.snap.radius != null ? S.snap.radius : 0.125)}" style="width:74px"> in</label>
       <p class="muted" style="font-size:11px;margin:2px 0 0">How close a point has to get before it jumps onto existing geometry. Applies while drawing and while dragging.</p>
@@ -2782,5 +2845,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();

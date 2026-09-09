@@ -632,6 +632,66 @@ app.whenReady().then(async () => {
     const hov = JSON.parse(await run('JSON.stringify(CNC.hoverEdgeInfo())'));
     ok(hov && typeof hov.i === 'number', 'hovering a line reports it for the highlight', JSON.stringify(hov));
 
+    console.log('arc DIRECTION survives a round trip (not just radius)');
+    // a circle converted to per-edge bulges and back must keep its area.
+    // checking only the radius magnitude is what let a mirrored arc through.
+    const rt2 = await run(`(() => {
+      CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:1400,name:'c',kind:'circle',x:10,y:10,rot:0,r:6,op:'outside',toolId:1,climb:false,open:false});
+      CNC.refresh();
+      const sh = CNC.job.shapes[0];
+      const before = Math.abs(CNC.G.signedArea(CNC.worldLoop(sh)));
+      // force it through the path -> editable-polygon conversion
+      const loop = CNC.worldLoop(sh);
+      CNC.job.shapes[0] = {id:1400,name:'c',kind:'path',x:0,y:0,rot:0,open:false,op:'outside',toolId:1,climb:false,loop};
+      CNC.makeEditable(CNC.job.shapes[0]);
+      CNC.refresh();
+      const after = Math.abs(CNC.G.signedArea(CNC.worldLoop(CNC.job.shapes[0])));
+      return JSON.stringify({before, after});
+    })()`);
+    const rtv = JSON.parse(rt2);
+    ok(Math.abs(rtv.before - Math.PI * 36) < 0.05, 'circle starts at pi*r^2', String(rtv.before));
+    ok(Math.abs(rtv.after - rtv.before) < 0.05, 'area survives conversion to editable bulges', rt2);
+
+    // an arc bowed one way must not come back bowed the other
+    const dirOk = await run(`(() => {
+      const a = {x:0,y:0}, b = {x:10,y:0};
+      // arcThrough a point ABOVE the chord
+      const up = CNC.arcThrough(a, b, {x:5, y:2});
+      const mid = CNC.G.pointAt(up, 0.5);
+      return mid.y;
+    })()`);
+    ok(dirOk > 0, 'an arc drawn through a point above the chord still bows upward', String(dirOk));
+    const dirOk2 = await run(`(() => {
+      const up = CNC.arcThrough({x:0,y:0}, {x:10,y:0}, {x:5, y:-2});
+      return CNC.G.pointAt(up, 0.5).y; })()`);
+    ok(dirOk2 < 0, 'and one through a point below bows downward', String(dirOk2));
+
+    console.log('auto-split when drawing across existing geometry');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:1410,name:'circle',kind:'circle',x:10,y:10,rot:0,r:6,op:'outside',toolId:1,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    ok((await run('CNC.worldLoop(CNC.job.shapes[0]).length')) === 2, 'a circle starts as 2 semicircle arcs');
+
+    await run(`(() => { const sh = {id:1411,name:'h',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:4,y:10},{x:16,y:10}]};
+      CNC.job.shapes.push(sh); CNC.autoSplitAround(sh); CNC.refresh(); return true; })()`);
+    await run(`(() => { const sh = {id:1412,name:'v',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:10,y:4},{x:10,y:16}]};
+      CNC.job.shapes.push(sh); CNC.autoSplitAround(sh); CNC.refresh(); return true; })()`);
+
+    const shape2 = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s => ({name:s.name, n: CNC.worldLoop(s).length})))`));
+    const circ2 = shape2.find(x => x.name === 'circle');
+    ok(circ2 && circ2.n === 4, 'two diameters split the circle into 4 quadrant arcs', JSON.stringify(shape2));
+    ok(shape2.filter(x => x.name === 'h' || x.name === 'v').every(x => x.n === 2), 'each diameter becomes 2 radii', JSON.stringify(shape2));
+    const circArea = await run(`Math.abs(CNC.G.signedArea(CNC.worldLoop(CNC.job.shapes.find(s=>s.name==='circle'))))`);
+    ok(Math.abs(circArea - Math.PI * 36) < 0.05, 'and the circle still encloses pi*r^2 after splitting', String(circArea));
+    ok((await run(`CNC.job.shapes.find(s=>s.name==='circle').open`)) === false, 'the split circle is still a closed part');
+
+    // each quadrant arc is now individually selectable
+    await run(`(() => { CNC.setSelEdge(CNC.job.shapes.find(s=>s.name==='circle').id, 1); return true; })()`);
+    ok((await run('CNC.getSelEdges().length')) === 1, 'a single quadrant arc can be selected on its own');
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
