@@ -29,7 +29,7 @@
 
   // ---------- job state ----------
   let job = newJob();
-  function newJob() { return { shapes: [], material: { name: S.materials[0].name, thickness: S.materials[0].thickness }, cutThrough: 0, nextId: 1 }; }
+  function newJob() { return { shapes: [], dims: [], material: { name: S.materials[0].name, thickness: S.materials[0].thickness }, cutThrough: 0, nextId: 1 }; }
   let sel = new Set();
   let undoStack = [], redoStack = [];
   function snapshot() { undoStack.push(JSON.stringify(job)); if (undoStack.length > 60) undoStack.shift(); redoStack = []; }
@@ -235,6 +235,8 @@
         dimLabel({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, `${fmtIn(Math.hypot(dx, dy))}  ${fmtAng(a, b)}  Δ${fmtIn(dx)},${fmtIn(dy)}`);
       }
     }
+    // dimensions (annotation only - never posted to the TAP)
+    drawDims();
     // grips on a single selected shape
     drawGrips();
     // snap marker last, so it sits on top of everything
@@ -426,6 +428,9 @@
       else { measure.b = ws; LOG.action(`Measured ${fmtIn(G.dist(measure.a, measure.b))} in at ${fmtAng(measure.a, measure.b)}`); }
       draw(); return;
     }
+    if (tool === 'trim') { trimAt(w); return; }
+    if (tool === 'extend') { extendAt(w); return; }
+    if (tool === 'dim') { dimClick(ws); draw(); return; }
     if (tool === 'select') {
       // a grip under the cursor takes precedence over selecting/moving the shape
       const g = hitGrip(w);
@@ -506,6 +511,8 @@
     hoverGrip = tool === 'select' ? hitGrip(w) : null;
     cv.style.cursor = hoverGrip ? (hoverGrip.kind === 'edge' ? 'ns-resize' : 'move') : 'crosshair';
     if (measure && !measure.b) measure.cur = ws;
+    if (dimDraft && dimDraft.b) { const d = dimDraft, dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1; d.off = ((ws.x - d.a.x) * (-dy / L)) + ((ws.y - d.a.y) * (dx / L)); }
+    else if (dimDraft) dimDraft.b = null;
     if (drawing) { if (drawing.kind === 'rect' || drawing.kind === 'circle') drawing.b = ws; else drawing.cur = ws; }
     draw();
   });
@@ -581,9 +588,9 @@
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
     if (e.key === 'Shift') { orthoTemp = true; draw(); }
-    if (e.key === 'Escape') { drawing = null; measure = null; setTool('select'); draw(); }
+    if (e.key === 'Escape') { drawing = null; measure = null; dimDraft = null; setTool('select'); draw(); }
     if (e.key === 'Enter' && drawing) finishPoly();
-    if (e.key === 'Delete' || e.key === 'Backspace') deleteSel();
+    if (e.key === 'Delete' || e.key === 'Backspace') { if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.shiftKey ? redo() : undo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { redo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { duplicateSel(); e.preventDefault(); }
@@ -600,6 +607,7 @@
     if (e.key.toLowerCase() === 'v') setTool('select'); if (e.key.toLowerCase() === 'r') setTool('rect'); if (e.key.toLowerCase() === 'c') setTool('circle'); if (e.key.toLowerCase() === 'p') setTool('poly'); if (e.key.toLowerCase() === 'l') setTool('pline');
     if (e.key.toLowerCase() === 'a') setTool('arc');
     if (e.key.toLowerCase() === 'm') setTool('measure');
+    if (e.key.toLowerCase() === 'd' && !e.ctrlKey && !e.metaKey) setTool('dim');
     if (e.key.toLowerCase() === 'g' && sel.size) { openMoveBy(); e.preventDefault(); }
     if (e.key === 'F8') { S.snap.ortho = !S.snap.ortho; saveSettings(); syncSnapUI(); toast('Ortho ' + (S.snap.ortho ? 'on' : 'off')); e.preventDefault(); }
     if (e.key === 'F3') { S.snap.on = !S.snap.on; saveSettings(); syncSnapUI(); toast('Object snap ' + (S.snap.on ? 'on' : 'off')); e.preventDefault(); }
@@ -863,6 +871,455 @@
   }
   $('#btnMoveBy').onclick = openMoveBy;
   $('#btnScale').onclick = openScale;
+
+  // ================= PUSH 2: construction + booleans =================
+
+  // a shape built from a finished loop (result of a boolean / offset / trim)
+  function pathShape(loop, props) {
+    const bb = G.bbox(loop);
+    return makeShape('path', {
+      name: 'part', x: 0, y: 0, rot: 0, op: 'outside', toolId: S.tools[0]?.id || 1,
+      loop: loop.map(s => s.type === 'line' ? G.line(G.P(s.a.x, s.a.y), G.P(s.b.x, s.b.y))
+        : G.arc(G.P(s.a.x, s.a.y), G.P(s.b.x, s.b.y), G.P(s.c.x, s.c.y), s.ccw)),
+      ...props,
+    });
+  }
+  const selInOrder = () => Array.from(sel).map(id => job.shapes.find(s => s.id === id)).filter(Boolean);
+
+  // ---------- booleans ----------
+  function doBoolean(op) {
+    const shs = selInOrder().filter(s => !s.open);
+    if (shs.length !== 2) return toast('Select exactly two closed parts (the first is the one kept)');
+    const [A, B] = shs;
+    const res = BOOL.operate(op, worldLoop(A), worldLoop(B));
+    if (res.error) { LOG.warn(`${op} failed: ${res.error}`); return toast(res.error); }
+    snapshot();
+    job.shapes = job.shapes.filter(s => s.id !== A.id && s.id !== B.id);
+    sel.clear();
+    const added = [];
+    for (const loop of res.loops) {
+      const sh = pathShape(loop, { name: `${op} of ${A.name}`, op: A.op, toolId: A.toolId, climb: A.climb });
+      job.shapes.push(sh); added.push(sh); sel.add(sh.id);
+    }
+    if (res.hole) {
+      const h = pathShape(res.hole, { name: `${A.name} hole`, op: 'inside', toolId: A.toolId });
+      job.shapes.push(h); added.push(h); sel.add(h.id);
+    }
+    const arcs = added.reduce((n, s) => n + s.loop.filter(x => x.type === 'arc').length, 0);
+    LOG.action(`${op}: "${A.name}" and "${B.name}" -> ${added.length} part(s), ${arcs} arc segment(s) preserved`
+      + (res.note ? ` (${res.note})` : ''));
+    if (res.note) toast(res.note);
+    refresh();
+  }
+  $('#btnUnion').onclick = () => doBoolean('union');
+  $('#btnSubtract').onclick = () => doBoolean('subtract');
+
+  // ---------- offset ----------
+  function openOffset() {
+    const shs = selInOrder().filter(s => !s.open);
+    if (!shs.length) return toast('Select a closed part to offset');
+    modal(`<h3>Offset ${shs.length} part${shs.length > 1 ? 's' : ''}</h3>
+      <div class="row"><label>Distance</label><input type="number" step="0.125" id="ofD" value="0.5"> in</div>
+      <div class="row"><label>Direction</label><select id="ofDir"><option value="in">Inward (smaller)</option><option value="out">Outward (larger)</option></select></div>
+      <div class="row"><label><input type="checkbox" id="ofKeep" checked> Keep the original</label></div>
+      <div class="row"><label>New part cut</label><select id="ofOp"><option value="inside">inside (pocket / border)</option><option value="outside">outside</option><option value="on">on the line</option></select></div>
+      <p class="muted" style="font-size:11px">An inward offset of a 0.5" border on a plate gives you the inner outline to pocket or score. Offsetting further than the part can shrink will fail rather than fold the outline inside out.</p>
+      <div class="row" style="margin-top:10px"><button class="primary" id="ofOk">Offset</button><button id="ofCancel">Cancel</button></div>`,
+      (ov, close) => {
+        ov.querySelector('#ofCancel').onclick = close;
+        ov.querySelector('#ofOk').onclick = () => {
+          const d = parseFloat(ov.querySelector('#ofD').value);
+          if (!isFinite(d) || d <= 0) return toast('Enter a positive distance');
+          const sign = ov.querySelector('#ofDir').value === 'out' ? 1 : -1;
+          const keep = ov.querySelector('#ofKeep').checked;
+          const newOp = ov.querySelector('#ofOp').value;
+          snapshot();
+          let made = 0, failed = 0;
+          for (const sh of shs) {
+            let loop = worldLoop(sh);
+            if (G.signedArea(loop) < 0) loop = G.reverseLoop(loop);
+            let out = null;
+            try { out = G.offsetLoop(loop, sign * d); } catch (e) { LOG.error(`Offset failed on "${sh.name}"`, e); }
+            // an over-shrunk outline collapses or flips sign - reject it
+            if (!out || !out.length || (G.signedArea(out) * G.signedArea(loop) <= 0)) { failed++; continue; }
+            const ns = pathShape(out, { name: `${sh.name} offset ${d}`, op: newOp, toolId: sh.toolId });
+            job.shapes.push(ns); made++;
+            if (!keep) job.shapes = job.shapes.filter(s => s.id !== sh.id);
+          }
+          if (failed) toast(`${failed} part${failed > 1 ? 's' : ''} could not offset that far`);
+          LOG.action(`Offset ${made} part(s) by ${sign * d} in` + (failed ? `, ${failed} failed` : ''));
+          close(); refresh();
+        };
+      });
+  }
+  $('#btnOffset').onclick = openOffset;
+
+  // ---------- array ----------
+  function openArray() {
+    const shs = selInOrder();
+    if (!shs.length) return toast('Select something to array');
+    const bb = groupBBox(shs);
+    modal(`<h3>Array ${shs.length} part${shs.length > 1 ? 's' : ''}</h3>
+      <div class="row"><label>Type</label><select id="arType"><option value="grid">Rows &amp; columns</option><option value="circle">Bolt circle</option></select></div>
+      <div id="arGrid">
+        <div class="row"><label>Columns</label><input type="number" step="1" min="1" id="arC" value="3"> across</div>
+        <div class="row"><label>Rows</label><input type="number" step="1" min="1" id="arR" value="1"> up</div>
+        <div class="row"><label>X spacing</label><input type="number" step="0.125" id="arDX" value="${fmtIn(bb.w + 1)}"> in <span class="muted">centre to centre</span></div>
+        <div class="row"><label>Y spacing</label><input type="number" step="0.125" id="arDY" value="${fmtIn(bb.h + 1)}"> in</div>
+      </div>
+      <div id="arCirc" style="display:none">
+        <div class="row"><label>Count</label><input type="number" step="1" min="2" id="arN" value="6"></div>
+        <div class="row"><label>Circle dia</label><input type="number" step="0.125" id="arBD" value="6"> in</div>
+        <div class="row"><label>Centre X</label><input type="number" step="0.125" id="arCX" value="${fmtIn(bb.x0 + bb.w / 2)}"> in</div>
+        <div class="row"><label>Centre Y</label><input type="number" step="0.125" id="arCY" value="${fmtIn(bb.y0 + bb.h / 2)}"> in</div>
+        <div class="row"><label>Start angle</label><input type="number" step="15" id="arA0" value="0"> °</div>
+        <div class="row"><label><input type="checkbox" id="arRot"> Rotate each copy to face out</label></div>
+      </div>
+      <p class="muted" style="font-size:11px">Copies are added as separate parts, so each can still be edited or re-nested on its own.</p>
+      <div class="row" style="margin-top:10px"><button class="primary" id="arOk">Create</button><button id="arCancel">Cancel</button></div>`,
+      (ov, close) => {
+        const type = ov.querySelector('#arType');
+        type.onchange = () => {
+          ov.querySelector('#arGrid').style.display = type.value === 'grid' ? '' : 'none';
+          ov.querySelector('#arCirc').style.display = type.value === 'circle' ? '' : 'none';
+        };
+        ov.querySelector('#arCancel').onclick = close;
+        ov.querySelector('#arOk').onclick = () => {
+          const V = (id) => parseFloat(ov.querySelector(id).value) || 0;
+          const copies = [];
+          snapshot();
+          if (type.value === 'grid') {
+            const nc = Math.max(1, Math.round(V('#arC'))), nr = Math.max(1, Math.round(V('#arR')));
+            const dx = V('#arDX'), dy = V('#arDY');
+            if (nc * nr > 500) { toast('That would make over 500 copies'); return; }
+            for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
+              if (!r && !c) continue;
+              for (const sh of shs) copies.push({ ...JSON.parse(JSON.stringify(sh)), id: job.nextId++, x: sh.x + c * dx, y: sh.y + r * dy });
+            }
+            LOG.action(`Array: ${nc}×${nr} grid at ${dx} × ${dy} in`);
+          } else {
+            const n = Math.max(2, Math.round(V('#arN'))), R = V('#arBD') / 2;
+            const cx = V('#arCX'), cy = V('#arCY'), a0 = V('#arA0') * Math.PI / 180;
+            const doRot = ov.querySelector('#arRot').checked;
+            if (n > 500) { toast('That would make over 500 copies'); return; }
+            // the selection's own centre is placed on the circle, then stepped round
+            const c0 = { x: bb.x0 + bb.w / 2, y: bb.y0 + bb.h / 2 };
+            for (let i = 0; i < n; i++) {
+              const a = a0 + i * 2 * Math.PI / n;
+              const tx = cx + R * Math.cos(a), ty = cy + R * Math.sin(a);
+              for (const sh of shs) {
+                const cp = { ...JSON.parse(JSON.stringify(sh)), id: job.nextId++ };
+                cp.x = sh.x + (tx - c0.x); cp.y = sh.y + (ty - c0.y);
+                if (doRot) cp.rot = ((sh.rot || 0) + a * 180 / Math.PI) % 360;
+                if (i === 0 && !doRot) continue;   // first slot is the original
+                copies.push(cp);
+              }
+            }
+            LOG.action(`Array: ${n} copies on a ${V('#arBD')} in bolt circle`);
+          }
+          copies.forEach(c => { c.name = c.name.replace(/ #\d+$/, '') + ` #${++arrayCounter}`; delete c.startPt; job.shapes.push(c); });
+          sel.clear(); copies.forEach(c => sel.add(c.id));
+          close(); refresh();
+        };
+      });
+  }
+  let arrayCounter = 0;
+  $('#btnArray').onclick = openArray;
+
+  // ---------- chamfer / fillet ----------
+  function openCorner(kind) {
+    const shs = selInOrder().filter(s => (s.kind === 'poly' && !s.open) || s.kind === 'rect');
+    if (!shs.length) return toast('Select a rectangle or polygon');
+    const isCh = kind === 'chamfer';
+    modal(`<h3>${isCh ? 'Chamfer' : 'Fillet'} corners</h3>
+      <div class="row"><label>${isCh ? 'Leg length' : 'Radius'}</label><input type="number" step="0.0625" id="cnD" value="0.25"> in</div>
+      <div class="row"><label>Apply to</label><select id="cnWhich"><option value="all">All corners</option><option value="sharp">Only square-ish corners (60–120°)</option></select></div>
+      <p class="muted" style="font-size:11px">${isCh
+        ? 'A chamfer replaces the corner point with two points, so the cut is a straight bevel. It becomes part of the outline and can be edited point by point afterwards.'
+        : 'A fillet sets the corner radius, which stays editable in the points table.'}</p>
+      <div class="row" style="margin-top:10px"><button class="primary" id="cnOk">Apply</button><button id="cnCancel">Cancel</button></div>`,
+      (ov, close) => {
+        ov.querySelector('#cnCancel').onclick = close;
+        ov.querySelector('#cnOk').onclick = () => {
+          const d = parseFloat(ov.querySelector('#cnD').value);
+          if (!isFinite(d) || d <= 0) return toast('Enter a positive value');
+          const only = ov.querySelector('#cnWhich').value === 'sharp';
+          snapshot();
+          let n = 0;
+          for (const sh of shs) {
+            if (sh.kind === 'rect') convertRectToPoly(sh);
+            n += isCh ? chamferAll(sh, d, only) : filletAll(sh, d, only);
+          }
+          LOG.action(`${isCh ? 'Chamfered' : 'Filleted'} ${n} corner(s) at ${d} in`);
+          close(); refresh();
+        };
+      });
+  }
+  const cornerAngle = (pts, i) => {
+    const n = pts.length, p = pts[i], a = pts[(i - 1 + n) % n], b = pts[(i + 1) % n];
+    const d1 = G.norm(G.sub(a, p)), d2 = G.norm(G.sub(b, p));
+    return Math.acos(Math.max(-1, Math.min(1, G.dot(d1, d2)))) * 180 / Math.PI;
+  };
+  function filletAll(sh, r, onlySquare) {
+    let n = 0;
+    sh.pts.forEach((p, i) => {
+      if (onlySquare) { const a = cornerAngle(sh.pts, i); if (a < 60 || a > 120) return; }
+      p.r = r; n++;
+    });
+    delete sh.startPt;
+    return n;
+  }
+  /* Chamfer: replace each corner with two points set back along its two edges.
+     Built from the ORIGINAL point list so that setbacks are measured against
+     the un-chamfered geometry - otherwise each corner would be cut using
+     coordinates already moved by the previous one. */
+  function chamferAll(sh, d, onlySquare) {
+    const src = sh.pts, n = src.length;
+    if (n < 3) return 0;
+    const out = []; let count = 0;
+    for (let i = 0; i < n; i++) {
+      const p = src[i], a = src[(i - 1 + n) % n], b = src[(i + 1) % n];
+      const ang = cornerAngle(src, i);
+      const skip = (onlySquare && (ang < 60 || ang > 120)) || (p.arcR || src[(i - 1 + n) % n].arcR);
+      if (skip || ang < 1 || ang > 179) { out.push({ ...p }); continue; }
+      const L1 = G.dist(a, p), L2 = G.dist(b, p);
+      const t = Math.min(d, L1 / 2, L2 / 2);
+      if (t < 1e-6) { out.push({ ...p }); continue; }
+      const d1 = G.norm(G.sub(a, p)), d2 = G.norm(G.sub(b, p));
+      out.push({ x: p.x + d1.x * t, y: p.y + d1.y * t, r: 0, arcR: 0 });
+      out.push({ x: p.x + d2.x * t, y: p.y + d2.y * t, r: 0, arcR: p.arcR || 0 });
+      count++;
+    }
+    sh.pts = out;
+    normalizePoly(sh);
+    delete sh.startPt;
+    return count;
+  }
+  $('#btnChamfer').onclick = () => openCorner('chamfer');
+  $('#btnFillet').onclick = () => openCorner('fillet');
+
+  // ---------- trim / extend / join ----------
+  function openTrimJoin() {
+    const shs = selInOrder();
+    const opens = shs.filter(s => s.open);
+    modal(`<h3>Trim, extend &amp; join</h3>
+      <p class="muted">Selected: ${shs.length} part${shs.length === 1 ? '' : 's'} (${opens.length} open path${opens.length === 1 ? '' : 's'}).</p>
+      <div class="row"><button class="small" id="tjJoin">Join open paths</button><span class="muted">chain touching ends into one path; closes it if the ends meet</span></div>
+      <div class="row"><button class="small" id="tjClose">Force close</button><span class="muted">connect the two ends of one open path with a straight segment</span></div>
+      <div class="row"><button class="small" id="tjTrim">Trim tool</button><span class="muted">then click the piece of an open path to remove, between its crossings</span></div>
+      <div class="row"><button class="small" id="tjExtend">Extend tool</button><span class="muted">then click near the end of an open path to run it out to the next shape it meets</span></div>
+      <div class="row"><label>Join tolerance</label><input type="number" step="0.001" id="tjTol" value="0.01"> in</div>
+      <p class="muted" style="font-size:11px">Imported DXFs often have ends that nearly meet but do not. Raise the tolerance to pull those together.</p>
+      <div class="row" style="margin-top:10px"><button id="tjCancel">Close</button></div>`,
+      (ov, close) => {
+        ov.querySelector('#tjCancel').onclick = close;
+        const tol = () => parseFloat(ov.querySelector('#tjTol').value) || 0.01;
+        ov.querySelector('#tjJoin').onclick = () => { joinSelected(tol()); close(); };
+        ov.querySelector('#tjClose').onclick = () => { forceClose(); close(); };
+        ov.querySelector('#tjTrim').onclick = () => { setTool('trim'); close(); toast('Click the part of a path to remove'); };
+        ov.querySelector('#tjExtend').onclick = () => { setTool('extend'); close(); toast('Click near the end of a path to extend it'); };
+      });
+  }
+  $('#btnTrim').onclick = openTrimJoin;
+
+  function joinSelected(tol) {
+    const shs = selInOrder().filter(s => s.open);
+    if (shs.length < 2) return toast('Select two or more open paths to join');
+    const loops = shs.map(s => worldLoop(s));
+    const chained = G.chainOpen(loops);
+    if (chained.length >= loops.length) return toast('Those paths do not meet end to end');
+    snapshot();
+    const ids = new Set(shs.map(s => s.id));
+    job.shapes = job.shapes.filter(s => !ids.has(s.id));
+    sel.clear();
+    let closedCount = 0;
+    for (const ch of chained) {
+      // pull near-misses together, then decide open vs closed
+      const segs = ch.segs;
+      const gap = G.dist(segs[segs.length - 1].b, segs[0].a);
+      const isClosed = ch.closed || gap <= tol;
+      if (isClosed && !ch.closed) { if (segs[0].type === 'line') segs[0].a = segs[segs.length - 1].b; else segs[segs.length - 1].b = segs[0].a; }
+      if (isClosed) closedCount++;
+      const sh = pathShape(segs, { name: isClosed ? 'joined part' : 'joined path', open: !isClosed, op: isClosed ? 'outside' : 'on' });
+      job.shapes.push(sh); sel.add(sh.id);
+    }
+    LOG.action(`Joined ${shs.length} paths into ${chained.length} (${closedCount} closed)`);
+    refresh();
+  }
+  function forceClose() {
+    const shs = selInOrder().filter(s => s.open);
+    if (shs.length !== 1) return toast('Select exactly one open path');
+    const sh = shs[0];
+    const loop = worldLoop(sh);
+    if (loop.length < 2) return toast('That path is too short to close');
+    const segs = loop.concat([G.line(loop[loop.length - 1].b, loop[0].a)]);
+    snapshot();
+    job.shapes = job.shapes.filter(s => s.id !== sh.id);
+    const ns = pathShape(segs, { name: sh.name + ' closed', open: false, op: 'outside', toolId: sh.toolId });
+    job.shapes.push(ns); sel.clear(); sel.add(ns.id);
+    LOG.action(`Closed "${sh.name}" with a ${fmtIn(G.dist(loop[loop.length - 1].b, loop[0].a))} in segment`);
+    refresh();
+  }
+
+  /* Trim: split the clicked open path at every crossing with other geometry
+     and drop the span the user clicked on. */
+  function trimAt(wp) {
+    const target = hitShape(wp);
+    if (!target || !target.open) return toast('Click an open path (trim works on open paths)');
+    const loop = worldLoop(target);
+    const others = job.shapes.filter(s => s.id !== target.id).map(s => worldLoop(s));
+    // collect split parameters per segment index
+    const cuts = [];
+    loop.forEach((s, i) => {
+      for (const o of others) for (const t of o) {
+        for (const p of SNAP.segSegPoints(s, t)) {
+          const u = paramOn(s, p);
+          if (u > 1e-6 && u < 1 - 1e-6) cuts.push({ i, u, p });
+        }
+      }
+    });
+    if (!cuts.length) return toast('That path does not cross anything, so there is nothing to trim to');
+    cuts.sort((a, b) => (a.i - b.i) || (a.u - b.u));
+    // build spans between consecutive cuts
+    const spans = [];
+    let cur = [];
+    let ci = 0;
+    for (let i = 0; i < loop.length; i++) {
+      let s = loop[i];
+      const here = cuts.filter(c => c.i === i);
+      let from = 0;
+      for (const c of here) {
+        cur.push(subSeg(s, from, c.u));
+        spans.push(cur); cur = [];
+        from = c.u;
+      }
+      cur.push(subSeg(s, from, 1));
+    }
+    if (cur.length) spans.push(cur);
+    const valid = spans.filter(sp => sp.length && sp.reduce((n, x) => n + G.segLen(x), 0) > 1e-6);
+    if (valid.length < 2) return toast('Nothing to trim there');
+    // which span did they click?
+    let best = -1, bd = Infinity;
+    valid.forEach((sp, k) => { for (const s of sp) { const d = distToLoopSeg(wp, s); if (d < bd) { bd = d; best = k; } } });
+    if (best < 0) return;
+    snapshot();
+    job.shapes = job.shapes.filter(s => s.id !== target.id);
+    sel.clear();
+    valid.forEach((sp, k) => {
+      if (k === best) return;
+      const ns = pathShape(sp, { name: target.name, open: true, op: 'on', toolId: target.toolId });
+      job.shapes.push(ns); sel.add(ns.id);
+    });
+    LOG.action(`Trimmed "${target.name}" — removed 1 of ${valid.length} spans`);
+    refresh();
+  }
+  function paramOn(s, p) {
+    if (s.type === 'line') { const d = G.sub(s.b, s.a), L2 = G.dot(d, d) || 1; return G.dot(G.sub(p, s.a), d) / L2; }
+    const a0 = Math.atan2(s.a.y - s.c.y, s.a.x - s.c.x), sw = G.sweep(s);
+    let da = Math.atan2(p.y - s.c.y, p.x - s.c.x) - a0;
+    if (sw > 0) { while (da < 0) da += 2 * Math.PI; } else { while (da > 0) da -= 2 * Math.PI; }
+    return sw === 0 ? 0 : da / sw;
+  }
+  function subSeg(s, u0, u1) {
+    if (u1 - u0 < 1e-9) return null;
+    if (s.type === 'line') return G.line(G.pointAt(s, u0), G.pointAt(s, u1));
+    return G.arc(G.pointAt(s, u0), G.pointAt(s, u1), s.c, s.ccw);
+  }
+  function distToLoopSeg(p, s) {
+    const pts = G.samplePts(s, 0.05);
+    let d = Infinity;
+    for (let i = 0; i + 1 < pts.length; i++) d = Math.min(d, distToSeg(p, pts[i], pts[i + 1]));
+    return d;
+  }
+
+  /* Extend: run the nearer end of an open path forward along its own tangent
+     until it meets another shape. */
+  function extendAt(wp) {
+    const target = hitShape(wp);
+    if (!target || !target.open) return toast('Click near the end of an open path');
+    const loop = worldLoop(target);
+    const atStart = G.dist(wp, loop[0].a) < G.dist(wp, loop[loop.length - 1].b);
+    const seg = atStart ? loop[0] : loop[loop.length - 1];
+    const from = atStart ? seg.a : seg.b;
+    let dir = G.tangentAt(seg, atStart);
+    if (atStart) dir = G.mul(dir, -1);
+    const ray = G.line(from, G.add(from, G.mul(dir, 1e4)));
+    let best = null;
+    for (const sh of job.shapes) {
+      if (sh.id === target.id) continue;
+      for (const t of worldLoop(sh)) for (const p of SNAP.segSegPoints(ray, t)) {
+        const d = G.dist(from, p);
+        if (d > 1e-6 && (!best || d < best.d)) best = { p, d };
+      }
+    }
+    if (!best) return toast('Nothing ahead of that end to extend to');
+    snapshot();
+    const segs = atStart ? [G.line(best.p, from)].concat(loop) : loop.concat([G.line(from, best.p)]);
+    job.shapes = job.shapes.filter(s => s.id !== target.id);
+    const ns = pathShape(segs, { name: target.name, open: true, op: 'on', toolId: target.toolId });
+    job.shapes.push(ns); sel.clear(); sel.add(ns.id);
+    LOG.action(`Extended "${target.name}" by ${fmtIn(best.d)} in`);
+    refresh();
+  }
+
+  // ---------- on-canvas dimensions ----------
+  // dims live on the job but are annotation only: never posted, never cut
+  function ensureDims() { if (!job.dims) job.dims = []; return job.dims; }
+  function drawDims() {
+    const dims = job.dims || [];
+    const dpr = devicePixelRatio;
+    ctx.save();
+    ctx.font = `${12 * dpr}px ui-monospace, monospace`;
+    for (const d of dims.concat(dimDraft && dimDraft.b ? [dimDraft] : [])) {
+      const a = d.a, b = d.b;
+      const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy);
+      if (L < 1e-9) continue;
+      const nx = -dy / L, ny = dx / L, off = d.off || 0;
+      const A = { x: a.x + nx * off, y: a.y + ny * off }, B = { x: b.x + nx * off, y: b.y + ny * off };
+      const pa = W2S(A), pb = W2S(B), qa = W2S(a), qb = W2S(b);
+      ctx.strokeStyle = '#d38cff'; ctx.lineWidth = 1.2 * dpr; ctx.setLineDash([]);
+      // witness lines
+      ctx.beginPath(); ctx.moveTo(qa.x, qa.y); ctx.lineTo(pa.x, pa.y); ctx.moveTo(qb.x, qb.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+      // dimension line + arrow ticks
+      ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+      const ux = (pb.x - pa.x) / Math.hypot(pb.x - pa.x, pb.y - pa.y), uy = (pb.y - pa.y) / Math.hypot(pb.x - pa.x, pb.y - pa.y);
+      const t = 5 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(pa.x + ux * t - uy * t, pa.y + uy * t + ux * t); ctx.lineTo(pa.x, pa.y); ctx.lineTo(pa.x + ux * t + uy * t, pa.y + uy * t - ux * t);
+      ctx.moveTo(pb.x - ux * t - uy * t, pb.y - uy * t + ux * t); ctx.lineTo(pb.x, pb.y); ctx.lineTo(pb.x - ux * t + uy * t, pb.y - uy * t - ux * t);
+      ctx.stroke();
+      const label = d.text || fmtIn(L) + '"';
+      const mid = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 };
+      const w = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(20,22,26,.85)'; ctx.fillRect(mid.x - w / 2 - 4, mid.y - 9 * dpr, w + 8, 16 * dpr);
+      ctx.fillStyle = '#d38cff'; ctx.fillText(label, mid.x - w / 2, mid.y + 4 * dpr);
+    }
+    ctx.restore();
+  }
+  let dimDraft = null;   // {a, b, off} while placing
+  function dimClick(ws) {
+    if (!dimDraft) { dimDraft = { a: ws, b: null, off: 0 }; return; }
+    if (!dimDraft.b) { dimDraft.b = ws; return; }
+    // third click sets the offset distance
+    const d = dimDraft, dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1;
+    d.off = ((ws.x - d.a.x) * (-dy / L)) + ((ws.y - d.a.y) * (dx / L));
+    snapshot();
+    ensureDims().push({ a: d.a, b: d.b, off: d.off });
+    LOG.action(`Dimension added: ${fmtIn(L)} in`);
+    dimDraft = null;
+    refresh();
+  }
+  function deleteDimNear(wp) {
+    const dims = job.dims || [];
+    for (let i = dims.length - 1; i >= 0; i--) {
+      const d = dims[i], dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1;
+      const nx = -dy / L, ny = dx / L;
+      const A = { x: d.a.x + nx * d.off, y: d.a.y + ny * d.off }, B = { x: d.b.x + nx * d.off, y: d.b.y + ny * d.off };
+      if (distToSeg(wp, A, B) < 6 / view.scale) { snapshot(); dims.splice(i, 1); LOG.action('Dimension removed'); refresh(); return true; }
+    }
+    return false;
+  }
+
 
   // ---------- object snap settings ----------
   function syncSnapUI() {
@@ -1164,5 +1621,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   ICONS.apply(document);
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, gripsOf, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, gripsOf, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();

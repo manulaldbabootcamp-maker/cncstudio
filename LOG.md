@@ -5,6 +5,66 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Push 2 — Construction tools and booleans
+
+### Added
+- **Boolean union / subtract** (`src/bool.js`, new). Select two closed parts;
+  the first is the one kept. Merge two overlapping rectangles into one outline,
+  or subtract a shape to make a notch.
+  The app carries **true arcs** (G2/G3 in the TAP), but polygon clipping cannot
+  work on arcs, so this flattens, clips with Greiner-Hormann, then **re-fits
+  circular arcs on the result** — a curve that was an arc before the boolean
+  comes back as an arc, instead of a few hundred tiny G1 moves that cut slowly
+  and leave a visibly faceted edge on acrylic.
+  Three safeguards, because a wrong outline here gets cut into real material:
+  - near-vertex crossings are treated as degenerate (a crossing a millionth of
+    the way along an edge is a shared corner in disguise, and feeding it to the
+    traversal is how this algorithm returns confident garbage);
+  - the result's **area is checked against bounds that must hold** for each
+    operation, and an implausible result is refused rather than returned;
+  - the arc refit is **verified against the polygon's area** and discarded in
+    favour of plain lines if it disagrees. It also only runs when the input
+    actually contained arcs, so a boolean of two rectangles can never sprout a
+    curve.
+  Shared edges (two parts butted exactly together) are resolved by nudging one
+  outline 2e-6 in — about 50x below the 1e-4 the post rounds to, so the cut
+  geometry is unchanged.
+- **Offset** — parallel outline at a distance, inward or outward, keeping or
+  replacing the original, with the new outline's cut type selectable (e.g. a
+  0.5" inward border to pocket or score). An offset that would turn the outline
+  inside out is refused instead of producing a self-crossing path.
+- **Array** — rows and columns with centre-to-centre spacing, or a bolt circle
+  by count and diameter, with an option to rotate each copy to face outward.
+  Copies are independent parts, so each can still be edited or re-nested.
+- **Chamfer** and **Fillet** on corners, applied to all corners or only the
+  square-ish ones (60–120°). A chamfer replaces the corner with two points, so
+  it becomes part of the outline and stays editable point by point; the
+  setbacks are measured against the original geometry so one corner's cut does
+  not shift the next one's.
+- **Trim / extend / join**, aimed at cleaning up imported DXFs:
+  - *Join* chains open paths that meet end to end, with an adjustable tolerance
+    for ends that nearly meet but do not — the usual DXF problem — and closes
+    the result automatically if the ends come together.
+  - *Force close* connects the two ends of one open path.
+  - *Trim* splits a path at every crossing with other geometry and removes the
+    span you click.
+  - *Extend* runs the nearer end of a path along its own tangent until it meets
+    the next shape.
+- **On-canvas dimensions** (`D`) — click two points, then a third to place the
+  dimension line. Drawn with witness lines and arrow ticks. They are annotation
+  only: stored on the job, saved with the project, and **never posted to the
+  TAP**. Delete removes the one under the cursor when nothing is selected.
+
+### Tests
+- `test/bool_test.js` — 21 assertions checking booleans by **area**, which is
+  what catches a plausible-looking but wrong outline. Covers overlap, notching,
+  disjoint and fully-contained cases, arc survival and refit accuracy, the
+  guarantee that a square never gains a phantom arc, and the shared-edge case.
+- The Electron smoke test grew to 25 assertions, adding booleans, offset and
+  dimensions, and confirming a dimension never reaches the generated TAP.
+
+---
+
 ## Push 1 — Object snaps, grips, and the activity log (`fe088ee`)
 
 ### Added
