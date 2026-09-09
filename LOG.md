@@ -5,6 +5,40 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Size labels and sliders for rectangles and circles
+
+### Added
+- **Size shows on the drawing, not just in the panel.** Select a part and its
+  dimensions are drawn with proper dimension lines — witness lines, arrow ticks
+  and a boxed value, the same style as a placed dimension:
+  - **Rectangle** — width along the bottom, height up the left side, plus the
+    corner radius when there is a uniform one
+  - **Circle** — the diameter across the centre as `Ø n"`, with `R n"` beneath it
+  - **Ellipse** — both axes
+  - **Anything else** — overall width and height across its bounds
+  Toggled by **Size labels** in the left panel. Labels are suppressed when the
+  part is too small on screen to read, and when more than three parts are
+  selected, since a crowd of overlapping numbers helps nobody.
+- **Width, height and radius get sliders**, matching the selected-edge editor:
+  type an exact value or drag and watch the part change, with one undo step per
+  drag. The diameter field tracks the radius slider as it moves.
+
+### Changed
+- The dimension-line drawing was pulled out of `drawDims` into a shared
+  `drawDimLine`, so placed dimensions and automatic size labels are drawn by
+  the same code and cannot drift apart in appearance.
+
+### Tests
+- Smoke test now 177 assertions: the toggle exists and defaults on, labels draw
+  for both a rectangle and a circle without error, the Width slider genuinely
+  resizes the geometry to 15 in, and the diameter field follows the radius
+  slider.
+- Worth noting one thing the tests caught: selecting a part through
+  `setSelEdge` **converts a rectangle into a polygon**, so the rectangle panel
+  disappears. A plain `selectShape` was added for selecting without converting.
+
+---
+
 ## Fix TAP export, and square-lock the measure tool
 
 ### Fixed

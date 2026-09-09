@@ -859,6 +859,45 @@ app.whenReady().then(async () => {
     ok(Math.abs(bypass.y - 0.9) < 1e-9, 'Alt bypasses the lock for a true diagonal', JSON.stringify(bypass));
     }
 
+    { // scoped
+    console.log('size labels on rectangles and circles');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:1700,name:'plate',kind:'rect',x:2,y:2,rot:0,w:12,h:7,r:0.5,op:'outside',toolId:2,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    ok(await run(`!!document.querySelector('#chkSizes')`), 'a Size labels toggle exists');
+    ok(await run(`document.querySelector('#chkSizes').checked`), 'and is on by default');
+    // drawing must not throw with a shape selected
+    const drew = await run(`(() => { try { CNC.selectShape(1700); CNC.drawSizeLabels(); return 'ok'; } catch(e){ return 'ERR ' + e.message; } })()`);
+    ok(drew === 'ok', 'size labels draw for a rectangle without error', drew);
+
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:1701,name:'hole',kind:'circle',x:10,y:10,rot:0,r:2.5,op:'inside',toolId:2,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const drew2 = await run(`(() => { try { CNC.selectShape(1701); CNC.drawSizeLabels(); return 'ok'; } catch(e){ return 'ERR ' + e.message; } })()`);
+    ok(drew2 === 'ok', 'size labels draw for a circle without error', drew2);
+
+    console.log('width / height / radius sliders');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:1710,name:'r',kind:'rect',x:0,y:0,rot:0,w:10,h:6,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.refresh(); CNC.selectShape(1710); return true; })()`);
+    const hasW = await run(`!!document.querySelector('#props [data-ks="w"]')`);
+    ok(hasW === true, 'a rectangle gets a Width slider');
+    await run(`(() => { const sl = document.querySelector('#props [data-ks="w"]');
+      sl.value = '15'; sl.dispatchEvent(new Event('input', {bubbles:true})); return true; })()`);
+    ok(Math.abs((await run('CNC.job.shapes[0].w')) - 15) < 1e-9, 'dragging the Width slider resizes the part', String(await run('CNC.job.shapes[0].w')));
+    const bbW = JSON.parse(await run(`JSON.stringify(CNC.G.bbox(CNC.worldLoop(CNC.job.shapes[0])))`));
+    ok(Math.abs(bbW.w - 15) < 1e-6, 'and the geometry really is 15 in wide', String(bbW.w));
+
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:1711,name:'c',kind:'circle',x:5,y:5,rot:0,r:2,op:'outside',toolId:2,climb:false,open:false});
+      CNC.refresh(); CNC.selectShape(1711); return true; })()`);
+    ok(await run(`!!document.querySelector('#props [data-ks="r"]')`), 'a circle gets a Radius slider');
+    await run(`(() => { const sl = document.querySelector('#props [data-ks="r"]');
+      sl.value = '3.5'; sl.dispatchEvent(new Event('input', {bubbles:true})); return true; })()`);
+    const dia = await run(`document.querySelector('#props [data-k="dia"]').value`);
+    ok(String(dia) === '7', 'the diameter field follows the radius slider', String(dia));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
