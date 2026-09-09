@@ -5,6 +5,29 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## The segmentation rule, locked down
+
+No behaviour change — the rule was already implemented. These tests state it
+explicitly so it cannot regress unnoticed:
+
+> A single continuous line is one line. Wherever another line crosses or joins
+> it, it becomes two — or more, one piece per contact point. The same rule
+> applies to arcs, and inside a closed loop as well as outside one.
+
+### Tests
+- Smoke test now 149 assertions covering every configuration:
+  - **X** — two lines crossing: each becomes two
+  - **T** — a line ending on another: the crossed line becomes two, the stem
+    stays one
+  - **L** — endpoints already meeting: nothing splits, since the contact point
+    is already there
+  - **three contacts on one line**: four pieces
+  - **a line through a closed square**: the square goes 4 sides to 6, the line
+    becomes three, the square stays closed and still encloses 100 sq in
+  - **deleting one side of that closed square**: leaves 5 segments, part intact
+
+---
+
 ## Auto-split at crossings, and an inverted arc bug
 
 ### Added

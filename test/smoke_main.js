@@ -692,6 +692,57 @@ app.whenReady().then(async () => {
     await run(`(() => { CNC.setSelEdge(CNC.job.shapes.find(s=>s.name==='circle').id, 1); return true; })()`);
     ok((await run('CNC.getSelEdges().length')) === 1, 'a single quadrant arc can be selected on its own');
 
+    console.log('segmentation rule: a line runs between contact points');
+    /* The rule, stated plainly: a single continuous line is one line. Wherever
+       another line crosses or joins it, it becomes two - or more, one per
+       contact point. These lock that in for every configuration. */
+    const fresh = () => run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = []; CNC.refresh(); return true; })()`);
+    const addLine = (id, name, pts, open) => run(`(() => {
+      CNC.job.shapes.push({id:${id},name:'${name}',kind:'poly',x:0,y:0,rot:0,open:${open !== false},
+        op:'${open !== false ? 'on' : 'outside'}',toolId:1,climb:false,pts:${JSON.stringify(pts)}});
+      const sh = CNC.job.shapes[CNC.job.shapes.length-1];
+      CNC.autoSplitAround(sh); CNC.refresh(); return true; })()`);
+    const segsOf = async (name) => run(`CNC.worldLoop(CNC.job.shapes.find(s=>s.name==='${name}')).length`);
+
+    await fresh();
+    await addLine(1500, 'h', [{x:0,y:5},{x:10,y:5}]);
+    await addLine(1501, 'v', [{x:5,y:0},{x:5,y:10}]);
+    ok((await segsOf('h')) === 2 && (await segsOf('v')) === 2, 'X crossing: each line becomes two');
+
+    await fresh();
+    await addLine(1510, 'base', [{x:0,y:0},{x:10,y:0}]);
+    await addLine(1511, 'stem', [{x:4,y:0},{x:4,y:6}]);
+    ok((await segsOf('base')) === 2, 'T junction: the crossed line becomes two');
+    ok((await segsOf('stem')) === 1, 'T junction: the stem stays one');
+
+    await fresh();
+    await addLine(1520, 'a', [{x:0,y:0},{x:10,y:0}]);
+    await addLine(1521, 'b', [{x:10,y:0},{x:10,y:8}]);
+    ok((await segsOf('a')) === 1 && (await segsOf('b')) === 1, 'L junction: endpoints already meet, so nothing splits');
+
+    await fresh();
+    await addLine(1530, 'long', [{x:0,y:0},{x:12,y:0}]);
+    await addLine(1531, 'p1', [{x:3,y:-2},{x:3,y:2}]);
+    await addLine(1532, 'p2', [{x:6,y:-2},{x:6,y:2}]);
+    await addLine(1533, 'p3', [{x:9,y:-2},{x:9,y:2}]);
+    ok((await segsOf('long')) === 4, 'three contacts on one line give four pieces', String(await segsOf('long')));
+
+    console.log('the rule holds inside a closed loop');
+    await fresh();
+    await addLine(1540, 'sq', [{x:0,y:0},{x:10,y:0},{x:10,y:10},{x:0,y:10}], false);
+    await addLine(1541, 'cut', [{x:-2,y:5},{x:12,y:5}]);
+    ok((await segsOf('sq')) === 6, 'a line through a closed square splits two of its sides (4 -> 6)', String(await segsOf('sq')));
+    ok((await segsOf('cut')) === 3, 'and the line itself becomes three pieces', String(await segsOf('cut')));
+    ok((await run(`CNC.job.shapes.find(s=>s.name==='sq').open`)) === false, 'the square is still closed after splitting');
+    const sqA = await run(`Math.abs(CNC.G.signedArea(CNC.worldLoop(CNC.job.shapes.find(s=>s.name==='sq'))))`);
+    ok(Math.abs(sqA - 100) < 1e-6, 'and still encloses 100 sq in', String(sqA));
+
+    console.log('a line can be removed from a closed loop');
+    await run(`(() => { const sq = CNC.job.shapes.find(s=>s.name==='sq'); CNC.setSelEdge(sq.id, 0); CNC.deleteSelectedEdge(); return true; })()`);
+    const leftover = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s=>({n:s.name, segs: CNC.worldLoop(s).length})))`));
+    const sqNow = leftover.find(x => x.n === 'sq');
+    ok(!!sqNow && sqNow.segs === 5, 'deleting one side of the closed square leaves 5 segments', JSON.stringify(leftover));
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
