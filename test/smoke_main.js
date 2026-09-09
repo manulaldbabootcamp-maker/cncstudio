@@ -353,6 +353,46 @@ app.whenReady().then(async () => {
       return CNC.healEndsOf(sh, 0.125) ? 'moved' : 'none'; })()`);
     ok(farHeal === 'none', 'a 1 in gap is NOT healed — only near misses are', farHeal);
 
+    console.log('snap reach is a real distance, not a screen distance');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:980,name:'wall',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:10,y:0},{x:10,y:10}]});
+      CNC.refresh(); return true; })()`);
+
+    // zoom in hard: 11 screen px is now a tiny world distance
+    await run(`(() => { CNC.view.scale = 600; return true; })()`);
+    const tolZoomed = await run('CNC.snapTol()');
+    ok(tolZoomed >= 0.125 - 1e-9, 'zoomed in, snap reach still covers 0.125 in', String(tolZoomed));
+
+    // a point 0.1 in short of the wall must snap ONTO the wall
+    const hit = await run(`(() => { const p = CNC.resolvePoint({x: 9.9, y: 5}); return JSON.stringify(p); })()`);
+    const hv = JSON.parse(hit);
+    ok(Math.abs(hv.x - 10) < 1e-9, 'an endpoint 0.1 in away lands exactly on the line at x=10', hit);
+    // probe off the wall's midpoint (10,5), which would legitimately outrank 'on'
+    const st = await run(`(() => { CNC.resolvePoint({x: 9.9, y: 3.37}); const s = CNC.lastSnapInfo(); return s ? s.type : 'none'; })()`);
+    ok(st === 'on', 'mid-span, it reports snapping onto the edge', st);
+    const stp = await run(`(() => { const p = CNC.resolvePoint({x: 9.9, y: 3.37}); return JSON.stringify(p); })()`);
+    ok(Math.abs(JSON.parse(stp).x - 10) < 1e-9, 'and lands exactly on x=10 there too', stp);
+
+    // 0.3 in away is outside the radius and must NOT be dragged in
+    const far = await run(`(() => { const p = CNC.resolvePoint({x: 9.7, y: 5}); return JSON.stringify(p); })()`);
+    ok(Math.abs(JSON.parse(far).x - 10) > 0.05, 'a point 0.3 in away is left alone', far);
+
+    // dragging towards the wall END should prefer the endpoint over the edge
+    const ep = await run(`(() => { CNC.resolvePoint({x: 9.95, y: 9.95}); const s = CNC.lastSnapInfo(); return s ? s.type : 'none'; })()`);
+    ok(ep === 'endpoint', 'near the end of the wall, the endpoint wins (so shapes close cleanly)', ep);
+
+    // zoomed way out, the screen radius must still take over
+    await run(`(() => { CNC.view.scale = 3; return true; })()`);
+    const tolOut = await run('CNC.snapTol()');
+    ok(tolOut > 0.125, 'zoomed out, the screen radius takes over so picking stays possible', String(tolOut));
+    await run(`(() => { CNC.view.scale = 8; return true; })()`);
+
+    // the configured radius is honoured
+    await run(`(() => { CNC.S.snap.radius = 0.5; return true; })()`);
+    ok((await run('CNC.snapTol()')) >= 0.5 - 1e-9, 'a custom snap radius is used', String(await run('CNC.snapTol()')));
+    await run(`(() => { CNC.S.snap.radius = 0.125; return true; })()`);
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

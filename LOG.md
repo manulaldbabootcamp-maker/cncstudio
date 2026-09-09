@@ -5,6 +5,35 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Snap reach is a real distance, not a screen distance
+
+### Fixed
+- **Dragging an endpoint onto another line did not snap.** The snap radius was
+  measured in **screen pixels** (11 px). Zoomed in, that is a few thousandths
+  of an inch of real distance, so coming at a line from 1/8 in away snapped to
+  nothing — the reach shrank exactly when the work got precise.
+  Reach is now the **larger of** the screen radius and a real-world radius
+  (default **0.125 in**, editable in the snap menu). Screen-only failed zoomed
+  in; world-only would fail zoomed out, where 1/8 in is sub-pixel and
+  unpickable. Taking the max keeps it usable at every zoom.
+- **The snap marker was hidden during a drag** — the one moment confirmation
+  matters most. It now stays visible while dragging a grip or a part, so you
+  can see what the point has locked onto before letting go.
+
+### Added
+- **Dragging a whole part now snaps too.** Grab a part by one of its corners
+  and that corner lands exactly on another part's geometry, instead of only
+  landing on the grid.
+- **Snap within ‹n› in** in the snap menu, so the reach can be tuned.
+
+### Tests
+- Smoke test now 81 assertions. Zoomed to 600 px/in, an endpoint 0.1 in from a
+  wall lands exactly on x=10 and reports an on-edge snap; a point 0.3 in away is
+  left alone; near the wall's end the endpoint wins so shapes close cleanly;
+  zoomed out the screen radius takes over again; and a custom radius is honoured.
+
+---
+
 ## Precision: 0.001 in snap, zoom limits, healing loose ends
 
 ### Fixed

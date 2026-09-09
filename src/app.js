@@ -11,7 +11,7 @@
     materials: PO.DEFAULT_MATERIALS.map(m => ({ ...m })),
     nest: { gap: 0.5, margin: 0.375, rotate: false },
     ai: { key: '', model: 'claude-sonnet-4-5' },
-    snap: { on: true, ortho: false, trimTol: 0.125, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
+    snap: { on: true, ortho: false, trimTol: 0.125, radius: 0.125, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
   };
   let S = loadSettings();
   function loadSettings() {
@@ -129,6 +129,16 @@
   let lastSnap = null;          // {p,type} of the most recent snap, for the marker + status
   let orthoTemp = false;        // Shift held: temporary ortho lock
   const SNAP_PX = 11;           // pick radius in screen px
+  /* Snap reach is the LARGER of a screen radius and a real-world radius.
+     Screen-only was the bug: zoomed in, 11 px can be a few thousandths of an
+     inch, so dragging an endpoint towards a line from 1/8 in away snapped to
+     nothing. World-only would be worse zoomed out, where 1/8 in is sub-pixel
+     and unclickable. Taking the max gives a usable reach at every zoom. */
+  function snapTol() {
+    const px = SNAP_PX * devicePixelRatio / view.scale;
+    const world = S.snap.radius != null ? S.snap.radius : 0.125;
+    return Math.max(px, world);
+  }
 
   /* World loops of every shape, for the snap engine.
      Cached: this runs on every mousemove, and rebuilding polyLoop for 30+ parts
@@ -159,8 +169,7 @@
     if (orthoOn) p = SNAP.ortho(opts.from, w, !!opts.polar).p;
     lastSnap = null;
     if (S.snap.on) {
-      const tol = SNAP_PX * devicePixelRatio / view.scale;
-      const hit = SNAP.snapPoint(p, snapLoops(opts.exclude), tol, {
+      const hit = SNAP.snapPoint(p, snapLoops(opts.exclude), opts.tol || snapTol(), {
         enabled: { ...S.snap.types, grid: S.snap.types.grid && snapV() > 0 },
         gridStep: snapV(),
         exclude: opts.exclude,
@@ -264,7 +273,8 @@
     // grips on a single selected shape
     drawGrips();
     // snap marker last, so it sits on top of everything
-    if (lastSnap && !drag) drawSnapMarker(lastSnap);
+    // during a drag is precisely when confirmation matters, so keep it visible
+    if (lastSnap && (!drag || drag.kind === 'grip' || drag.kind === 'move')) drawSnapMarker(lastSnap);
     if (drag && drag.kind === 'marquee') { const a = W2S(drag.a), b = W2S(drag.cur); ctx.strokeStyle = '#4da3ff'; ctx.setLineDash([3, 3]); ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y)); ctx.setLineDash([]); }
   }
   function dimLabel(wp, text) {
@@ -541,6 +551,17 @@
         let dx = w.x - drag.start.x, dy = w.y - drag.start.y;
         if (S.snap.ortho || orthoTemp) { const o = SNAP.ortho({ x: 0, y: 0 }, { x: dx, y: dy }, e.altKey); dx = o.p.x; dy = o.p.y; }
         const sv = snapV(); if (sv) { dx = Math.round(dx / sv) * sv; dy = Math.round(dy / sv) * sv; }
+        /* Snap the grabbed point itself onto other geometry, so dragging a part
+           by one of its corners lands that corner exactly on another part. */
+        if (S.snap.on && !(S.snap.ortho || orthoTemp)) {
+          const moving = new Set(drag.orig.map(o => o.id));
+          const held = { x: drag.start.x + dx, y: drag.start.y + dy };
+          const hit = SNAP.snapPoint(held, snapLoops(moving), snapTol(), {
+            enabled: { ...S.snap.types, grid: false }, gridStep: 0, exclude: moving,
+          });
+          if (hit) { dx += hit.p.x - held.x; dy += hit.p.y - held.y; lastSnap = hit; }
+          else lastSnap = null;
+        }
         for (const o of drag.orig) { const sh = job.shapes.find(x => x.id === o.id); sh.x = o.x + dx; sh.y = o.y + dy; }
         refreshProps();
       } else if (drag.kind === 'grip') { dragGrip(drag, ws); drag.moved = true; refreshProps(); }
@@ -2002,10 +2023,16 @@
         .map(([k, l]) => `<label><input type="checkbox" data-t="${k}" ${T[k] ? 'checked' : ''}> ${l}</label>`).join('')}
       <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
       <label><input type="checkbox" data-s="ortho" ${S.snap.ortho ? 'checked' : ''}> Ortho lock <span class="muted">(F8)</span></label>
+      <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
+      <label style="display:flex;gap:6px;align-items:center">Snap within
+        <input type="number" step="0.0625" id="snapRadius" value="${fmtIn(S.snap.radius != null ? S.snap.radius : 0.125)}" style="width:74px"> in</label>
+      <p class="muted" style="font-size:11px;margin:2px 0 0">How close a point has to get before it jumps onto existing geometry. Applies while drawing and while dragging.</p>
       <p class="muted" style="font-size:11px;margin:6px 0 0">Hold <b>Shift</b> for a temporary ortho lock, <b>Alt</b> for 45° polar.</p>`;
     document.body.appendChild(pop);
     pop.querySelectorAll('[data-t]').forEach(i => i.onchange = () => { S.snap.types[i.dataset.t] = i.checked; saveSettings(); });
     pop.querySelectorAll('[data-s]').forEach(i => i.onchange = () => { S.snap[i.dataset.s] = i.checked; saveSettings(); syncSnapUI(); draw(); });
+    const rIn = pop.querySelector('#snapRadius');
+    if (rIn) rIn.onchange = () => { const v = parseFloat(rIn.value); if (isFinite(v) && v >= 0) { S.snap.radius = v; saveSettings(); draw(); } };
     const off = (ev) => { if (!pop.contains(ev.target) && ev.target !== e.currentTarget) { pop.remove(); document.removeEventListener('mousedown', off); } };
     setTimeout(() => document.addEventListener('mousedown', off), 0);
   };
@@ -2283,5 +2310,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();
