@@ -5,6 +5,31 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Click a line to select it
+
+### Changed
+- **One click on a line now selects that line.** Reaching for a leftover
+  segment and pressing Delete is the first instinct; it should not need a tool
+  change or a second click to drill in. Previously the first click took the
+  whole part and only a second click picked a side.
+  - Click a **line** → that line is selected (Delete removes just it)
+  - **Double-click** anywhere on a part → the whole part
+  - **Alt+click** → ignore lines and take the whole part directly
+  - Shift+click still adds or removes a line from the selection
+  - Dragging from a line still moves the part, so nothing is lost
+- **The line under the cursor is previewed** in faint orange before you click,
+  so the click target is never a guess.
+- The select tool now carries a hint line explaining all of this, since the
+  behaviour is not guessable.
+
+### Tests
+- Smoke test now 129 assertions, driven through **real mouse events**: a single
+  click on an overhang selects exactly that segment, Delete leaves the other
+  three, double-click clears back to the whole part, and hovering reports the
+  line for the highlight.
+
+---
+
 ## Merge leftovers into one closed part
 
 ### Fixed

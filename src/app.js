@@ -91,6 +91,7 @@
   let spaceDown = false;
   let measure = null;   // {a, b, cur} measure-tool state
   let hoverGrip = null; // grip under the cursor, for highlight + cursor shape
+  let hoverEdge = null; // line under the cursor, previewed before clicking
   function W2S(p) { return { x: view.ox + p.x * view.scale, y: cv.height - view.oy - p.y * view.scale }; }
   function S2W(p) { return { x: (p.x - view.ox) / view.scale, y: (cv.height - view.oy - p.y) / view.scale }; }
   function fitBed() {
@@ -490,17 +491,26 @@
       }
       const hit = hitShape(w);
       if (hit) {
-        const alreadyOnly = sel.size === 1 && sel.has(hit.id) && !e.shiftKey;
+        /* Clicking a LINE picks that line. Clicking the filled inside of a
+           closed part, or double-clicking anywhere on it, picks the whole
+           part. Reaching for a leftover line and pressing Delete is the first
+           instinct, and it should not need a tool change or a second click. */
+        const onLine = edgeIndexAt(hit, w) >= 0;
+        if (onLine && !e.altKey) {
+          const ed = makeEditable(hit) || hit;
+          const i = edgeIndexAt(ed, w);
+          if (i >= 0) {
+            if (e.shiftKey) { sel.add(ed.id); toggleEdge(ed.id, i); }
+            else { sel.clear(); sel.add(ed.id); selEdges = [{ id: ed.id, i }]; }
+            // still allow a drag from here to move the part
+            drag = { kind: 'move', start: w, orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false, fromEdge: true };
+            refreshList(); refreshProps(); draw();
+            return;
+          }
+        }
         if (e.shiftKey) { sel.has(hit.id) ? sel.delete(hit.id) : sel.add(hit.id); clearEdge(); }
         else if (!sel.has(hit.id)) { sel.clear(); sel.add(hit.id); clearEdge(); }
-        /* Second click on a part you already have selected drills into it and
-           picks the side under the cursor, so one side of a triangle can be
-           worked on by itself. */
-        if (alreadyOnly) {
-          const ed = makeEditable(hit);
-          const i = ed ? edgeIndexAt(ed, w) : -1;
-          if (i >= 0) { if (e.shiftKey) toggleEdge(ed.id, i); else selEdges = [{ id: ed.id, i }]; drag = null; refreshList(); refreshProps(); draw(); return; }
-        }
+        else clearEdge();
         expandGroups();
         drag = { kind: 'move', start: w, orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false };
       } else { if (!e.shiftKey) sel.clear(); clearEdge(); drag = { kind: 'marquee', a: w, cur: w }; }
@@ -546,7 +556,17 @@
     LOG.action(`Arc added: R ${fmtIn(G.radius(seg))}, bulge ${fmtIn(sag)}`);
     addShape(sh);
   }
-  cv.addEventListener('dblclick', e => { if (drawing && (drawing.kind === 'poly' || drawing.kind === 'pline')) { drawing.pts.pop(); finishPoly(); } });
+  cv.addEventListener('dblclick', e => {
+    if (drawing && (drawing.kind === 'poly' || drawing.kind === 'pline')) { drawing.pts.pop(); finishPoly(); return; }
+    if (tool !== 'select') return;
+    // double-click steps back out from a side to the whole part
+    const { w } = evPos(e);
+    const hit = hitShape(w);
+    if (!hit) return;
+    clearEdge(); sel.clear(); sel.add(hit.id); expandGroups();
+    drag = null;
+    refreshList(); refreshProps(); draw();
+  });
   cv.addEventListener('mousemove', e => {
     const { s, w } = evPos(e); mouse = { ...mouse, x: s.x, y: s.y, wx: w.x, wy: w.y };
     const excl = drag && drag.kind === 'grip' ? new Set([drag.sh.id]) : undefined;
@@ -580,6 +600,12 @@
       draw(); return;
     }
     hoverGrip = tool === 'select' ? hitGrip(w) : null;
+    // which line is under the cursor right now, so the click target is visible
+    hoverEdge = null;
+    if (tool === 'select' && !hoverGrip && !drag) {
+      const hs = hitShape(w);
+      if (hs) { const i = edgeIndexAt(hs, w); if (i >= 0) hoverEdge = { id: hs.id, i }; }
+    }
     cv.style.cursor = hoverGrip ? (hoverGrip.kind === 'edge' ? 'ns-resize' : 'move') : 'crosshair';
     if (measure && !measure.b) measure.cur = ws;
     if (dimDraft && dimDraft.b) { const d = dimDraft, dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1; d.off = ((ws.x - d.a.x) * (-dy / L)) + ((ws.y - d.a.y) * (dx / L)); }
@@ -1369,6 +1395,19 @@
   // ---- highlight + point numbers
   function drawEdgeSelection() {
     const dpr = devicePixelRatio;
+    if (hoverEdge && !isEdgeSel(hoverEdge.id, hoverEdge.i)) {
+      const hs = job.shapes.find(x => x.id === hoverEdge.id);
+      if (hs) {
+        let hl = null;
+        try { hl = worldLoop(hs); } catch (err) { hl = null; }
+        if (hl && hl[hoverEdge.i]) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,184,77,.45)'; ctx.lineWidth = 3.2 * dpr; ctx.setLineDash([]); ctx.lineCap = 'round';
+          tracePath([hl[hoverEdge.i]], true); ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
     if (selEdges.length) {
       ctx.save();
       ctx.strokeStyle = '#ffb84d'; ctx.lineWidth = 3.2 * dpr; ctx.setLineDash([]); ctx.lineCap = 'round';
@@ -1644,7 +1683,7 @@
      no prompt, a line drawn with two clicks simply never appears and the tool
      looks broken. Show what finishes the current tool, on screen. */
   const TOOL_HINTS = {
-    select: '',
+    select: 'Click a <b>line</b> to select it (then <span class="k">Del</span>) · double-click for the whole part · <span class="k">Alt</span>+click to skip lines',
     rect: 'Drag a rectangle. <span class="k">Shift</span> for ortho',
     circle: 'Drag from the centre',
     ellipse: 'Drag from the centre',
@@ -2743,5 +2782,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();

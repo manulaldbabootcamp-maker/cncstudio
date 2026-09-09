@@ -258,7 +258,8 @@ app.whenReady().then(async () => {
     const hint = await run(`document.querySelector('#toolHint').textContent`);
     ok(/Enter/.test(hint), 'the Line tool tells you how to finish it', JSON.stringify(hint));
     await run(`(() => { document.querySelector('button.tool[data-tool="select"]').click(); return true; })()`);
-    ok((await run(`document.querySelector('#toolHint').style.display`)) === 'none', 'no hint shown for the select tool');
+    const selHint = await run(`document.querySelector('#toolHint').textContent`);
+    ok(/line/i.test(selHint), 'the select tool explains that clicking a line picks it', JSON.stringify(selHint));
 
     console.log('delete an edge (rectangle -> C shape)');
     await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
@@ -575,6 +576,61 @@ app.whenReady().then(async () => {
       CNC.refresh(); CNC.doMarquee(-99,-99,99,99); CNC.mergeSelected(0.125); return true; })()`);
     ok((await run('CNC.job.shapes.length')) === 1, 'a closed part and an open one merge into one');
     ok((await run('CNC.worldLoop(CNC.job.shapes[0]).length')) === 5, 'giving 5 sides (square + tail)', String(await run('CNC.worldLoop(CNC.job.shapes[0]).length')));
+
+    console.log('one click on a line selects that line');
+    await run(`(() => { window.__click = (wx, wy, type, opts) => {
+        const cv = document.querySelector('#cv');
+        const r = cv.getBoundingClientRect();
+        const sp = CNC.W2S({x:wx, y:wy});
+        const ev = new MouseEvent(type, Object.assign({
+          clientX: r.left + sp.x / devicePixelRatio,
+          clientY: r.top  + sp.y / devicePixelRatio,
+          bubbles: true, button: 0 }, opts || {}));
+        cv.dispatchEvent(ev);
+        if (type === 'mouseup') window.dispatchEvent(ev);
+        return true; }; return true; })()`);
+
+    // a square with an overhang sticking up past the top-right corner
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      document.querySelector('button.tool[data-tool="select"]').click();
+      CNC.job.shapes.push({id:1300,name:'part',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:0,y:10},{x:10,y:10},{x:10,y:14},{x:10,y:0}]});
+      CNC.refresh(); return true; })()`);
+    const segs0 = await run('CNC.worldLoop(CNC.job.shapes[0]).length');
+    ok(segs0 === 4, 'test part has 4 segments including the overhang', String(segs0));
+
+    // click ONCE on the overhang (the stub from y=10 to y=14 at x=10)
+    await run(`(() => { window.__click(10, 12, 'mousedown'); window.__click(10, 12, 'mouseup'); return true; })()`);
+    const clicked = JSON.parse(await run('JSON.stringify(CNC.getSelEdges())'));
+    ok(clicked.length === 1, 'a single click selects exactly one line', JSON.stringify(clicked));
+    ok(clicked.length === 1 && clicked[0].i === 2, 'and it is the overhang segment', JSON.stringify(clicked));
+
+    // Delete removes just that line
+    await run(`(() => { window.dispatchEvent(new KeyboardEvent('keydown', {key:'Delete', bubbles:true})); return true; })()`);
+    const totalSegs = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s => CNC.worldLoop(s).length))`));
+    ok(totalSegs.reduce((a,b)=>a+b,0) === 3, 'Delete removes just that line, leaving 3 segments', JSON.stringify(totalSegs));
+
+    console.log('double-click still selects the whole part');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:1310,name:'sq',kind:'poly',x:0,y:0,rot:0,open:false,op:'outside',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:10,y:0},{x:10,y:10},{x:0,y:10}]});
+      CNC.refresh(); return true; })()`);
+    await run(`(() => { window.__click(5, 0, 'mousedown'); window.__click(5, 0, 'mouseup'); return true; })()`);
+    ok((await run('CNC.getSelEdges().length')) === 1, 'clicking the bottom line selects that line');
+    await run(`(() => { const cv = document.querySelector('#cv'); const r = cv.getBoundingClientRect();
+      const sp = CNC.W2S({x:5,y:0});
+      cv.dispatchEvent(new MouseEvent('dblclick', {clientX: r.left + sp.x/devicePixelRatio, clientY: r.top + sp.y/devicePixelRatio, bubbles:true}));
+      return true; })()`);
+    ok((await run('CNC.getSelEdges().length')) === 0, 'double-click clears the line selection');
+    ok((await run('CNC.job.shapes.length')) === 1, 'and the part is still there');
+
+    console.log('hover previews the line under the cursor');
+    await run(`(() => { const cv = document.querySelector('#cv'); const r = cv.getBoundingClientRect();
+      const sp = CNC.W2S({x:2.5,y:10});   // off the midpoint grip, which outranks the edge
+      cv.dispatchEvent(new MouseEvent('mousemove', {clientX: r.left + sp.x/devicePixelRatio, clientY: r.top + sp.y/devicePixelRatio, bubbles:true}));
+      return true; })()`);
+    const hov = JSON.parse(await run('JSON.stringify(CNC.hoverEdgeInfo())'));
+    ok(hov && typeof hov.i === 'number', 'hovering a line reports it for the highlight', JSON.stringify(hov));
 
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
