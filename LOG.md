@@ -5,6 +5,40 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Box-select sides, and merging a line that lands partway along another
+
+### Fixed
+- **Box-select ignored sides.** Dragging a selection box only ever selected
+  parts that fell *entirely* inside it, so dragging from the top-left corner of
+  a square to its centre selected nothing at all. A box that only crosses a
+  part now picks the individual **sides** it passes through — that drag selects
+  the top and left sides, as expected. A part fully inside the box is still
+  selected whole.
+- **Only one side could be selected at a time.** Selection is now a set:
+  box-select can pick several at once, shift-click adds or removes one, and
+  Delete removes all of them. Removing several sides can split a part into more
+  than one piece, so the survivors are regrouped into continuous runs and each
+  becomes its own path.
+
+### Added
+- **Merge into one part** (Trim dialog). Draw a line from a corner to a point
+  **partway along** another side and the two are touching but still two
+  separate objects, with the touched side still one long segment. Merge splits
+  that side at the contact point and combines everything into a single part —
+  so a C plus a tie line becomes one 5-sided part, and that 5th side can be
+  selected and deleted like any other.
+  This is the case ordinary *Join* cannot handle: Join chains matching **ends**,
+  while this handles a **T-junction** in the middle of a side.
+
+### Tests
+- Smoke test now 103 assertions, driving both cases exactly as described: a box
+  from the top-left corner to the centre of a square picks precisely sides 2
+  and 3 (top and left) and deleting both leaves 2 segments; and a C plus a line
+  landing partway along its top side merges into one 5-side part whose 5th side
+  can then be deleted, leaving 4.
+
+---
+
 ## Select and edit one side of a shape
 
 ### Added

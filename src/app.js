@@ -499,7 +499,7 @@
         if (alreadyOnly) {
           const ed = makeEditable(hit);
           const i = ed ? edgeIndexAt(ed, w) : -1;
-          if (i >= 0) { selEdge = { id: ed.id, i }; drag = null; refreshList(); refreshProps(); draw(); return; }
+          if (i >= 0) { if (e.shiftKey) toggleEdge(ed.id, i); else selEdges = [{ id: ed.id, i }]; drag = null; refreshList(); refreshProps(); draw(); return; }
         }
         expandGroups();
         drag = { kind: 'move', start: w, orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false };
@@ -630,7 +630,10 @@
   window.addEventListener('mouseup', e => {
     mouse.down = false;
     if (drag) {
-      if (drag.kind === 'marquee') { const a = drag.a, b = drag.cur; const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y); if (x1 - x0 > 0.01) for (const sh of job.shapes) { const bb = shapeBBox(sh); if (bb.x0 >= x0 && bb.x1 <= x1 && bb.y0 >= y0 && bb.y1 <= y1) sel.add(sh.id); } }
+      if (drag.kind === 'marquee') {
+        const a = drag.a, b = drag.cur;
+        doMarquee(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y));
+      }
       if (drag.kind === 'move' && drag.moved) { updateStats(); LOG.action(`Moved ${drag.orig.length} part(s)`); }
       if (drag.kind === 'grip' && drag.moved) {
         const g = drag.grip;
@@ -666,7 +669,7 @@
     if (e.key === 'Shift') { orthoTemp = true; draw(); }
     if (e.key === 'Escape') { if (clearEdge()) { refreshProps(); draw(); return; } drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
     if (e.key === 'Enter' && drawing) { if (drawing.kind === 'spline') finishSpline(); else finishPoly(); }
-    if (e.key === 'Delete' || e.key === 'Backspace') { if (selEdge && deleteSelectedEdge()) return; if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
+    if (e.key === 'Delete' || e.key === 'Backspace') { if (selEdges.length && deleteSelectedEdge()) return; if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.shiftKey ? redo() : undo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { redo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { duplicateSel(); e.preventDefault(); }
@@ -769,7 +772,7 @@
     el.querySelectorAll('tr.edgeRow').forEach(tr => tr.addEventListener('click', (ev) => {
       if (ev.target.tagName === 'INPUT') return;      // let the number fields work
       makeEditable(sh);
-      selEdge = { id: sh.id, i: +tr.dataset.edge };
+      if (ev.shiftKey) toggleEdge(sh.id, +tr.dataset.edge); else selEdges = [{ id: sh.id, i: +tr.dataset.edge }];
       refreshProps(); draw();
     }));
     wireEdgePanel(el, sh);
@@ -802,7 +805,7 @@
       let ia = '';
       if (closed || (i > 0 && i < n - 1)) { const a = pts[(i - 1 + n) % n]; const d1 = G.norm(G.sub(a, p)), d2 = G.norm(G.sub(q, p)); const ang = deg(Math.acos(Math.max(-1, Math.min(1, G.dot(d1, d2))))); const cr = G.cross(d1, d2); ia = (cr < 0 ? ang : 360 - ang).toFixed(1) + '°'; }
       h += `<tr><td>P${i + 1}</td><td><input type="number" step="0.125" data-pv="x" data-i="${i}" value="${fmtIn(p.x)}"></td><td><input type="number" step="0.125" data-pv="y" data-i="${i}" value="${fmtIn(p.y)}"></td><td>${closed ? `<input type="number" step="0.0625" data-pv="r" data-i="${i}" value="${fmtIn(p.r || 0)}">` : ''}</td><td class="muted">${ia}</td></tr>`;
-      if (closed || i < n - 1) { const L = G.dist(p, q), A = deg(Math.atan2(q.y - p.y, q.x - p.x)); const sg = edgeSagitta(sh, i); h += `<tr class="edgeRow${selEdge && selEdge.id === sh.id && selEdge.i === i ? ' edgeSel' : ''}" data-edge="${i}" style="color:var(--muted)"><td title="Click to select this side">→P${(i + 1) % n + 1}</td><td><input type="number" step="0.125" data-pv="len" data-i="${i}" value="${fmtIn(L)}"></td><td><input type="number" step="1" data-pv="ang" data-i="${i}" value="${(+A.toFixed(2))}"></td><td><input type="number" step="0.125" data-pv="arcR" data-i="${i}" value="${p.arcR ? fmtIn(p.arcR) : ''}" placeholder="0"></td><td><input type="number" step="0.0625" data-pv="sag" data-i="${i}" value="${sg ? fmtIn(sg) : ''}" placeholder="0"></td></tr>`; }
+      if (closed || i < n - 1) { const L = G.dist(p, q), A = deg(Math.atan2(q.y - p.y, q.x - p.x)); const sg = edgeSagitta(sh, i); h += `<tr class="edgeRow${isEdgeSel(sh.id, i) ? ' edgeSel' : ''}" data-edge="${i}" style="color:var(--muted)"><td title="Click to select this side">→P${(i + 1) % n + 1}</td><td><input type="number" step="0.125" data-pv="len" data-i="${i}" value="${fmtIn(L)}"></td><td><input type="number" step="1" data-pv="ang" data-i="${i}" value="${(+A.toFixed(2))}"></td><td><input type="number" step="0.125" data-pv="arcR" data-i="${i}" value="${p.arcR ? fmtIn(p.arcR) : ''}" placeholder="0"></td><td><input type="number" step="0.0625" data-pv="sag" data-i="${i}" value="${sg ? fmtIn(sg) : ''}" placeholder="0"></td></tr>`; }
     }
     h += `</tbody></table></div><div class="row"><button class="small" id="btnPolyBuild">Edit by lengths &amp; angles…</button></div><p class="muted" style="font-size:11px">Edge dir: 0° = right, 90° = up. Angle column = inside angle at the point.<br><b>Bulge</b> is how far the edge bows out from its straight chord — the distance you can measure on the part. Type it here, or drag the round grip at the middle of the edge. <b>Arc R</b> is the same curve expressed as a radius. + bulges out, − bulges in.</p>`;
     return h;
@@ -1197,7 +1200,8 @@
     modal(`<h3>Trim, extend &amp; join</h3>
       <p class="muted">Selected: ${shs.length} part${shs.length === 1 ? '' : 's'} (${opens.length} open path${opens.length === 1 ? '' : 's'}).</p>
       <div class="row"><button class="small" id="tjErase">Delete an edge</button><span class="muted">then click a side to remove it — e.g. drop one side of a rectangle to leave a C</span></div>
-      <div class="row"><button class="small" id="tjJoin">Join open paths</button><span class="muted">chain touching ends into one path; closes it if the ends meet</span></div>
+      <div class="row"><button class="small" id="tjJoin">Join open paths</button><span class="muted">chain touching <b>ends</b> into one path; closes it if the ends meet</span></div>
+      <div class="row"><button class="small" id="tjMerge">Merge into one part</button><span class="muted">also handles a line landing <b>partway along</b> another side: splits it there so the new line becomes a numbered side</span></div>
       <div class="row"><button class="small" id="tjClose">Force close</button><span class="muted">connect the two ends of one open path with a straight segment</span></div>
       <div class="row"><button class="small" id="tjTrim">Trim tool</button><span class="muted">then click the piece of an open path to remove, between its crossings</span></div>
       <div class="row"><button class="small" id="tjExtend">Extend tool</button><span class="muted">then click near the end of an open path to run it out to the next shape it meets</span></div>
@@ -1212,6 +1216,7 @@
         ov.querySelector('#tjHeal').onclick = () => { S.snap.trimTol = tol(); saveSettings(); healSelection(tol()); close(); };
         ov.querySelector('#tjErase').onclick = () => { setTool('trim'); close(); toast('Click the edge you want to remove'); };
         ov.querySelector('#tjJoin').onclick = () => { joinSelected(tol()); close(); };
+        ov.querySelector('#tjMerge').onclick = () => { S.snap.trimTol = tol(); saveSettings(); mergeSelected(tol()); close(); };
         ov.querySelector('#tjClose').onclick = () => { forceClose(); close(); };
         ov.querySelector('#tjTrim').onclick = () => { setTool('trim'); close(); toast('Click the part of a path to remove'); };
         ov.querySelector('#tjExtend').onclick = () => { setTool('extend'); close(); toast('Click near the end of a path to extend it'); };
@@ -1224,10 +1229,45 @@
   /* Click a part once to select it, click one of its sides again to select
      just that side. The selected edge can be deleted on its own, or have its
      length and angle typed or dragged. */
-  let selEdge = null;   // {id, i}
+  let selEdges = [];    // [{id, i}] - a box-select can cover several sides at once
 
-  function clearEdge() { if (selEdge) { selEdge = null; return true; } return false; }
-  function selEdgeShape() { return selEdge ? job.shapes.find(s => s.id === selEdge.id) : null; }
+  function clearEdge() { if (selEdges.length) { selEdges = []; return true; } return false; }
+  const isEdgeSel = (id, i) => selEdges.some(e => e.id === id && e.i === i);
+  function addEdge(id, i) { if (!isEdgeSel(id, i)) selEdges.push({ id, i }); }
+  function toggleEdge(id, i) { const k = selEdges.findIndex(e => e.id === id && e.i === i); if (k >= 0) selEdges.splice(k, 1); else selEdges.push({ id, i }); }
+  // the single selected side, when there is exactly one (the editable case)
+  function soleEdge() { return selEdges.length === 1 ? selEdges[0] : null; }
+  function selEdgeShape() { const e = soleEdge(); return e ? job.shapes.find(s => s.id === e.id) : null; }
+
+  // does any part of this segment fall inside the box?
+  function segTouchesBox(sg, box) {
+    for (const q of G.samplePts(sg, 0.02)) {
+      if (q.x >= box.x0 && q.x <= box.x1 && q.y >= box.y0 && q.y <= box.y1) return true;
+    }
+    return false;
+  }
+
+  /* Box-select. A part entirely inside the box is selected whole. A part the
+     box only crosses has its individual sides picked instead - so dragging
+     from the corner of a square to its centre selects the two sides running
+     through the box, rather than selecting nothing at all. */
+  function doMarquee(x0, y0, x1, y1) {
+    if (x1 - x0 <= 0.01 && y1 - y0 <= 0.01) return;
+    const box = { x0, x1, y0, y1 };
+    for (const sh of job.shapes.slice()) {
+      const bb = shapeBBox(sh);
+      if (bb.x0 >= x0 && bb.x1 <= x1 && bb.y0 >= y0 && bb.y1 <= y1) { sel.add(sh.id); continue; }
+      if (bb.x1 < x0 || bb.x0 > x1 || bb.y1 < y0 || bb.y0 > y1) continue;
+      let loop;
+      try { loop = worldLoop(sh); } catch (err) { continue; }
+      const hits = [];
+      loop.forEach((sg, i) => { if (segTouchesBox(sg, box)) hits.push(i); });
+      if (!hits.length) continue;
+      const ed = makeEditable(sh) || sh;
+      for (const i of hits) addEdge(ed.id, i);
+      sel.add(ed.id);
+    }
+  }
 
   // index of the edge nearest wp on this shape, or -1
   function edgeIndexAt(sh, wp, tolPx = 8) {
@@ -1271,34 +1311,64 @@
   }
 
   // ---- delete just the selected edge
+  /* Delete every selected side. Removing several from one part can break it
+     into more than one piece, so the surviving segments are regrouped into
+     contiguous runs and each run becomes its own open path. */
   function deleteSelectedEdge() {
-    const sh = selEdgeShape();
-    if (!sh) return false;
-    let loop;
-    try { loop = worldLoop(sh); } catch (e) { return false; }
-    const i = selEdge.i;
-    if (i < 0 || i >= loop.length) { clearEdge(); return false; }
-    const mid = G.pointAt(loop[i], 0.5);
-    clearEdge();
-    eraseEdgeAt(sh, loop, mid);
-    return true;
+    if (!selEdges.length) return false;
+    const byShape = new Map();
+    for (const e of selEdges) { if (!byShape.has(e.id)) byShape.set(e.id, new Set()); byShape.get(e.id).add(e.i); }
+    snapshot();
+    let removed = 0;
+    for (const [id, idx] of byShape) {
+      const sh = job.shapes.find(x => x.id === id);
+      if (!sh) continue;
+      let loop;
+      try { loop = worldLoop(sh); } catch (err) { continue; }
+      const keep = loop.map((sg, i) => idx.has(i) ? null : sg);
+      removed += idx.size;
+      const n = keep.length;
+      const runs = [];
+      let cur = [];
+      // a closed part re-opens at the first gap, so start walking just after one
+      let startAt = 0;
+      if (!sh.open) { const g = keep.findIndex(x => !x); if (g >= 0) startAt = (g + 1) % n; }
+      for (let k = 0; k < n; k++) {
+        const sg = keep[(startAt + k) % n];
+        if (sg) cur.push(sg);
+        else { if (cur.length) runs.push(cur); cur = []; }
+      }
+      if (cur.length) runs.push(cur);
+      job.shapes = job.shapes.filter(x => x.id !== id);
+      for (const segs of runs) {
+        const ns = pathShape(segs, { name: sh.name, open: true, op: 'on', toolId: sh.toolId, climb: sh.climb, group: sh.group });
+        job.shapes.push(ns);
+      }
+      LOG.action('Deleted ' + idx.size + ' side(s) from "' + sh.name + '" - ' + runs.length + ' piece(s) left');
+    }
+    clearEdge(); sel.clear();
+    invalidateLoops(); refresh();
+    return removed > 0;
   }
 
   // ---- highlight + point numbers
   function drawEdgeSelection() {
     const dpr = devicePixelRatio;
-    const sh = selEdgeShape();
-    if (sh) {
-      let loop;
-      try { loop = worldLoop(sh); } catch (e) { loop = null; }
-      if (loop && loop[selEdge.i]) {
-        ctx.save();
-        ctx.strokeStyle = '#ffb84d'; ctx.lineWidth = 3.2 * dpr; ctx.setLineDash([]);
-        ctx.lineCap = 'round';
-        tracePath([loop[selEdge.i]], true);
-        ctx.stroke();
-        ctx.restore();
+    if (selEdges.length) {
+      ctx.save();
+      ctx.strokeStyle = '#ffb84d'; ctx.lineWidth = 3.2 * dpr; ctx.setLineDash([]); ctx.lineCap = 'round';
+      const cache = new Map();
+      for (const e of selEdges) {
+        let loop = cache.get(e.id);
+        if (!loop) {
+          const sh0 = job.shapes.find(x => x.id === e.id);
+          if (!sh0) continue;
+          try { loop = worldLoop(sh0); } catch (err) { continue; }
+          cache.set(e.id, loop);
+        }
+        if (loop[e.i]) { tracePath([loop[e.i]], true); ctx.stroke(); }
       }
+      ctx.restore();
     }
     // number the points of a singly-selected part, matching the table on the right
     if (sel.size === 1) {
@@ -1323,10 +1393,17 @@
 
   // ---- right-hand panel for the selected edge
   function edgePanel(sh) {
-    if (!selEdge || selEdge.id !== sh.id) return '';
+    if (selEdges.length > 1) {
+      const parts = new Set(selEdges.map(e => e.id)).size;
+      return '<h3>' + selEdges.length + ' sides selected <span class="muted">' + (parts > 1 ? 'on ' + parts + ' parts' : '') + '</span></h3>'
+        + '<div class="row"><button class="small" id="btnDelEdge">Delete these sides</button><span class="muted">or press Delete</span></div>'
+        + '<p class="muted" style="font-size:11px">Select a single side to edit its length and angle. Shift-click a side to add or remove it.</p>';
+    }
+    const e0 = soleEdge();
+    if (!e0 || e0.id !== sh.id) return '';
     const pts = sh.pts;
     if (!pts) return '';
-    const n = pts.length, i = selEdge.i;
+    const n = pts.length, i = e0.i;
     if (i < 0 || i >= (sh.open ? n - 1 : n)) return '';
     const a = pts[i], b = pts[(i + 1) % n];
     const L = G.dist(a, b);
@@ -1344,11 +1421,14 @@
       <p class="muted" style="font-size:11px">Changing the length or angle moves P${(i + 1) % n + 1}; the rest of the part follows. Drag a slider to feel it out, or type an exact value.</p>`;
   }
   function wireEdgePanel(el, sh) {
-    if (!selEdge || selEdge.id !== sh.id) return;
+    const delAll = el.querySelector('#btnDelEdge');
+    if (delAll) delAll.onclick = () => deleteSelectedEdge();
+    const e0 = soleEdge();
+    if (!e0 || e0.id !== sh.id) return;
     const apply = (k, v, live) => {
       if (!isFinite(v)) return;
       if (!live) snapshot();
-      polyEdit(sh, k, selEdge.i, v);
+      polyEdit(sh, k, e0.i, v);
       delete sh.startPt;
       invalidateLoops();
       if (live) { updateStats(); draw(); } else refresh();
@@ -1363,8 +1443,6 @@
       });
       sl.addEventListener('change', () => { updateStats(); refreshList(); });
     });
-    const del = el.querySelector('#btnDelEdge');
-    if (del) del.onclick = () => deleteSelectedEdge();
   }
 
   // ---------- centre marks ----------
@@ -1841,6 +1919,106 @@
     LOG.action(`Spline added through ${d.pts.length} points${closed ? ' (closed)' : ''}`);
   }
 
+
+
+  /* ---------- T-junction merge ----------
+     Draw a line from the corner of a C to a point partway along one of its
+     other sides and the two are geometrically touching, but they are still two
+     separate objects and the touched side is still one long segment. Splitting
+     that segment at the contact point and merging everything into one part
+     makes the new line a numbered side of that part, selectable and deletable
+     like any other. */
+  function splitAtTouches(entries, tol) {
+    // entries: [{id, segs}] - split each segment where another path's END lands on it
+    const ends = [];
+    for (const e of entries) {
+      if (!e.segs.length) continue;
+      ends.push({ id: e.id, p: e.segs[0].a });
+      ends.push({ id: e.id, p: e.segs[e.segs.length - 1].b });
+    }
+    let splits = 0;
+    for (const e of entries) {
+      const out = [];
+      for (const sg of e.segs) {
+        // parameters along this segment where a foreign endpoint touches it
+        const ts = [];
+        for (const en of ends) {
+          if (en.id === e.id) continue;
+          const q = SNAP.nearestOnSeg(sg, en.p);
+          if (G.dist(q, en.p) > tol) continue;
+          const u = paramOn(sg, q);
+          if (u > 1e-4 && u < 1 - 1e-4) ts.push(u);
+        }
+        if (!ts.length) { out.push(sg); continue; }
+        ts.sort((a, b) => a - b);
+        let from = 0;
+        for (const u of ts) {
+          if (u - from < 1e-6) continue;
+          const piece = subSeg(sg, from, u);
+          if (piece) out.push(piece);
+          from = u;
+          splits++;
+        }
+        const tail = subSeg(sg, from, 1);
+        if (tail) out.push(tail);
+      }
+      e.segs = out;
+    }
+    return splits;
+  }
+
+  // order a bag of segments into a continuous-as-possible run
+  function orderSegs(segs, tol) {
+    if (!segs.length) return [];
+    const left = segs.slice();
+    const out = [left.shift()];
+    while (left.length) {
+      const end = out[out.length - 1].b;
+      let k = left.findIndex(sg => G.dist(sg.a, end) <= tol);
+      if (k >= 0) { out.push(left.splice(k, 1)[0]); continue; }
+      k = left.findIndex(sg => G.dist(sg.b, end) <= tol);
+      if (k >= 0) { const sg = left.splice(k, 1)[0]; out.push(G.reverseLoop([sg])[0]); continue; }
+      // nothing continues from here: start a new run from whatever is left
+      out.push(left.shift());
+    }
+    return out;
+  }
+
+  function mergeSelected(tol) {
+    const shs = selInOrder().filter(s => s.open);
+    if (shs.length < 2) return toast('Select two or more open paths to merge');
+    const entries = shs.map(sh => { let segs = []; try { segs = worldLoop(sh); } catch (e) { } return { id: sh.id, segs }; })
+      .filter(e => e.segs.length);
+    if (entries.length < 2) return toast('Those paths have no geometry to merge');
+    const splits = splitAtTouches(entries, tol);
+    const all = entries.flatMap(e => e.segs);
+    // are they actually connected? every segment must share a point with the rest
+    const pts = [];
+    const key = (q) => Math.round(q.x / tol) + '|' + Math.round(q.y / tol);
+    for (const sg of all) { pts.push(key(sg.a)); pts.push(key(sg.b)); }
+    const touching = all.filter(sg => {
+      const ka = key(sg.a), kb = key(sg.b);
+      return pts.filter(k => k === ka).length > 1 || pts.filter(k => k === kb).length > 1;
+    }).length;
+    if (!touching) return toast('Those paths do not touch — nothing to merge');
+    snapshot();
+    const ids = new Set(shs.map(x => x.id));
+    const first = shs[0];
+    job.shapes = job.shapes.filter(x => !ids.has(x.id));
+    const ordered = orderSegs(all, tol);
+    const closed = G.dist(ordered[ordered.length - 1].b, ordered[0].a) <= tol && ordered.length > 2;
+    const ns = pathShape(ordered, {
+      name: first.name, open: !closed, op: closed ? 'outside' : 'on',
+      toolId: first.toolId, climb: first.climb, group: first.group,
+    });
+    job.shapes.push(ns);
+    sel.clear(); sel.add(ns.id); clearEdge();
+    makeEditable(ns);
+    LOG.action('Merged ' + shs.length + ' paths into one part with ' + ordered.length + ' sides'
+      + (splits ? ' (' + splits + ' side(s) split where a line landed partway along)' : ''));
+    toast('Merged into one part - ' + ordered.length + ' sides' + (splits ? ', split at the junction' : ''));
+    refresh();
+  }
 
   function joinSelected(tol) {
     const shs = selInOrder().filter(s => s.open);
@@ -2477,5 +2655,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdge = { id, i }; refresh(); }, getSelEdge: () => selEdge, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, scaleShape, groupBBox };
 })();

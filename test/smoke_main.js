@@ -453,6 +453,60 @@ app.whenReady().then(async () => {
     const conv = await run(`(() => { const sh = CNC.job.shapes[0]; CNC.makeEditable(sh); return sh.kind + ':' + (sh.pts ? sh.pts.length : 0); })()`);
     ok(conv === 'poly:4', 'a path shape converts to an editable 4-point polygon', conv);
 
+    console.log('box-select picks the sides it crosses');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      CNC.job.shapes.push({id:1000,name:'sq',kind:'poly',x:0,y:0,rot:0,open:false,op:'outside',toolId:1,climb:false,
+        pts:[{x:0,y:0,r:0,arcR:0},{x:10,y:0,r:0,arcR:0},{x:10,y:10,r:0,arcR:0},{x:0,y:10,r:0,arcR:0}]});
+      CNC.refresh(); return true; })()`);
+    // sides: 0 = bottom, 1 = right, 2 = top, 3 = left
+    // drag from the TOP-LEFT corner to the centre -> should catch top and left
+    await run(`(() => { CNC.doMarquee(0, 5, 5, 10); return true; })()`);
+    const picked = JSON.parse(await run('JSON.stringify(CNC.getSelEdges())'));
+    const idxs = picked.map(e => e.i).sort();
+    ok(picked.length === 2, 'box from the top-left corner to the centre picks exactly 2 sides', JSON.stringify(idxs));
+    ok(idxs.join(',') === '2,3', 'and they are the top and left sides', idxs.join(','));
+
+    // a box wholly inside the square touches nothing
+    await run(`(() => { CNC.getSelEdges().length; return true; })()`);
+    await run(`(() => { CNC.job.shapes.forEach(s=>0); return true; })()`);
+
+    console.log('deleting several selected sides at once');
+    const delMany = await run('CNC.deleteSelectedEdge()');
+    ok(delMany === true, 'deleting two selected sides works');
+    const after = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s => CNC.worldLoop(s).length))`));
+    ok(after.reduce((a, b) => a + b, 0) === 2, 'a square minus two sides leaves 2 segments total', JSON.stringify(after));
+
+    console.log('T-junction merge (line landing partway along a side)');
+    await run(`(() => { CNC.job.shapes.length = 0;
+      // a C: square missing its bottom side. corners (0,0) (0,10) (10,10) (10,0)
+      CNC.job.shapes.push({id:1010,name:'C',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:0,y:10},{x:10,y:10},{x:10,y:0}]});
+      // a line from the C's start corner (0,0) to a point PARTWAY along the top side
+      CNC.job.shapes.push({id:1011,name:'tie',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:0,y:0},{x:4,y:10}]});
+      CNC.refresh(); return true; })()`);
+    ok((await run('CNC.job.shapes.length')) === 2, 'starts as two separate objects');
+    await run(`(() => { CNC.setSelEdge(1010, 0); return true; })()`);
+    // select both, then merge
+    const merged = await run(`(() => {
+      CNC.job.shapes.forEach(s => 0);
+      const ids = CNC.job.shapes.map(s => s.id);
+      CNC.doMarquee(-1, -1, 11, 11);   // selects both wholly
+      CNC.mergeSelected(0.125);
+      return CNC.job.shapes.length;
+    })()`);
+    ok(merged === 1, 'merge leaves a single part', String(merged));
+    const nsides = await run('CNC.worldLoop(CNC.job.shapes[0]).length');
+    ok(nsides === 5, 'the C (3 sides) plus the tie line becomes 5 sides - the top side was split at the junction', String(nsides));
+
+    // and that 5th side can be selected and deleted on its own
+    await run(`(() => { CNC.setSelEdge(CNC.job.shapes[0].id, 4); return true; })()`);
+    const before5 = await run('CNC.worldLoop(CNC.job.shapes[0]).length');
+    ok(before5 === 5, 'still 5 sides before deleting');
+    await run('CNC.deleteSelectedEdge()');
+    const totalAfter = JSON.parse(await run(`JSON.stringify(CNC.job.shapes.map(s => CNC.worldLoop(s).length))`));
+    ok(totalAfter.reduce((a, b) => a + b, 0) === 4, 'deleting one of the 5 sides leaves 4 segments', JSON.stringify(totalAfter));
+
     console.log('no errors accumulated');
     const errs2 = await run('JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error").map(e=>e.msg))');
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
