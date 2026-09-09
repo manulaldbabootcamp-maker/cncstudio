@@ -35,7 +35,7 @@
     return Object.assign(base, props);
   }
   function localLoop(sh) {
-    if (sh.kind === 'rect') return G.rectLoop(0, 0, sh.w, sh.h, sh.r || 0);
+    if (sh.kind === 'rect') return G.rectLoop(0, 0, sh.w, sh.h, sh.r || 0, sh.rc);
     if (sh.kind === 'circle') return G.circleLoop(0, 0, sh.r);
     if (sh.kind === 'poly') return sh.open ? polyOpen(sh.pts) : G.polyLoop(sh.pts);
     if (sh.kind === 'path') return sh.loop;
@@ -228,7 +228,8 @@
     const x0 = Math.min(...d.pts.map(p => p.x)), y0 = Math.min(...d.pts.map(p => p.y));
     addShape(makeShape('poly', { x: x0, y: y0, pts: d.pts.map(p => ({ x: p.x - x0, y: p.y - y0, r: 0 })), open, op: open ? 'on' : 'outside' }));
   }
-  function addShape(sh) { snapshot(); job.shapes.push(sh); sel.clear(); sel.add(sh.id); refresh(); }
+  function addShape(sh) { snapshot(); if (sh.kind === 'poly') normalizePoly(sh); job.shapes.push(sh); sel.clear(); sel.add(sh.id); setTool('select'); refresh(); }
+  function normalizePoly(sh) { if (!sh.open && sh.pts && sh.pts.length >= 3) sh.pts = G.normalizePolyPts(sh.pts); }
 
   window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -242,6 +243,13 @@
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { job.shapes.forEach(s => sel.add(s.id)); refresh(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { saveProject(); e.preventDefault(); }
     if (e.key.toLowerCase() === 'f') { fitBed(); draw(); }
+    if (sel.size && !e.ctrlKey && !e.metaKey) {
+      const focusField = (k) => { const inp = document.querySelector(`#props [data-k="${k}"]`); if (inp) { inp.focus(); inp.select(); e.preventDefault(); } };
+      if (e.key.toLowerCase() === 'x') return focusField('x');
+      if (e.key.toLowerCase() === 'y') return focusField('y');
+      if (e.key.toLowerCase() === 'a') return focusField('rot');
+      if (e.key === '[' || e.key === ']') { rotateSel((e.key === ']' ? -1 : 1) * (e.shiftKey ? 1 : 15)); e.preventDefault(); return; }
+    }
     if (e.key.toLowerCase() === 'v') setTool('select'); if (e.key.toLowerCase() === 'r') setTool('rect'); if (e.key.toLowerCase() === 'c') setTool('circle'); if (e.key.toLowerCase() === 'p') setTool('poly'); if (e.key.toLowerCase() === 'l') setTool('pline');
     if (e.key.startsWith('Arrow') && sel.size) { const st = e.shiftKey ? 1 : (snapV() || 0.125); const dx = e.key === 'ArrowRight' ? st : e.key === 'ArrowLeft' ? -st : 0, dy = e.key === 'ArrowUp' ? st : e.key === 'ArrowDown' ? -st : 0; snapshot(); for (const sh of job.shapes) if (sel.has(sh.id)) { sh.x += dx; sh.y += dy; } refresh(); e.preventDefault(); }
   });
@@ -249,6 +257,16 @@
   function setTool(t) { tool = t; $$('button.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t)); $('#stTool').textContent = t === 'select' ? '' : `Tool: ${t}`; }
   $$('button.tool').forEach(b => b.addEventListener('click', () => { drawing = null; setTool(b.dataset.tool); draw(); }));
 
+  function rotateSel(deg) {
+    if (!sel.size) return; snapshot();
+    for (const sh of job.shapes) if (sel.has(sh.id)) {
+      // rotate about the part's bounding-box centre so it stays in place
+      const bb = shapeBBox(sh); const c = { x: (bb.x0 + bb.x1) / 2, y: (bb.y0 + bb.y1) / 2 };
+      sh.rot = ((sh.rot || 0) + deg) % 360; delete sh.startPt;
+      const nb = shapeBBox(sh); sh.x += c.x - (nb.x0 + nb.x1) / 2; sh.y += c.y - (nb.y0 + nb.y1) / 2;
+    }
+    refresh();
+  }
   function deleteSel() { if (!sel.size) return; snapshot(); job.shapes = job.shapes.filter(s => !sel.has(s.id)); sel.clear(); refresh(); }
   function duplicateSel() {
     if (!sel.size) return; snapshot(); const copies = [];
@@ -279,10 +297,15 @@
     let h = `<h3>${multi ? shs.length + ' parts' : esc(sh.kind)}</h3>`;
     if (!multi) h += `<div class="row"><label>Name</label><input type="text" data-k="name" value="${esc(sh.name)}" style="flex:1"></div>`;
     h += num('x', 'X') + num('y', 'Y');
-    if (!multi && sh.kind === 'rect') h += num('w', 'Width') + num('h', 'Height') + num('r', 'Corner R', 0.0625);
+    if (!multi && sh.kind === 'rect') {
+      h += num('w', 'Width') + num('h', 'Height') + num('r', 'All corners R', 0.0625);
+      const rc = sh.rc || [null, null, null, null]; const lab = ['BL', 'BR', 'TR', 'TL'];
+      h += `<div class="row"><label>Corner R</label>` + lab.map((l, i) => `<span class="muted">${l}</span><input type="number" step="0.0625" data-rc="${i}" value="${rc[i] != null ? fmtIn(rc[i]) : ''}" placeholder="${fmtIn(sh.r || 0)}" style="width:58px">`).join('') + `</div>`;
+    }
     if (!multi && sh.kind === 'circle') h += num('r', 'Radius', 0.0625) + `<div class="row"><label>Diameter</label><input type="number" step="0.125" data-k="dia" value="${fmtIn(sh.r * 2)}"></div>`;
     if (!multi && sh.kind === 'poly' && !sh.open) h += `<div class="row"><label>All corners R</label><input type="number" step="0.0625" data-k="allr" value="${fmtIn(sh.pts[0].r || 0)}"></div>`;
-    h += num('rot', 'Rotation °', 15);
+    if (!multi && sh.kind === 'poly') h += polyTable(sh);
+    h += num('rot', 'Rotation °', 15) + `<div class="row"><label></label><button class="small" data-rot="-90">↺ 90</button><button class="small" data-rot="90">↻ 90</button><button class="small" data-rot="-15">↺ 15</button><button class="small" data-rot="15">↻ 15</button></div>`;
     const bb = shapeBBox(sh);
     if (!multi) h += `<div class="row muted">Size ${fmtIn(bb.w)} × ${fmtIn(bb.h)}</div>`;
     h += `<h3>Cut</h3><div class="row"><label>Operation</label><select data-k="op">${['outside', 'inside', 'on', 'none'].map(o => `<option ${sh.op === o ? 'selected' : ''} ${o !== 'on' && o !== 'none' && sh.open ? 'disabled' : ''}>${o}</option>`).join('')}</select></div>`;
@@ -290,7 +313,12 @@
     h += `<div class="row"><label>Climb</label><input type="checkbox" data-k="climb" ${sh.climb ? 'checked' : ''}> <span class="muted">reverse direction</span></div>`;
     if (!multi) h += `<div class="row"><button class="small" id="btnSetStart">Set start point</button><button class="small" id="btnClearStart">Auto start</button></div>`;
     h += `<div class="row"><button class="small" id="btnMirror">Mirror</button><button class="small" id="btnToOrigin">To 0,0</button></div>`;
+    h += `<p class="muted" style="font-size:11px">Keys: <span class="kbd">X</span> <span class="kbd">Y</span> <span class="kbd">A</span> jump to X / Y / angle · <span class="kbd">[</span> <span class="kbd">]</span> rotate 15° (Shift = 1°) · arrows nudge</p>`;
     el.innerHTML = h;
+    el.querySelectorAll('[data-rot]').forEach(b => b.onclick = () => rotateSel(parseFloat(b.dataset.rot)));
+    el.querySelectorAll('[data-rc]').forEach(inp => inp.addEventListener('change', () => { snapshot(); sh.rc = sh.rc || [null, null, null, null]; sh.rc[+inp.dataset.rc] = inp.value === '' ? null : parseFloat(inp.value); delete sh.startPt; refresh(); }));
+    el.querySelectorAll('[data-pv]').forEach(inp => inp.addEventListener('change', () => { snapshot(); polyEdit(sh, inp.dataset.pv, +inp.dataset.i, parseFloat(inp.value)); delete sh.startPt; refresh(); }));
+    const pb = $('#btnPolyBuild'); if (pb) pb.onclick = () => openPolyBuilder(sh);
     el.querySelectorAll('[data-k]').forEach(inp => {
       inp.addEventListener('change', () => {
         snapshot();
@@ -308,6 +336,78 @@
     $('#btnMirror').onclick = () => { snapshot(); for (const s of shs) { const bb = shapeBBox(s); const cx = (bb.x0 + bb.x1) / 2; if (s.kind === 'rect' || s.kind === 'circle') { /* symmetric */ } else if (s.kind === 'poly') { const w = Math.max(...s.pts.map(p => p.x)); s.pts = s.pts.map(p => ({ ...p, x: w - p.x })); } else if (s.kind === 'path') { const l = G.mirrorLoopX(s.loop, 0); const b2 = G.bbox(l); s.loop = G.translateLoop(l, -b2.x0, 0); } delete s.startPt; } refresh(); };
     $('#btnToOrigin').onclick = () => { snapshot(); for (const s of shs) { const bb = shapeBBox(s); s.x -= bb.x0 - S.nest.margin; s.y -= bb.y0 - S.nest.margin; } refresh(); };
   }
+
+  // ---------- polygon dimension editing ----------
+  const deg = (r) => r * 180 / Math.PI, rad = (d) => d * Math.PI / 180;
+  function polyTable(sh) {
+    const pts = sh.pts, n = pts.length; const closed = !sh.open;
+    let h = `<h3>Points &amp; edges <span class="muted">(from part origin)</span></h3><div style="overflow:auto;max-height:320px"><table style="font-size:11px"><thead><tr><th>#</th><th>X</th><th>Y</th><th>Fillet R</th><th>Angle</th></tr><tr><th></th><th>edge len</th><th>dir °</th><th>arc R</th><th></th></tr></thead><tbody>`;
+    for (let i = 0; i < n; i++) {
+      const p = pts[i], q = pts[(i + 1) % n];
+      let ia = '';
+      if (closed || (i > 0 && i < n - 1)) { const a = pts[(i - 1 + n) % n]; const d1 = G.norm(G.sub(a, p)), d2 = G.norm(G.sub(q, p)); const ang = deg(Math.acos(Math.max(-1, Math.min(1, G.dot(d1, d2))))); const cr = G.cross(d1, d2); ia = (cr < 0 ? ang : 360 - ang).toFixed(1) + '°'; }
+      h += `<tr><td>P${i + 1}</td><td><input type="number" step="0.125" data-pv="x" data-i="${i}" value="${fmtIn(p.x)}"></td><td><input type="number" step="0.125" data-pv="y" data-i="${i}" value="${fmtIn(p.y)}"></td><td>${closed ? `<input type="number" step="0.0625" data-pv="r" data-i="${i}" value="${fmtIn(p.r || 0)}">` : ''}</td><td class="muted">${ia}</td></tr>`;
+      if (closed || i < n - 1) { const L = G.dist(p, q), A = deg(Math.atan2(q.y - p.y, q.x - p.x)); h += `<tr style="color:var(--muted)"><td>→P${(i + 1) % n + 1}</td><td><input type="number" step="0.125" data-pv="len" data-i="${i}" value="${fmtIn(L)}"></td><td><input type="number" step="1" data-pv="ang" data-i="${i}" value="${(+A.toFixed(2))}"></td><td><input type="number" step="0.125" data-pv="arcR" data-i="${i}" value="${p.arcR ? fmtIn(p.arcR) : ''}" placeholder="0"></td><td></td></tr>`; }
+    }
+    h += `</tbody></table></div><div class="row"><button class="small" id="btnPolyBuild">Edit by lengths &amp; angles…</button></div><p class="muted" style="font-size:11px">Edge dir: 0° = right, 90° = up. Arc R: + bulges out, − bulges in. Angle column = inside angle at the point.</p>`;
+    return h;
+  }
+  function polyEdit(sh, k, i, v) {
+    const pts = sh.pts, n = pts.length; const p = pts[i], q = pts[(i + 1) % n];
+    if (k === 'x') p.x = v; else if (k === 'y') p.y = v; else if (k === 'r') p.r = Math.max(0, v || 0); else if (k === 'arcR') p.arcR = isNaN(v) ? 0 : v;
+    else if (k === 'len' || k === 'ang') { const L = k === 'len' ? v : G.dist(p, q); const A = k === 'ang' ? rad(v) : Math.atan2(q.y - p.y, q.x - p.x); q.x = p.x + L * Math.cos(A); q.y = p.y + L * Math.sin(A); }
+    // keep local origin at the min corner
+    const x0 = Math.min(...pts.map(t => t.x)), y0 = Math.min(...pts.map(t => t.y));
+    if (Math.abs(x0) > 1e-9 || Math.abs(y0) > 1e-9) { pts.forEach(t => { t.x -= x0; t.y -= y0; }); const c = Math.cos(rad(sh.rot || 0)), sn = Math.sin(rad(sh.rot || 0)); sh.x += x0 * c - y0 * sn; sh.y += x0 * sn + y0 * c; }
+    if (!sh.open) normalizePoly(sh);
+  }
+  // builder: successive edges by length + direction (or turn angle); the last edge closes the shape automatically
+  function openPolyBuilder(existing) {
+    const ov = document.createElement('div'); ov.className = 'overlay';
+    let rows = [];
+    if (existing) { const pts = existing.pts, n = pts.length; for (let i = 0; i < (existing.open ? n - 1 : n - 1); i++) { const p = pts[i], q = pts[i + 1]; rows.push({ len: +G.dist(p, q).toFixed(4), ang: +deg(Math.atan2(q.y - p.y, q.x - p.x)).toFixed(3) }); } }
+    if (!rows.length) rows = [{ len: 10, ang: 0 }, { len: 6, ang: 90 }, { len: 10, ang: 180 }];
+    ov.innerHTML = `<div class="dialog"><h3>${existing ? 'Edit' : 'New'} polygon by lengths &amp; angles</h3>
+      <p class="muted">Enter each side in order, starting from the bottom-left point going right. Direction: 0° = right, 90° = up, 180° = left, 270° = down (absolute). Or tick "turn" to enter the turn angle from the previous side (left = +). The final side back to the start is closed automatically and shown below.</p>
+      <div class="row"><label><input type="checkbox" id="pbTurn"> Angles are turns</label><label><input type="checkbox" id="pbOpen" ${existing && existing.open ? 'checked' : ''}> Open path (no auto-close)</label></div>
+      <table><thead><tr><th>#</th><th>Length</th><th>Angle °</th><th></th></tr></thead><tbody id="pbRows"></tbody></table>
+      <div class="row"><button class="small" id="pbAdd">+ Add side</button><span id="pbClose" class="muted"></span></div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="pbOk">${existing ? 'Apply' : 'Create part'}</button><button id="pbCancel">Cancel</button></div></div>`;
+    document.body.appendChild(ov);
+    const render = () => {
+      const tb = ov.querySelector('#pbRows'); tb.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td><input type="number" step="0.125" data-f="len" data-i="${i}" value="${r.len}"></td><td><input type="number" step="1" data-f="ang" data-i="${i}" value="${r.ang}"></td><td><button class="small" data-del="${i}">✕</button></td></tr>`).join('');
+      tb.querySelectorAll('input').forEach(inp => inp.addEventListener('change', () => { rows[+inp.dataset.i][inp.dataset.f] = parseFloat(inp.value) || 0; update(); }));
+      tb.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { rows.splice(+b.dataset.del, 1); render(); update(); });
+      update();
+    };
+    const compute = () => {
+      const turn = ov.querySelector('#pbTurn').checked; const pts = [{ x: 0, y: 0 }]; let a = 0;
+      for (const r of rows) { a = turn ? a + r.ang : r.ang; const p = pts[pts.length - 1]; pts.push({ x: p.x + r.len * Math.cos(rad(a)), y: p.y + r.len * Math.sin(rad(a)) }); }
+      return pts;
+    };
+    const update = () => {
+      const pts = compute(); const last = pts[pts.length - 1]; const L = G.dist(last, pts[0]); const A = deg(Math.atan2(-last.y, -last.x));
+      ov.querySelector('#pbClose').textContent = ov.querySelector('#pbOpen').checked ? '' : (L < 1e-6 ? 'Shape closes exactly.' : `Closing side: ${fmtIn(L)} long at ${(+A.toFixed(2))}°`);
+    };
+    ov.querySelector('#pbTurn').onchange = () => { // convert between absolute and turn representations
+      const turn = ov.querySelector('#pbTurn').checked; let prev = 0; rows = rows.map(r => { const out = { ...r }; if (turn) { out.ang = +(r.ang - prev).toFixed(3); prev = r.ang; } else { prev += r.ang; out.ang = +prev.toFixed(3); } return out; }); render(); };
+    ov.querySelector('#pbOpen').onchange = update;
+    ov.querySelector('#pbAdd').onclick = () => { rows.push({ len: 6, ang: 0 }); render(); };
+    ov.querySelector('#pbCancel').onclick = () => ov.remove();
+    ov.querySelector('#pbOk').onclick = () => {
+      let pts = compute(); const open = ov.querySelector('#pbOpen').checked;
+      if (!open && G.dist(pts[pts.length - 1], pts[0]) < 1e-6) pts.pop();
+      if (pts.length < (open ? 2 : 3)) return toast('Need more sides');
+      const x0 = Math.min(...pts.map(p => p.x)), y0 = Math.min(...pts.map(p => p.y));
+      const local = pts.map((p, i) => ({ x: p.x - x0, y: p.y - y0, r: existing?.pts?.[i]?.r || 0, arcR: existing?.pts?.[i]?.arcR || 0 }));
+      snapshot();
+      if (existing) { existing.pts = local; existing.open = open; if (open) existing.op = 'on'; delete existing.startPt; normalizePoly(existing); }
+      else { const sh = makeShape('poly', { x: S.nest.margin, y: S.nest.margin, pts: local, open, op: open ? 'on' : 'outside' }); job.shapes.push(sh); sel.clear(); sel.add(sh.id); }
+      ov.remove(); refresh();
+    };
+    render();
+  }
+  $('#btnPolyDims').onclick = () => openPolyBuilder(null);
 
   // ---------- job stats / gcode ----------
   function buildJob() {
@@ -554,5 +654,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
 
   // ---------- init ----------
   syncMaterialUI(); resize(); refresh();
-  window.CNC = { get job() { return job; }, S, G, PO, NE, worldLoop, importDXF, refresh };
+  window.CNC = { get job() { return job; }, S, G, PO, NE, worldLoop, importDXF, refresh, W2S, S2W };
 })();

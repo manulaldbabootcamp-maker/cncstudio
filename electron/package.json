@@ -4,7 +4,10 @@
   "description": "2D CAD/CAM for WinCNC — EnRoute replacement",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "node ../build.js && electron .",
+    "dev": "node ../build.js && electron .",
+    "bundle": "node ../build.js",
+    "test": "node ../test/verify.js",
     "build": "node ../build.js && electron-builder --win portable"
   },
   "devDependencies": {
@@ -14,7 +17,12 @@
   "build": {
     "appId": "com.manav.cncstudio",
     "productName": "CNC Studio",
-    "files": ["main.js", "app/**"],
-    "win": { "target": "portable" }
+    "files": [
+      "main.js",
+      "app/**"
+    ],
+    "win": {
+      "target": "portable"
+    }
   }
 }

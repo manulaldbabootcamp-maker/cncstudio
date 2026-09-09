@@ -1,5 +1,13 @@
 node_modules/
+
+# Generated. `npm start` / `npm run bundle` rebuilds it from src/.
+# Tracking it is what let the shipped app drift ahead of src/.
+electron/app/CNCStudio.html
+dist/
 electron/dist/
+
+# test scratch output
 test/parts.json
 test/regen.tap
+
 *.log

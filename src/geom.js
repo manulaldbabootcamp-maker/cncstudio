@@ -80,32 +80,50 @@ const GEOM = (() => {
   }
 
   // ---- shape builders (all loops returned CCW)
-  function polyLoop(pts) { // pts: [{x,y,r?}] with optional fillet radius r at vertex
+  // pts: [{x,y,r?,arcR?}] — r = fillet radius at the vertex, arcR = arc radius of the edge leaving this vertex
+  // (arcR>0 bulges outward from the part, <0 bulges inward). Loop is returned CCW.
+  function normalizePolyPts(pts) {
+    const n = pts.length; let area = 0;
+    for (let i = 0; i < n; i++) { const p = pts[i], q = pts[(i + 1) % n]; area += p.x * q.y - q.x * p.y; }
+    if (area >= 0) return pts.map(p => ({ ...p }));
+    const out = [];
+    for (let j = 0; j < n; j++) { const o = pts[n - 1 - j]; const prevOld = pts[(n - 2 - j + n) % n]; out.push({ x: o.x, y: o.y, r: o.r || 0, arcR: prevOld.arcR || 0 }); }
+    return out;
+  }
+  function polyLoop(pts) {
     const n = pts.length; if (n < 3) return [];
-    let base = pts.map(p => P(p.x, p.y));
-    let area = 0; for (let i = 0; i < n; i++) { const p = base[i], q = base[(i + 1) % n]; area += p.x * q.y - q.x * p.y; }
-    let order = pts.slice(); if (area < 0) order = order.slice().reverse();
+    const order = normalizePolyPts(pts);
+    const isArc = (i) => Math.abs(order[i].arcR || 0) > EPS;
     const segs = []; const corner = [];
     for (let i = 0; i < n; i++) {
       const prev = order[(i - 1 + n) % n], cur = order[i], next = order[(i + 1) % n];
       const r = cur.r || 0;
-      if (r <= EPS) { corner.push({ in: P(cur.x, cur.y), out: P(cur.x, cur.y) }); continue; }
+      if (r <= EPS || isArc(i) || isArc((i - 1 + n) % n)) { corner.push({ in: P(cur.x, cur.y), out: P(cur.x, cur.y) }); continue; }
       const d1 = norm(sub(P(prev.x, prev.y), P(cur.x, cur.y))), d2 = norm(sub(P(next.x, next.y), P(cur.x, cur.y)));
       const ang = Math.acos(Math.max(-1, Math.min(1, dot(d1, d2))));
-      const t = r / Math.tan(ang / 2);
+      if (ang < 1e-6 || Math.abs(ang - Math.PI) < 1e-6) { corner.push({ in: P(cur.x, cur.y), out: P(cur.x, cur.y) }); continue; }
+      const t = Math.min(r / Math.tan(ang / 2), dist(P(prev.x, prev.y), P(cur.x, cur.y)) / 2, dist(P(next.x, next.y), P(cur.x, cur.y)) / 2);
+      const rr = t * Math.tan(ang / 2);
       const pin = add(P(cur.x, cur.y), mul(d1, t)), pout = add(P(cur.x, cur.y), mul(d2, t));
-      const bis = norm(add(d1, d2)); const c = add(P(cur.x, cur.y), mul(bis, r / Math.sin(ang / 2)));
-      const ccw = cross(d1, d2) < 0; // turning left (ccw loop convex corner) -> arc ccw
+      const bis = norm(add(d1, d2)); const c = add(P(cur.x, cur.y), mul(bis, rr / Math.sin(ang / 2)));
+      const ccw = cross(d1, d2) < 0;
       corner.push({ in: pin, out: pout, arc: arc(pin, pout, c, ccw) });
     }
     for (let i = 0; i < n; i++) {
       const c = corner[i], nx = corner[(i + 1) % n];
       if (c.arc) segs.push(c.arc);
-      if (dist(c.out, nx.in) > EPS) segs.push(line(c.out, nx.in));
+      const a = c.out, b = nx.in; const chord = dist(a, b);
+      if (chord <= EPS) continue;
+      if (isArc(i)) {
+        let R = Math.abs(order[i].arcR); if (R < chord / 2) R = chord / 2;
+        const theta = 2 * Math.asin(Math.min(1, chord / (2 * R)));
+        const mag = Math.tan(theta / 4);
+        segs.push(bulgeArc(a, b, order[i].arcR > 0 ? mag : -mag));
+      } else segs.push(line(a, b));
     }
     return segs;
   }
-  function rectLoop(x, y, w, h, r = 0) { return polyLoop([{ x, y, r }, { x: x + w, y, r }, { x: x + w, y: y + h, r }, { x, y: y + h, r }]); }
+  function rectLoop(x, y, w, h, r = 0, rc) { const R = (i) => (rc && rc[i] != null ? rc[i] : r); return polyLoop([{ x, y, r: R(0) }, { x: x + w, y, r: R(1) }, { x: x + w, y: y + h, r: R(2) }, { x, y: y + h, r: R(3) }]); }
   function circleLoop(cx, cy, r) {
     const c = P(cx, cy);
     return [arc(P(cx + r, cy), P(cx - r, cy), c, true), arc(P(cx - r, cy), P(cx + r, cy), c, true)];
@@ -360,6 +378,6 @@ const GEOM = (() => {
     return o;
   }
 
-  return { EPS, P, add, sub, mul, dot, cross, len, dist, norm, rot, same, line, arc, radius, sweep, tangentAt, segLen, pointAt, samplePts, loopPts, signedArea, reverseLoop, bbox, transformLoop, translateLoop, rotateLoop, mirrorLoopX, pointInLoop, polyLoop, rectLoop, circleLoop, offsetLoop, splitArcs, startLoopAt, longestLineIndex, midOfSeg, parseDXF, writeDXF, bulgeArc, arcBulge, chainOpen };
+  return { EPS, P, add, sub, mul, dot, cross, len, dist, norm, rot, same, line, arc, radius, sweep, tangentAt, segLen, pointAt, samplePts, loopPts, signedArea, reverseLoop, bbox, transformLoop, translateLoop, rotateLoop, mirrorLoopX, pointInLoop, polyLoop, normalizePolyPts, rectLoop, circleLoop, offsetLoop, splitArcs, startLoopAt, longestLineIndex, midOfSeg, parseDXF, writeDXF, bulgeArc, arcBulge, chainOpen };
 })();
 if (typeof module !== 'undefined') module.exports = GEOM;

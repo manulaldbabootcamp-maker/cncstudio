@@ -8,7 +8,7 @@
   :root { --bg:#1e2126; --panel:#262a31; --panel2:#2d323a; --border:#3a404a; --text:#e6e8eb; --muted:#9aa3ad; --accent:#4da3ff; --ok:#41c77a; --warn:#ffb84d; --err:#ff5c5c; }
   * { box-sizing: border-box; }
   html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font: 13px/1.4 system-ui, Segoe UI, Roboto, sans-serif; overflow:hidden; }
-  #app { display:grid; grid-template-rows: 40px 1fr 26px; grid-template-columns: 220px 1fr 280px; height:100vh; }
+  #app { display:grid; grid-template-rows: 40px 1fr 26px; grid-template-columns: 220px 1fr 340px; height:100vh; }
   header { grid-column: 1 / -1; display:flex; align-items:center; gap:6px; padding:0 8px; background:var(--panel); border-bottom:1px solid var(--border); }
   header .brand { font-weight:700; margin-right:8px; color:var(--accent); }
   header .tabs { display:flex; gap:2px; margin-left:auto; }
@@ -41,6 +41,7 @@
   th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--border); }
   td input { width:100%; }
   td input[type=number] { width:80px; }
+  #props td input[type=number] { width:62px; padding:2px 4px; }
   textarea { width:100%; min-height:70px; font: 12px ui-monospace, Consolas, monospace; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:14px; max-width:980px; }
   .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
@@ -51,6 +52,9 @@
   .toast { position:absolute; left:50%; bottom:40px; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--border); padding:8px 14px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
   .toast.show { opacity:1; }
   .warnbox { color:var(--warn); }
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:50; }
+  .dialog { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px 18px; width:560px; max-height:85vh; overflow:auto; }
+  .dialog td input { width:110px; }
   pre.gcode { max-height:300px; overflow:auto; background:#111318; padding:8px; border-radius:6px; font-size:11px; }
 </style>
 </head>
@@ -67,6 +71,7 @@
     <button class="tool" data-tool="circle" title="Circle (C)">Circle</button>
     <button class="tool" data-tool="poly" title="Polygon (P) — click points, Enter/double-click to close">Polygon</button>
     <button class="tool" data-tool="pline" title="Open polyline for on-line cuts (L)">Line</button>
+    <button id="btnPolyDims" title="New polygon from side lengths and angles">Dims…</button>
     <span style="width:8px"></span>
     <button id="btnNest" title="Auto-arrange all parts from bottom-left">Nest</button>
     <button id="btnDxf" title="Export DXF">DXF ↓</button>

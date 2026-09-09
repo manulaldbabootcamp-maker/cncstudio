@@ -59,3 +59,18 @@ for (const A of ba) {
 }
 console.log(`matched ${matched}/${ba.length} pass-blocks, max coordinate deviation ${maxDev}`);
 console.log('header/footer identical:', src.split('\r\n\r\n')[0] === out.gcode.split('\r\n\r\n')[0] && src.split('\r\n\r\n').pop() === out.gcode.split('\r\n\r\n').pop());
+
+// ---- pass/fail gate ------------------------------------------------------
+// The regression signal is NOT byte-identity: our nearest-neighbour path
+// ordering legitimately differs from EnRoute's, so line-by-line diffs are
+// expected. What must hold is that every pass-block round-trips to the same
+// geometry, and that the header/footer are byte-exact for the machine.
+const headFootOk = src.split('\r\n\r\n')[0] === out.gcode.split('\r\n\r\n')[0]
+  && src.split('\r\n\r\n').pop() === out.gcode.split('\r\n\r\n').pop();
+const fails = [];
+if (matched !== ba.length) fails.push(`only ${matched}/${ba.length} pass-blocks matched`);
+if (maxDev > 3e-4) fails.push(`max coordinate deviation ${maxDev} exceeds 3e-4`);
+if (!headFootOk) fails.push('header/footer no longer byte-identical to the reference TAP');
+if (bb.length !== ba.length) fails.push(`block count changed: ${ba.length} -> ${bb.length}`);
+if (fails.length) { console.error('\nFAIL:\n  - ' + fails.join('\n  - ')); process.exit(1); }
+console.log('\nPASS: TAP output matches Sides_manav.tap reference.');

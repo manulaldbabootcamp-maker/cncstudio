@@ -4,26 +4,35 @@
 Draws parts, offsets toolpaths for the tool diameter, simulates the cut (kerf shown as removed material),
 imports/exports DXF, and writes WinCNC `.TAP` files in the exact EnRoute format.
 
-## Run it (two options)
+## Run it
 
-**A. Just open the file** — `CNCStudio.html` runs in Chrome/Edge directly (double-click it).
-Everything works, including the Claude API. Exports go to your Downloads folder.
-
-**B. Windows desktop app (Electron)** — gives a real "Save As" dialog for TAP/DXF.
+One-time setup: install [Node.js](https://nodejs.org), then:
 ```
 cd electron
 npm install
-npm start          # run
-npm run build      # makes a portable CNC Studio.exe in electron/dist
+```
+
+After that, the whole loop is:
+```
+git pull
+cd electron && npm start
+```
+`npm start` rebuilds the bundle from `src/` and launches the app, so there is no
+separate build step to forget. `npm run build` makes a portable `CNC Studio.exe`
+in `electron/dist`.
+
+Run the regression test before/after changes (exits non-zero on failure):
+```
+cd electron && npm test
 ```
 
 ## Files
-- `dist/CNCStudio.html` — the whole app in one file (built from `src/` with `node build.js`)
+- `electron/app/CNCStudio.html` — GENERATED bundle (`node build.js`). Do not edit by hand; it is gitignored and rebuilt on every `npm start`.
 - `src/geom.js` — geometry: lines/arcs, tool offsetting, DXF read/write
 - `src/post.js` — toolpaths + WinCNC TAP post-processor
 - `src/nest.js` — bottom-left nesting
 - `src/app.js`, `src/index.html` — UI
-- `test/verify.js` — regenerates `Sides_manav.tap` from its own geometry and compares (run `node test/verify.js`)
+- `test/verify.js` — regenerates `Sides_manav.tap` from its own geometry and compares; the gate is 61/61 pass-blocks within 3e-4 and a byte-exact header/footer, not line-by-line identity (path ordering differs from EnRoute by design)
 - `test/sides_full.dxf` — the 30 parts from your sample job as DXF (Open… it in the app, then Export TAP)
 
 ## Machine defaults (Settings page)
