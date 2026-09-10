@@ -85,18 +85,75 @@ const POST = (() => {
     return out;
   }
 
+  /* Does this offset toolpath cross itself? An inward offset of a concave
+     outline past its local width folds the path over, and the fold cuts
+     straight through material that should have been left. Bounded to small
+     paths: the check is O(n^2) and the shapes it protects (holes, slots,
+     pockets, brackets) have few segments, while a traced outline with hundreds
+     is both expensive and unlikely to be offset that far. */
+  function selfIntersects(path, limit = 48) {
+    const n = path.length;
+    if (n < 4 || n > limit) return false;
+    const pts = path.map(sg => G.samplePts(sg, Math.max(0.02, G.segLen(sg) / 8)));
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 2; j < n; j++) {
+        if (i === 0 && j === n - 1) continue;          // ends meet by design
+        const A = pts[i], B = pts[j];
+        for (let a = 0; a + 1 < A.length; a++) {
+          for (let b = 0; b + 1 < B.length; b++) {
+            const p1 = A[a], p2 = A[a + 1], q1 = B[b], q2 = B[b + 1];
+            const d1x = p2.x - p1.x, d1y = p2.y - p1.y, d2x = q2.x - q1.x, d2y = q2.y - q1.y;
+            const den = d1x * d2y - d1y * d2x;
+            if (Math.abs(den) < 1e-12) continue;
+            const t = ((q1.x - p1.x) * d2y - (q1.y - p1.y) * d2x) / den;
+            const u = ((q1.x - p1.x) * d1y - (q1.y - p1.y) * d1x) / den;
+            if (t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6) return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   // ---- toolpath from a shape
-  // shape: {loop:[segs], open?:bool, op:'outside'|'inside'|'on', tool, startHint?}
+  /* shape: {loop:[segs], open?:bool, op:'outside'|'inside'|'on', tool, startHint?}
+     opts.onIssue(msg) is called when a shape cannot be cut as asked. Returning
+     an empty path silently is the dangerous outcome: the operator runs the job
+     and finds a missing hole, or a slot cut to the wrong width, only after the
+     material is gone. */
   function buildToolpathLoop(shape, tool, opts = {}) {
+    const issue = (msg) => { if (opts.onIssue) opts.onIssue(msg); return []; };
     let loop = shape.loop;
     if (shape.open) return loop; // engrave along open path, no offset
     if (G.signedArea(loop) < 0) loop = G.reverseLoop(loop);
     const r = tool.dia / 2;
+
+    /* An inside cut removes material from within the outline, so the feature
+       has to be wider than the cutter in BOTH directions. A 0.20 slot asked of
+       a 0.25 cutter used to emit a path anyway - a collapsed sliver that would
+       cut the slot to the tool's width instead of the drawing's. */
+    if (shape.op === 'inside') {
+      const b = G.bbox(loop);
+      if (b.w <= tool.dia + 1e-9 || b.h <= tool.dia + 1e-9) {
+        return issue(`is ${fmt(b.w, 4)} x ${fmt(b.h, 4)} in, too small to cut inside with a ${tool.dia}" tool`);
+      }
+    }
+
     let path;
     if (shape.op === 'inside') path = G.offsetLoop(loop, -r);
     else if (shape.op === 'outside') path = G.offsetLoop(loop, r);
     else path = loop.map(s => ({ ...s }));
-    if (!path.length) return [];
+    if (!path.length) return issue(`is too small for a ${tool.dia}" tool at this cut setting`);
+
+    if (shape.op !== 'on') {
+      // an offset that turns the outline inside out would cut in the wrong place
+      if (G.signedArea(path) * G.signedArea(loop) <= 0) {
+        return issue(`turns inside out when offset for a ${tool.dia}" tool - the feature is narrower than the cutter`);
+      }
+      if (selfIntersects(path)) {
+        return issue(`folds over on itself when offset for a ${tool.dia}" tool - a narrow part of it is smaller than the cutter`);
+      }
+    }
     // direction: default CCW for outside (matches EnRoute sample), CW (climb) for inside
     const wantCCW = shape.op === 'inside' ? !!opts.climb : !opts.climb;
     // outside default: CCW (conventional). climb flips.
@@ -173,7 +230,13 @@ const POST = (() => {
     // group by tool in slot order of first use (or explicit order)
     const byTool = new Map();
     for (const sh of job.shapes) { if (!byTool.has(sh.toolId)) byTool.set(sh.toolId, []); byTool.get(sh.toolId).push(sh); }
-    const stats = { length: 0, rapid: 0, timeMin: 0, passes: 0, tools: [] };
+    const stats = { length: 0, rapid: 0, timeMin: 0, passes: 0, tools: [], issues: [] };
+
+    /* Depth sanity. These do not change what is cut - the operator may mean it -
+       but they must not pass unremarked. */
+    if (job.cutThrough > job.material.thickness) {
+      stats.issues.push(`Cut-through ${fmt(job.cutThrough, 4)} in is deeper than the ${fmt(job.material.thickness, 4)} in material - the tool will go ${fmt(job.cutThrough - job.material.thickness, 4)} in into the bed`);
+    }
     let pos = { x: null, y: null, z: null };
     for (const [toolId, shapes] of byTool) {
       const tool = job.tools.find(t => t.id === toolId) || job.tools[0];
@@ -181,7 +244,16 @@ const POST = (() => {
       pushBlock(tpl(m.toolChange, { toolName: tool.name, slot: String(tool.slot).padStart(2, '0'), rpm: tool.rpm }));
       pos = { x: null, y: null, z: pos.z };
       // toolpaths
-      let paths = shapes.map(sh => ({ shape: sh, path: buildToolpathLoop(sh, tool, { climb: sh.climb }) })).filter(p => p.path.length);
+      if (!(tool.passDepth > 0)) {
+        stats.issues.push(`Tool "${tool.name}" has a pass depth of ${tool.passDepth} - everything on it will be cut in one full-depth pass`);
+      }
+      let paths = shapes.map(sh => ({
+        shape: sh,
+        path: buildToolpathLoop(sh, tool, {
+          climb: sh.climb,
+          onIssue: (msg) => stats.issues.push(`"${sh.name || 'a part'}" ${msg} - it will not be cut`),
+        }),
+      })).filter(p => p.path.length);
       paths = orderPaths(paths);
       const depths = passDepths(job.material.thickness, tool.passDepth, job.cutThrough || 0);
       let first = true;
@@ -281,6 +353,6 @@ const POST = (() => {
     return moves;
   }
 
-  return { DEFAULT_MACHINE, ENROUTE_CURRENT, DEFAULT_TOOLS, leadInSegs, formatStamp, DEFAULT_MATERIALS, fmt, rnd, passDepths, buildToolpathLoop, orderPaths, generate, parseGcode };
+  return { DEFAULT_MACHINE, ENROUTE_CURRENT, DEFAULT_TOOLS, leadInSegs, formatStamp, selfIntersects, DEFAULT_MATERIALS, fmt, rnd, passDepths, buildToolpathLoop, orderPaths, generate, parseGcode };
 })();
 if (typeof module !== 'undefined') module.exports = POST;

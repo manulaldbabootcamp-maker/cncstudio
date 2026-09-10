@@ -15,3 +15,6 @@ test/regen.tap
 # operator-supplied reference material (kept out of the repo)
 electron/email attachments/
 Screenshot*.png
+
+# scenario screenshots + report (npm run scenarios)
+test/shots/

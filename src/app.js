@@ -3144,6 +3144,7 @@
   function machineForPost() { const m = { ...S.machine }; m.lineEnding = S.machine.eol === 'lf' ? '\n' : '\r\n'; return m; }
   let lastGcode = null;
   let lastStats = null;   // last post stats, quoted in the PDF title block
+  const warnedIssues = new Set();   // toolpath problems already logged, so a redraw does not repeat them
   function updateStats() {
     const el = $('#jobStats');
     const m = S.machine; const bad = job.shapes.filter(s => { const bb = shapeBBox(s); return bb.x0 < -1e-6 || bb.y0 < -1e-6 || bb.x1 > m.bedW + 1e-6 || bb.y1 > m.bedH + 1e-6; });
@@ -3151,7 +3152,15 @@
     try {
       const out = PO.generate(buildJob()); lastGcode = out.gcode;
       const st = out.stats; lastStats = st;
-      el.innerHTML = `${job.shapes.length} parts · ${st.passes} passes · ${st.tools.map(esc).join(', ')}<br>Cut length ${st.length.toFixed(1)} in · est. ${st.timeMin.toFixed(1)} min<br>Material ${esc(job.material.name)} (${job.material.thickness}")` + (bad.length ? `<br><span class="warnbox">⚠ ${bad.length} part(s) outside the bed</span>` : '');
+      /* Anything the post could not cut as drawn is shown here rather than left
+         to be discovered in the material. Logged once per distinct message so a
+         redraw does not flood the activity log. */
+      const issues = st.issues || [];
+      for (const msg of issues) if (!warnedIssues.has(msg)) { warnedIssues.add(msg); LOG.warn('Toolpath: ' + msg); }
+      for (const msg of Array.from(warnedIssues)) if (!issues.includes(msg)) warnedIssues.delete(msg);
+      el.innerHTML = `${job.shapes.length} parts · ${st.passes} passes · ${st.tools.map(esc).join(', ')}<br>Cut length ${st.length.toFixed(1)} in · est. ${st.timeMin.toFixed(1)} min<br>Material ${esc(job.material.name)} (${job.material.thickness}")`
+        + (bad.length ? `<br><span class="warnbox">⚠ ${bad.length} part(s) outside the bed</span>` : '')
+        + (issues.length ? `<br><span class="warnbox">⚠ ${issues.map(esc).join('<br>⚠ ')}</span>` : '');
     } catch (e) { el.innerHTML = `<span class="warnbox">Toolpath error: ${esc(e.message)}</span>`; console.error(e); }
   }
 

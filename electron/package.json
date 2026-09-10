@@ -7,9 +7,10 @@
     "start": "node ../build.js && electron .",
     "dev": "node ../build.js && electron .",
     "bundle": "node ../build.js",
-    "test": "node ../test/verify.js && node ../test/enroute_test.js && node ../test/snap_test.js && node ../test/bool_test.js && node ../test/font_test.js && node ../test/pdf_test.js",
+    "test": "node ../test/verify.js && node ../test/enroute_test.js && node ../test/post_test.js && node ../test/snap_test.js && node ../test/bool_test.js && node ../test/font_test.js && node ../test/pdf_test.js",
     "build": "node ../build.js && electron-builder --win portable",
-    "smoke": "node ../build.js && electron ../test/smoke_main.js"
+    "smoke": "node ../build.js && electron ../test/smoke_main.js",
+    "scenarios": "node ../build.js && electron ../test/scenarios_main.js"
   },
   "devDependencies": {
     "electron": "^33.0.0",
