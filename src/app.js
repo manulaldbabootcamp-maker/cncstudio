@@ -221,12 +221,28 @@
     ctx.fillStyle = '#ff5c5c'; ctx.beginPath(); ctx.arc(bl.x, bl.y, 4 * dpr, 0, Math.PI * 2); ctx.fill();
     // shapes
     const showPaths = $('#chkPaths').checked, showKerf = $('#chkKerf').checked;
+    // world loops once per frame; the hole pairing needs them all up front
+    const loops = new Map();
+    for (const sh of job.shapes) { try { loops.set(sh.id, worldLoop(sh)); } catch (e) { LOG.warn(`Could not draw "${sh.name}"`, e); } }
+    const parentOf = holeParents(loops);
+    const holesOf = new Map();
+    for (const [hid, pid] of parentOf) { if (!holesOf.has(pid)) holesOf.set(pid, []); holesOf.get(pid).push(hid); }
     for (const sh of job.shapes) {
-      const loop = worldLoop(sh); const isSel = sel.has(sh.id);
+      const loop = loops.get(sh.id); if (!loop) continue;
+      const isSel = sel.has(sh.id);
       const bb = G.bbox(loop);
       const outside = bb.x0 < -1e-6 || bb.y0 < -1e-6 || bb.x1 > m.bedW + 1e-6 || bb.y1 > m.bedH + 1e-6;
-      // fill
-      if (!sh.open) { ctx.fillStyle = outside ? 'rgba(255,92,92,.18)' : (isSel ? 'rgba(77,163,255,.22)' : 'rgba(120,200,255,.10)'); tracePath(loop, sh.open); ctx.fill(); }
+      /* Fill. A plate is filled together with the holes cut inside it, using
+         the even-odd rule, so a hole shows the bed through it rather than
+         another layer of "material". A hole that has a parent plate draws no
+         fill of its own - only its outline. */
+      if (!sh.open && !parentOf.has(sh.id)) {
+        ctx.fillStyle = outside ? 'rgba(255,92,92,.18)' : (isSel ? 'rgba(77,163,255,.22)' : 'rgba(120,200,255,.10)');
+        ctx.beginPath();
+        appendPath(loop, false);
+        for (const hid of holesOf.get(sh.id) || []) appendPath(loops.get(hid), false);
+        ctx.fill('evenodd');
+      }
       ctx.strokeStyle = outside ? '#ff5c5c' : (isSel ? '#8cc4ff' : '#c9d3df'); ctx.lineWidth = (isSel ? 2 : 1.2) * dpr; tracePath(loop, sh.open); ctx.stroke();
       // toolpath
       if (showPaths || showKerf) {
@@ -537,6 +553,36 @@
       if (d < tol && (!best || d < best.d - 1e-9 || (Math.abs(d - best.d) < 1e-9 && g.kind === 'vertex'))) best = { ...g, d, sh };
     }
     return best;
+  }
+  function appendPath(loop, open) {
+    loop.forEach((s, i) => {
+      const a = W2S(s.a); if (i === 0) ctx.moveTo(a.x, a.y);
+      if (s.type === 'line') { const b = W2S(s.b); ctx.lineTo(b.x, b.y); }
+      else { const c = W2S(s.c); const r = G.radius(s) * view.scale; const a0 = Math.atan2(-(s.a.y - s.c.y), s.a.x - s.c.x), a1 = Math.atan2(-(s.b.y - s.c.y), s.b.x - s.c.x); ctx.arc(c.x, c.y, r, a0, a1, s.ccw); }
+    });
+    if (!open) ctx.closePath();
+  }
+  /* Which plate does each inside-cut belong to? A hole is paired with the
+     smallest closed, non-inside part that contains it, so nested plates and
+     islands still resolve sensibly. */
+  function holeParents(loops) {
+    const parent = new Map();
+    const plates = job.shapes.filter(sh => !sh.open && sh.op !== 'inside' && loops.get(sh.id));
+    for (const h of job.shapes) {
+      if (h.open || h.op !== 'inside') continue;
+      const hl = loops.get(h.id); if (!hl || !hl.length) continue;
+      const hb = G.bbox(hl), probe = hl[0].a;
+      let best = null, bestArea = Infinity;
+      for (const pl of plates) {
+        const pll = loops.get(pl.id), pb = G.bbox(pll);
+        if (hb.x0 < pb.x0 - 1e-6 || hb.x1 > pb.x1 + 1e-6 || hb.y0 < pb.y0 - 1e-6 || hb.y1 > pb.y1 + 1e-6) continue;
+        if (!G.pointInLoop(probe, pll)) continue;
+        const a = Math.abs(G.signedArea(pll));
+        if (a < bestArea) { bestArea = a; best = pl; }
+      }
+      if (best) parent.set(h.id, best.id);
+    }
+    return parent;
   }
   function tracePath(loop, open) {
     ctx.beginPath();
@@ -3596,5 +3642,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();

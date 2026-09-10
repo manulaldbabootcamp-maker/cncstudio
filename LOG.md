@@ -5,6 +5,28 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Holes show the bed through them
+
+### Fixed
+- **A circle cut inside a plate looked like more material.** Every closed shape
+  was filled on its own, so an inside-cut sitting in a plate painted a second
+  layer of blue on top instead of punching through. A plate is now filled
+  together with the holes cut inside it in a single even-odd fill, so the bed
+  shows through each hole and the plate reads the way the finished part will.
+- A hole is paired with the **smallest** closed, non-inside part that contains
+  it, so nested plates and islands resolve correctly. An inside-cut with no
+  plate around it (a lone pocket) keeps its own fill.
+- World loops are now built once per frame and shared across the fill, stroke
+  and toolpath passes.
+
+### Tests
+- Smoke test now 260 assertions. The check is done on **pixels**: after
+  rendering, a pixel inside the hole must match bare bed while a pixel inside
+  the plate must be tinted. Plus pairing: a hole finds its plate, a lone pocket
+  finds none, and a hole inside nested plates pairs with the smaller.
+
+---
+
 ## Circles stay circles
 
 ### Fixed

@@ -1275,6 +1275,48 @@ app.whenReady().then(async () => {
     ok(newId > 7, 'a new part never reuses an id already on the job', String(newId));
     }
 
+    { // scoped
+    console.log('a hole cut inside a plate shows the bed through it');
+    await run(`(() => { CNC.job.shapes.length = 0; CNC.job.dims = [];
+      document.querySelector('button.tool[data-tool="select"]').click();
+      CNC.job.shapes.push({id:2200,name:'plate',kind:'rect',x:10,y:10,rot:0,w:20,h:14,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:2201,name:'hole',kind:'circle',x:20,y:17,rot:0,r:3,op:'inside',toolId:2,climb:false,open:false});
+      CNC.job.nextId = 2202; CNC.refresh(); return true; })()`);
+    // the hole is paired with the plate it sits in
+    const pairing = await run(`(() => { const loops = new Map(); CNC.job.shapes.forEach(s => loops.set(s.id, CNC.worldLoop(s)));
+      const pm = CNC.holeParents(loops); return JSON.stringify([...pm.entries()]); })()`);
+    ok(pairing === '[[2201,2200]]', 'the inside-cut circle is recognised as a hole in the plate', pairing);
+
+    // read pixels: hole centre must look like bare bed, plate interior must not
+    const px = JSON.parse(await run(`(() => {
+      const cv = document.querySelector('#cv'), c2 = cv.getContext('2d');
+      const at = (wx, wy) => { const p = CNC.W2S({x:wx, y:wy}); const d = c2.getImageData(Math.round(p.x), Math.round(p.y), 1, 1).data; return [d[0], d[1], d[2]]; };
+      // sample off the centre-mark cross (its arms run through the exact centre), still well inside r=3
+      return JSON.stringify({ hole: at(21.5, 18.2), plate: at(13, 12), bed: at(45, 40) });
+    })()`));
+    const same = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 2);
+    ok(same(px.hole, px.bed), 'the pixel at the hole centre matches bare bed (no material tint)', JSON.stringify(px));
+    ok(!same(px.plate, px.bed), 'while the plate interior is tinted as material', JSON.stringify(px));
+
+    // a hole with no plate around it still shows as something on the bed
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:2210,name:'lone pocket',kind:'circle',x:20,y:17,rot:0,r:3,op:'inside',toolId:2,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const lone = await run(`(() => { const loops = new Map(); CNC.job.shapes.forEach(s => loops.set(s.id, CNC.worldLoop(s)));
+      return CNC.holeParents(loops).size; })()`);
+    ok(lone === 0, 'an inside-cut with no plate around it is not treated as a hole', String(lone));
+
+    // nested: a hole pairs with the SMALLEST plate that contains it
+    await run(`(() => { CNC.job.shapes.length = 0;
+      CNC.job.shapes.push({id:2220,name:'outer',kind:'rect',x:0,y:0,rot:0,w:40,h:30,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:2221,name:'inner plate',kind:'rect',x:10,y:10,rot:0,w:12,h:8,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:2222,name:'hole',kind:'circle',x:16,y:14,rot:0,r:2,op:'inside',toolId:2,climb:false,open:false});
+      CNC.refresh(); return true; })()`);
+    const nested = await run(`(() => { const loops = new Map(); CNC.job.shapes.forEach(s => loops.set(s.id, CNC.worldLoop(s)));
+      return CNC.holeParents(loops).get(2222); })()`);
+    ok(nested === 2221, 'a hole inside nested plates pairs with the smallest one containing it', String(nested));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error" && e.t >= ${loadedAt}).map(e=>e.msg))`);
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
