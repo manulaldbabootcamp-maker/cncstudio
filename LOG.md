@@ -5,6 +5,66 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## One-click nesting that follows the real outline
+
+### Added
+- **Nest now packs the shapes themselves, not their bounding boxes.** Each part
+  is rasterised at a resolution chosen from the job's size, grown by half the
+  gap plus its own tool radius, and dropped in at the lowest, then leftmost,
+  place it will actually go. An L-bracket no longer reserves the rectangle it
+  sits in, and a disc no longer reserves its corners. On a 30 x 30 sheet the old
+  packer fitted **4** L-brackets; this fits **12**.
+- **Holes are usable space.** All of a part's loops are filled in one even-odd
+  pass, so the waste inside a ring is left open in the mask and a smaller part
+  will nest into it.
+- **A group stays a group.** Everything that must travel together - a group, or
+  a plate with the holes cut inside it - is nested as one unit and rotated about
+  its own centre, so the relationship between the pieces survives. This closes
+  audit item 4.
+- **Nothing is silently dropped.** Parts that will not fit are parked clear of
+  the sheet in a tidy row, where they already draw red, and the count is said
+  out loud: *"Placed 120 of 160 - 78% of the sheet used. 40 would not fit and
+  are parked off the bed in red."* The rest still arrange.
+- **Rotation is now a choice** in Settings: keep orientation, 180 only, 90
+  steps, or 15 steps. Grain-sensitive stock and one-way patterns need the first;
+  the last packs tightest and costs the most time.
+- A hole that sits inside several identical outlines - what copying a plate in
+  place leaves behind - is given to the one nearest it in creation order, so a
+  pasted plate keeps its own hole instead of every hole following the first.
+
+### Performance
+Measured on this machine, 5 x 10 ft bed:
+
+| job | placed | sheet used | time |
+| --- | --- | --- | --- |
+| 60 panels | 60 / 60 | 39% | 226 ms |
+| 200 panels (overflow) | 120 / 200 | 78% | 447 ms |
+| 12 L-brackets, 30x30 | 12 / 12 | 64% | 28 ms |
+| 40 discs, 30x30 | 40 / 40 | 62% | 49 ms |
+
+### Tests
+- New suite `test/nest_test.js`, 22 assertions, wired into `npm test`: nothing
+  overlaps, nothing crosses the margin, the gap between outlines is real, every
+  part is either placed or reported (none lost), turning parts fits more, a part
+  larger than the bed is reported while the rest still nest, and a small disc
+  nests inside a ring's hole.
+- Two real defects were caught by those tests before shipping: clearance was
+  applied on one side only, so parts stood off by half the gap asked for; and a
+  placement carried the part's **old** position, which would have put every part
+  in the wrong place on any job not drawn at the origin.
+- Verified in the app end to end: groups stay rigid, holes stay inside their own
+  plate, 120 of 160 panels placed with no overlap and a real 0.8 in gap, the
+  nested job still posts (437 lines, 160 arcs, no issues), and Ctrl+Z puts the
+  job back.
+
+### Fixed in the tests
+- The hole-fill pixel check sampled a single point that, at some zoom levels,
+  sat on a **grid line** - reading the grid rather than the surface. It now
+  takes the darkest of several samples, since anything drawn on top only ever
+  lightens a pixel.
+
+---
+
 ## Holes show the bed through them
 
 ### Fixed

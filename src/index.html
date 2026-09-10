@@ -230,7 +230,12 @@
             <h3>Nesting</h3>
             <div class="row"><label>Part gap</label><input type="number" id="nGap" step="0.125"> in</div>
             <div class="row"><label>Bed margin</label><input type="number" id="nMargin" step="0.125"> in</div>
-            <div class="row"><label><input type="checkbox" id="nRotate"> Allow 90° rotation</label></div>
+            <div class="row"><label>Rotation</label><select id="nRotate" style="flex:1">
+              <option value="none">Keep orientation</option>
+              <option value="half">180° only</option>
+              <option value="quarter">90° steps</option>
+              <option value="free">15° steps — tightest, slowest</option>
+            </select></div>
           </div>
           <div class="card">
             <h3>Claude API</h3>

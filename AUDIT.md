@@ -77,6 +77,13 @@ The part disappeared completely: no outline, no area, nothing posted, and no
 warning. Two points now build the two arcs when at least one edge is bowed;
 two straight edges still return nothing, since that encloses no area.
 
+### 4 · Nesting separated grouped parts, and packed bounding boxes
+**Severity: medium.** Fixed. Two parts put in a group were pulled apart by Nest,
+and every part reserved its whole bounding box, so an L-bracket claimed the
+rectangle around it. Nest now works on real outlines and treats a group - or a
+plate with its holes - as one unit. Twelve L-brackets fit a 30 x 30 sheet where
+four fitted before. See the change log for the numbers.
+
 ### 3 · Toolpaths that cannot be cut were emitted silently — `30a281f`
 **Severity: high — this is the one that scraps material.** Three ways a job
 could be posted that would cut wrong, none of them reported:
@@ -106,16 +113,6 @@ redraw. A sound job stays silent.
 ---
 
 ## Found, not fixed — these are your call
-
-### 4 · Nesting separates grouped parts
-**Severity: medium.** Two parts put in a group are pulled apart by Nest. Holes
-*do* correctly follow their plate — including through a 90° rotation — because
-inside-cuts are matched by containment, so the common case works. But grouping
-two outside parts to keep them in a fixed relationship does not survive nesting.
-
-The fix is to nest each group as one unit. I left it because it changes what
-Nest does, and you may be relying on it rearranging everything. Say the word and
-it's a small change.
 
 ### 5 · Export proceeds with parts off the bed
 **Severity: medium.** The Output panel and the activity log both warn, and the
@@ -168,9 +165,6 @@ thin stock.
   non-reentrant by construction and a trap for anyone editing it later. Not
   fixed, because it manifests no bug and `parseDXF` is on the path the golden
   test depends on; not worth the risk for zero user benefit.
-- **`nest.js` packs bounding boxes only** (31 lines). For irregular parts — a
-  car-window blank especially — that wastes sheet. A no-fit-polygon nester would
-  pay for itself in material. This is a feature, not a defect.
 
 ---
 

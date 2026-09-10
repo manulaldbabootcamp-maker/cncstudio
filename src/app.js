@@ -9,7 +9,7 @@
     machine: { ...PO.DEFAULT_MACHINE },
     tools: PO.DEFAULT_TOOLS.map(t => ({ ...t })),
     materials: PO.DEFAULT_MATERIALS.map(m => ({ ...m })),
-    nest: { gap: 0.5, margin: 0.375, rotate: false },
+    nest: { gap: 0.5, margin: 0.375, rotate: true, rotateMode: 'quarter' },
     ai: { key: '', model: 'claude-sonnet-4-5' },
     snap: { on: true, ortho: false, autoSplit: true, trimTol: 0.125, radius: 0.125, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
   };
@@ -3463,23 +3463,157 @@
 
   // ---------- nesting ----------
   $('#btnNest').onclick = () => nestAll();
+  /* ---------- nesting ----------
+     A unit is what has to stay together: a group, or a part with the holes cut
+     inside it. Each is nested by its real outline rather than its bounding box,
+     so an L-bracket does not reserve the rectangle it sits in and a disc does
+     not reserve its corners. Holes are left open in the mask, so a small part
+     can drop into the waste of a big one.
+
+     Anything that will not fit is parked off the sheet, where it draws red, and
+     said out loud - rather than left where it was for the operator to notice. */
+  function nestUnits() {
+    const byGroup = new Map();
+    const units = [];
+    const outer = job.shapes.filter(s => s.op !== 'inside');
+
+    for (const sh of outer) {
+      if (sh.group) {
+        if (!byGroup.has(sh.group)) { const u = { key: sh.group, shapes: [] }; byGroup.set(sh.group, u); units.push(u); }
+        byGroup.get(sh.group).shapes.push(sh);
+      } else units.push({ key: 's' + sh.id, shapes: [sh] });
+    }
+
+    // a hole belongs to the unit whose outline encloses it
+    for (const h of job.shapes) {
+      if (h.op !== 'inside') continue;
+      if (h.group && byGroup.has(h.group)) { byGroup.get(h.group).shapes.push(h); continue; }
+      let hb; try { hb = shapeBBox(h); } catch (e) { continue; }
+      /* The smallest outline that encloses the hole owns it. Copying a plate in
+         place leaves several identical outlines all enclosing it equally, and
+         then every hole would follow the first plate and be cut through the
+         others; so break an exact tie by creation order, which pairs a pasted
+         plate with the hole pasted alongside it. */
+      let best = null, bestArea = Infinity, bestGap = Infinity;
+      for (const u of units) {
+        for (const sh of u.shapes) {
+          if (sh.op === 'inside') continue;
+          let b, loop;
+          try { loop = worldLoop(sh); b = G.bbox(loop); } catch (e) { continue; }
+          if (hb.x0 < b.x0 - 1e-6 || hb.x1 > b.x1 + 1e-6 || hb.y0 < b.y0 - 1e-6 || hb.y1 > b.y1 + 1e-6) continue;
+          if (!G.pointInLoop({ x: (hb.x0 + hb.x1) / 2, y: (hb.y0 + hb.y1) / 2 }, loop)) continue;
+          const a = Math.abs(G.signedArea(loop));
+          const gap = Math.abs(sh.id - h.id);
+          if (a < bestArea - 1e-9 || (Math.abs(a - bestArea) <= 1e-9 && gap < bestGap)) {
+            bestArea = a; bestGap = gap; best = u;
+          }
+        }
+      }
+      if (best) best.shapes.push(h);
+      else units.push({ key: 'h' + h.id, shapes: [h] });   // a lone pocket nests on its own
+    }
+    return units.filter(u => u.shapes.length);
+  }
+
+  function rotationsFor() {
+    const m = S.nest.rotateMode || (S.nest.rotate ? 'quarter' : 'none');
+    if (m === 'none') return [0];
+    if (m === 'half') return [0, 180];
+    if (m === 'free') { const r = []; for (let a = 0; a < 360; a += 15) r.push(a); return r; }
+    return [0, 90, 180, 270];
+  }
+
   function nestAll() {
     if (!job.shapes.length) return;
+    const units = nestUnits();
+    if (!units.length) return;
     snapshot();
-    const items = job.shapes.filter(s => s.op !== 'inside').map(s => { const bb = shapeBBox(s); const t = toolOf(s); const k = s.op === 'outside' ? t.dia : 0; return { id: s.id, w: bb.w + k, h: bb.h + k, bb, k }; });
-    const res = NE.nest(items, S.machine.bedW, S.machine.bedH, S.nest.gap, S.nest.margin, S.nest.rotate);
-    let fails = 0;
-    for (const r of res) {
-      const sh = job.shapes.find(s => s.id === r.id); const it = items.find(i => i.id === r.id);
-      if (r.fail) { fails++; continue; }
-      // children (inside cuts) that were inside this shape move with it
-      const before = shapeBBox(sh); const kids = job.shapes.filter(k => k.op === 'inside' && k !== sh && (() => { const kb = shapeBBox(k); return kb.x0 >= before.x0 - 1e-6 && kb.x1 <= before.x1 + 1e-6 && kb.y0 >= before.y0 - 1e-6 && kb.y1 <= before.y1 + 1e-6; })());
-      if (r.rotated) { sh.rot = (sh.rot || 0) + 90; delete sh.startPt; }
-      const nb = shapeBBox(sh); const dx = r.x + it.k / 2 - nb.x0, dy = r.y + it.k / 2 - nb.y0;
-      sh.x += dx; sh.y += dy;
-      for (const k of kids) { if (r.rotated) { const c = { x: (before.x0 + before.x1) / 2, y: (before.y0 + before.y1) / 2 }; const p = G.add(c, G.rot(G.sub({ x: k.x, y: k.y }, c), Math.PI / 2)); k.x = p.x; k.y = p.y; k.rot = (k.rot || 0) + 90; } k.x += dx; k.y += dy; }
+
+    const gap = S.nest.gap || 0;
+    const rots = rotationsFor();
+    const descr = units.map(u => {
+      const loops = [];
+      let maxDia = 0;
+      for (const sh of u.shapes) {
+        try { loops.push(worldLoop(sh)); } catch (e) { }
+        if (sh.op === 'outside') maxDia = Math.max(maxDia, toolOf(sh).dia);
+      }
+      /* Half the gap each, plus this part's own tool radius: an outside cut
+         runs a radius beyond the outline, so two neighbours must stand off by
+         both radii plus the gap the operator asked for. */
+      return { id: u.key, loops, clearance: maxDia / 2 + gap / 2, rotations: rots };
+    }).filter(d => d.loops.length);
+
+    const res = NE.nestParts(descr, {
+      bedW: S.machine.bedW, bedH: S.machine.bedH, margin: S.nest.margin || 0,
+    });
+
+    const unitOf = new Map(units.map(u => [u.key, u]));
+    for (const p of res.placed) {
+      const u = unitOf.get(p.id);
+      if (!u) continue;
+      applyPlacement(u.shapes, p);
     }
-    refresh(); toast(fails ? `${fails} part(s) do not fit on the bed` : 'Parts arranged from bottom-left');
+
+    // park what did not fit clear of the sheet, in a tidy row, where it draws red
+    let parkX = S.machine.bedW + 2, parkY = 1;
+    let rowH = 0;
+    for (const id of res.failed) {
+      const u = unitOf.get(id);
+      if (!u) continue;
+      const b = unitBBox(u.shapes);
+      if (!b) continue;
+      if (parkY + b.h > S.machine.bedH) { parkY = 1; parkX += rowH + 2; rowH = 0; }
+      moveShapes(u.shapes, parkX - b.x0, parkY - b.y0);
+      parkY += b.h + 1;
+      rowH = Math.max(rowH, b.w);
+    }
+
+    invalidateLoops();
+    refresh();
+
+    const pct = (res.used * 100).toFixed(0);
+    const msg = res.failed.length
+      ? `Placed ${res.placed.length} of ${units.length} — ${pct}% of the sheet used. ${res.failed.length} would not fit and ${res.failed.length === 1 ? 'is' : 'are'} parked off the bed in red.`
+      : `Placed all ${res.placed.length} — ${pct}% of the sheet used.`;
+    toast(msg);
+    LOG.action(`Nest: ${msg} (${rots.length} orientation${rots.length > 1 ? 's' : ''}, ${res.resolution}" grid, ${res.ms} ms)`);
+    if (res.failed.length) LOG.warn(`${res.failed.length} part(s) do not fit on a ${S.machine.bedW} x ${S.machine.bedH} in sheet`);
+  }
+
+  /* Turn a placement into a rotation about the unit's own centre followed by a
+     move. Rotating each shape about a shared pivot keeps a group rigid. */
+  function applyPlacement(shapes, p) {
+    if (p.rot) {
+      const b0 = unitBBox(shapes);
+      if (!b0) return;
+      const pivot = { x: (b0.x0 + b0.x1) / 2, y: (b0.y0 + b0.y1) / 2 };
+      const rad = p.rot * Math.PI / 180;
+      for (const sh of shapes) {
+        sh.rot = ((sh.rot || 0) + p.rot) % 360;
+        const q = G.add(pivot, G.rot(G.sub({ x: sh.x, y: sh.y }, pivot), rad));
+        sh.x = q.x; sh.y = q.y;
+        delete sh.startPt;
+      }
+    }
+    const b = unitBBox(shapes);
+    if (!b) return;
+    moveShapes(shapes, p.x - b.x0, p.y - b.y0);
+  }
+
+  function unitBBox(shapes) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const sh of shapes) {
+      let b; try { b = shapeBBox(sh); } catch (e) { continue; }
+      x0 = Math.min(x0, b.x0); y0 = Math.min(y0, b.y0);
+      x1 = Math.max(x1, b.x1); y1 = Math.max(y1, b.y1);
+    }
+    if (!isFinite(x0)) return null;
+    return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 };
+  }
+  function moveShapes(shapes, dx, dy) {
+    if (!dx && !dy) return;
+    for (const sh of shapes) { sh.x += dx; sh.y += dy; delete sh.startPt; }
   }
 
   // ---------- pages ----------
@@ -3495,7 +3629,7 @@
     const m = S.machine;
     $('#mBedW').value = m.bedW; $('#mBedH').value = m.bedH; $('#mSafeZ').value = m.safeZ; $('#mDec').value = m.decimals; $('#mEol').value = m.eol || 'crlf';
     $('#mHeader').value = m.header; $('#mToolChange').value = m.toolChange; $('#mFooter').value = m.footer;
-    $('#nGap').value = S.nest.gap; $('#nMargin').value = S.nest.margin; $('#nRotate').checked = !!S.nest.rotate;
+    $('#nGap').value = S.nest.gap; $('#nMargin').value = S.nest.margin; $('#nRotate').value = S.nest.rotateMode || (S.nest.rotate ? 'quarter' : 'none');
     $('#aiKey').value = S.ai.key || ''; $('#aiModel').value = S.ai.model || '';
     const tb = $('#toolTable tbody'); tb.innerHTML = '';
     S.tools.forEach((t, i) => {
@@ -3532,7 +3666,7 @@
     toast('Applied preset: ' + src.name);
   };
   bindSetting('#mHeader', el => S.machine.header = el.value); bindSetting('#mToolChange', el => S.machine.toolChange = el.value); bindSetting('#mFooter', el => S.machine.footer = el.value);
-  bindSetting('#nGap', el => S.nest.gap = parseFloat(el.value)); bindSetting('#nMargin', el => S.nest.margin = parseFloat(el.value)); bindSetting('#nRotate', el => S.nest.rotate = el.checked);
+  bindSetting('#nGap', el => S.nest.gap = parseFloat(el.value)); bindSetting('#nMargin', el => S.nest.margin = parseFloat(el.value)); bindSetting('#nRotate', el => { S.nest.rotateMode = el.value; S.nest.rotate = el.value !== 'none'; });
   bindSetting('#aiKey', el => S.ai.key = el.value.trim()); bindSetting('#aiModel', el => S.ai.model = el.value.trim());
   $('#toolAdd').onclick = () => { const id = Math.max(0, ...S.tools.map(t => t.id)) + 1; S.tools.push({ id, slot: id, name: 'New tool', type: 'endmill', dia: 0.25, rpm: 18000, feed: 120, plunge: 20, passDepth: 0.125 }); saveSettings(); renderSettings(); };
   $('#matAdd').onclick = () => { S.materials.push({ name: 'New material', thickness: 0.25 }); saveSettings(); renderSettings(); syncMaterialUI(); };
@@ -3651,5 +3785,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();

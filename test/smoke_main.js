@@ -1287,12 +1287,20 @@ app.whenReady().then(async () => {
       const pm = CNC.holeParents(loops); return JSON.stringify([...pm.entries()]); })()`);
     ok(pairing === '[[2201,2200]]', 'the inside-cut circle is recognised as a hole in the plate', pairing);
 
-    // read pixels: hole centre must look like bare bed, plate interior must not
+    // read pixels: hole centre must look like bare bed, plate interior must not.
+    /* Sample a spread of points and keep the darkest of each. Grid lines and the
+       centre-mark cross only ever lighten a pixel, and at some zooms one runs
+       straight through the hole - taking the minimum reads the surface itself
+       rather than whatever is drawn on top of it. */
     const px = JSON.parse(await run(`(() => {
       const cv = document.querySelector('#cv'), c2 = cv.getContext('2d');
       const at = (wx, wy) => { const p = CNC.W2S({x:wx, y:wy}); const d = c2.getImageData(Math.round(p.x), Math.round(p.y), 1, 1).data; return [d[0], d[1], d[2]]; };
-      // sample off the centre-mark cross (its arms run through the exact centre), still well inside r=3
-      return JSON.stringify({ hole: at(21.5, 18.2), plate: at(13, 12), bed: at(45, 40) });
+      const darkest = (pts) => pts.map(p => at(p[0], p[1])).reduce((a, b) => a.map((v, i) => Math.min(v, b[i])));
+      return JSON.stringify({
+        hole: darkest([[21.5,18.2],[19.1,18.3],[20.7,15.9],[18.9,15.7],[21.3,16.6]]),
+        plate: darkest([[13,12],[12.4,11.3],[27.6,22.4],[26.1,12.7],[11.7,22.1]]),
+        bed: darkest([[45,40],[44.3,39.4],[38.6,55.2],[52.1,71.3],[41.8,88.7]]),
+      });
     })()`));
     const same = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 2);
     ok(same(px.hole, px.bed), 'the pixel at the hole centre matches bare bed (no material tint)', JSON.stringify(px));
