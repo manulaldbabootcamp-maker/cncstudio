@@ -21,7 +21,7 @@ npm run scenarios # the 10 designs, with screenshots in test/shots/
 
 ## Fixed
 
-### 1 · A circle centred on the edge it cuts was refused — `2a8f…`
+### 1 · A circle centred on the edge it cuts was refused — `318c1c5`
 **Severity: high.** Subtracting a circle centred exactly on a rectangle's edge —
 the ordinary way to make a semicircular notch — failed outright with *"could not
 resolve these shapes"*.
@@ -47,7 +47,7 @@ tolerance) and keeps its arc. Circle on a corner, circle inscribed touching two
 edges, two rectangles sharing a full edge, and two identical rectangles all
 resolve correctly.
 
-### 1b · Shapes that touch were not merged, and results depended on where they sat
+### 1b · Shapes that touch were not merged, and results depended on where they sat — `c6e4189`
 **Severity: high.** Two more boolean defects, both found by running the same
 operation at different places on the bed:
 
@@ -69,7 +69,7 @@ operation at different places on the bed:
 The lesson worth keeping: a validity check that only looks at *size* will accept
 an answer of the right size in the wrong place.
 
-### 2 · A two-point closed shape vanished silently — `1e0c…`
+### 2 · A two-point closed shape vanished silently — `bcb7551`
 **Severity: medium.** `polyLoop` returned an empty array for any polygon with
 fewer than three points. But two points with both edges bowed enclose real area —
 a lens — and that is reachable by closing a two-point path and bowing its edges.
@@ -77,7 +77,7 @@ The part disappeared completely: no outline, no area, nothing posted, and no
 warning. Two points now build the two arcs when at least one edge is bowed;
 two straight edges still return nothing, since that encloses no area.
 
-### 3 · Toolpaths that cannot be cut were emitted silently — `7b41…`
+### 3 · Toolpaths that cannot be cut were emitted silently — `30a281f`
 **Severity: high — this is the one that scraps material.** Three ways a job
 could be posted that would cut wrong, none of them reported:
 
