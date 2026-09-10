@@ -142,36 +142,47 @@ const BOOL = (() => {
     return out;
   }
 
-  /* Run a boolean, retrying with a tiny rotation if the first attempt hits a
-     degenerate configuration (a vertex landing exactly on an edge). Rotating
-     both polygons together does not change the result, only the arithmetic. */
-  function clipRobust(a, b, subInside, clipInside) {
+  /* Run a boolean, working through a series of perturbations until one produces
+     a result that passes `validate`. Each strategy is CHECKED before it is
+     accepted: a near-degenerate configuration can yield a plausible-looking but
+     wrong outline, and returning the first non-null answer would short-circuit
+     the strategies that would have got it right. */
+  function clipRobust(a, b, subInside, clipInside, validate) {
+    const ok = (r) => r && (r.disjoint || (r.length && (!validate || validate(r))));
     let r = clipPolys(a, b, subInside, clipInside);
-    if (r) return r;
-    // 1. rotate both together: fixes degeneracies that are axis-aligned artefacts
+    if (ok(r)) return r;
+
+    // 1. rotate both together: shifts axis-aligned degeneracies off the axes
     for (const ang of [1e-5, 3.7e-5, 1.1e-4]) {
-      const c = Math.cos(ang), s = Math.sin(ang);
-      const rot = (poly) => poly.map(p => ({ x: p.x * c - p.y * s, y: p.x * s + p.y * c }));
-      const un = (poly) => poly.map(p => ({ x: p.x * c + p.y * s, y: -p.x * s + p.y * c }));
-      r = clipPolys(rot(a), rot(b), subInside, clipInside);
-      if (r) return r.disjoint ? r : r.map(un);
+      const c = Math.cos(ang), sn = Math.sin(ang);
+      const rot = (poly) => poly.map(p => ({ x: p.x * c - p.y * sn, y: p.x * sn + p.y * c }));
+      const un = (poly) => poly.map(p => ({ x: p.x * c + p.y * sn, y: -p.x * sn + p.y * c }));
+      const rr = clipPolys(rot(a), rot(b), subInside, clipInside);
+      if (!rr) continue;
+      if (rr.disjoint) return rr;
+      const back = rr.map(un);
+      if (ok(back)) return back;
     }
-    /* 2. Rotation cannot fix a genuinely shared edge - two parts butted
-       together stay collinear however you turn them. Push the clip polygon's
-       vertices outward from its centroid by a hair so the edges properly
-       cross. The nudge is 2e-6 in, ~50x below the 1e-4 the post rounds to, so
-       the cut geometry is unchanged. A fixed distance (not a scale factor)
-       keeps the nudge the same size regardless of part size. */
-    let cx = 0, cy = 0;
-    for (const p of b) { cx += p.x; cy += p.y; }
-    cx /= b.length; cy /= b.length;
-    for (const d of [2e-6, -2e-6, 2e-5]) {
-      const grown = b.map(p => {
-        const vx = p.x - cx, vy = p.y - cy, L = Math.hypot(vx, vy) || 1;
-        return { x: p.x + (vx / L) * d, y: p.y + (vy / L) * d };
-      });
-      r = clipPolys(a, grown, subInside, clipInside);
-      if (r && !r.disjoint && r.length) return r;
+
+    /* 2. Translate the clip polygon by a hair, clip, then translate the result
+       back. Translation is the right perturbation here because it moves EVERY
+       vertex off a shared line. The earlier radial nudge could not: for a
+       circle centred exactly on the line it is subtracted from, the topmost and
+       bottommost vertices move parallel to that line and stay on it - which is
+       exactly the semicircular-notch case. Offsets are ~1e-6 in, four orders
+       below the 1e-4 the post rounds to, so the cut geometry is unchanged. */
+    const dirs = [[1, 0.37], [-0.61, 1], [1, -0.83], [-1, -0.29]];
+    for (const mag of [1.7e-6, 1.3e-5, 4.1e-5]) {
+      for (const [ux, uy] of dirs) {
+        const L = Math.hypot(ux, uy);
+        const dx = ux / L * mag, dy = uy / L * mag;
+        const moved = b.map(p => ({ x: p.x + dx, y: p.y + dy }));
+        const rr = clipPolys(a, moved, subInside, clipInside);
+        if (!rr) continue;
+        if (rr.disjoint) return rr;
+        const back = rr.map(poly => poly.map(p => ({ x: p.x - dx, y: p.y - dy })));
+        if (ok(back)) return back;
+      }
     }
     return null;
   }
@@ -261,7 +272,19 @@ const BOOL = (() => {
     if (!cfg) return { error: 'Unknown operation ' + op };
     if (op === 'subtract') B = B.slice().reverse();
 
-    const res = clipRobust(A, B, cfg[0], cfg[1]);
+    /* Bounds the result must satisfy. Greiner-Hormann can traverse into a
+       plausible-looking but wrong outline near a degeneracy, and a wrong
+       outline here gets cut into real material. */
+    const aA = Math.abs(area(A)), aB = Math.abs(area(B));
+    const slack = 1e-4 * Math.max(aA, aB) + 1e-6;
+    const plausible = (polys) => {
+      const got = polys.reduce((t, poly) => t + Math.abs(area(poly)), 0);
+      if (op === 'union') return got >= Math.max(aA, aB) - slack && got <= aA + aB + slack;
+      if (op === 'intersect') return got <= Math.min(aA, aB) + slack;
+      return got <= aA + slack;                       // subtract
+    };
+
+    const res = clipRobust(A, B, cfg[0], cfg[1], plausible);
     if (res === null) return { error: 'Could not resolve these shapes (edges may exactly overlap). Nudge one slightly and retry.' };
 
     if (res.disjoint) {
@@ -284,18 +307,7 @@ const BOOL = (() => {
     }
     if (!res.length) return { error: 'The operation produced nothing.' };
 
-    /* Sanity-check the area before handing this back. Greiner-Hormann can
-       traverse into a plausible-looking but wrong outline when the inputs are
-       nearly degenerate, and a wrong outline here gets cut into real material.
-       Bounds that must hold for correct output: */
-    const aA = Math.abs(area(A)), aB = Math.abs(area(B));
-    const got = res.reduce((s, p) => s + Math.abs(area(p)), 0);
-    const slack = 1e-4 * Math.max(aA, aB) + 1e-6;
-    const bad =
-      op === 'union' ? (got < Math.max(aA, aB) - slack || got > aA + aB + slack) :
-      op === 'intersect' ? (got > Math.min(aA, aB) + slack) :
-      /* subtract */ (got > aA + slack);
-    if (bad) return { error: 'These shapes overlap in a way this tool could not resolve reliably (usually a shared edge or corner). Nudge one part slightly and try again.' };
+    if (!plausible(res)) return { error: 'These shapes overlap in a way this tool could not resolve reliably (usually a shared edge or corner). Nudge one part slightly and try again.' };
 
     return { loops: res.map(p => refitLoop(p, opts)) };
   }

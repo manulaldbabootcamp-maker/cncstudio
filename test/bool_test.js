@@ -72,6 +72,37 @@ ok(!!shr.loops || !!shr.error, 'shared-edge union returns a result or a clear er
 if (shr.loops) ok(near(A(shr.loops), 50, 0.05), 'shared-edge union area = 50', A(shr.loops));
 else console.log('       (reported: ' + shr.error + ')');
 
+console.log('degenerate placements that used to be refused');
+/* A circle centred exactly ON the edge it is subtracted from is the ordinary
+   way to make a semicircular notch, and it used to fail outright. The radial
+   nudge could not fix it: for a circle centred on the line, its topmost and
+   bottommost vertices move PARALLEL to that line and stay on it. */
+const edgeNotch = BOOL.operate('subtract', G.rectLoop(18, 0, 12, 8), G.circleLoop(30, 4, 2.5));
+ok(!edgeNotch.error, 'a circle centred on an edge can be subtracted', edgeNotch.error);
+ok(edgeNotch.loops && near(A(edgeNotch.loops), 96 - Math.PI * 2.5 * 2.5 / 2, 0.02), 'and the notch area is right', edgeNotch.loops && A(edgeNotch.loops));
+ok(edgeNotch.loops && edgeNotch.loops[0].some(s => s.type === 'arc'), 'the notch is still a true arc');
+
+const corner = BOOL.operate('subtract', G.rectLoop(0, 0, 10, 8), G.circleLoop(10, 8, 2));
+ok(corner.loops && near(A(corner.loops), 80 - Math.PI * 4 / 4, 0.02), 'a circle centred on a corner cuts a quarter round', corner.loops && A(corner.loops));
+
+const inscribed = BOOL.operate('subtract', G.rectLoop(0, 0, 8, 8), G.circleLoop(4, 4, 4));
+ok(inscribed.loops && near(A(inscribed.loops), 64 - Math.PI * 16, 0.05), 'a circle touching two edges from inside leaves the four corners', inscribed.loops && A(inscribed.loops));
+
+const same = BOOL.operate('union', G.rectLoop(0, 0, 5, 5), G.rectLoop(0, 0, 5, 5));
+ok(same.loops && near(A(same.loops), 25, 0.01), 'union of two identical rectangles is one of them', same.loops && A(same.loops));
+
+console.log('a wrong result must not short-circuit a better strategy');
+// every accepted answer has to satisfy the area bounds for its operation
+for (const [op, a, b, lo, hi] of [
+  ['union', G.rectLoop(0, 0, 10, 6), G.rectLoop(5, 3, 10, 6), 60, 120],
+  ['intersect', G.rectLoop(0, 0, 10, 6), G.rectLoop(5, 3, 10, 6), 0, 60],
+  ['subtract', G.rectLoop(0, 0, 10, 6), G.rectLoop(5, 3, 10, 6), 0, 60],
+]) {
+  const r = BOOL.operate(op, a, b);
+  const got = r.loops ? A(r.loops) : null;
+  ok(r.error || (got >= lo - 0.01 && got <= hi + 0.01), `${op} result stays inside its area bounds`, String(got));
+}
+
 console.log('orientation');
 ok(u.loops.every(l => G.signedArea(l) > 0), 'all result loops come back CCW');
 
