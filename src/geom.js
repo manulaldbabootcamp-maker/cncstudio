@@ -101,7 +101,22 @@ const GEOM = (() => {
     return out;
   }
   function polyLoop(pts) {
-    const n = pts.length; if (n < 3) return [];
+    const n = pts.length;
+    /* Two points can still enclose area when both edges are bowed - a lens.
+       Returning nothing made such a part vanish silently, with no outline, no
+       area and nothing posted. */
+    if (n === 2) {
+      const a = P(pts[0].x, pts[0].y), b = P(pts[1].x, pts[1].y);
+      const chord = dist(a, b);
+      const r0 = pts[0].arcR || 0, r1 = pts[1].arcR || 0;
+      if (chord <= EPS || (Math.abs(r0) <= EPS && Math.abs(r1) <= EPS)) return [];
+      const bulge = (R, c) => { const RR = Math.max(Math.abs(R), c / 2); const th = 2 * Math.asin(Math.min(1, c / (2 * RR))); const m = Math.tan(th / 4); return R > 0 ? m : -m; };
+      const segs = [];
+      segs.push(Math.abs(r0) > EPS ? bulgeArc(a, b, bulge(r0, chord)) : line(a, b));
+      segs.push(Math.abs(r1) > EPS ? bulgeArc(b, a, bulge(r1, chord)) : line(b, a));
+      return signedArea(segs) < 0 ? reverseLoop(segs) : segs;
+    }
+    if (n < 3) return [];
     const order = normalizePolyPts(pts);
     const isArc = (i) => Math.abs(order[i].arcR || 0) > EPS;
     const segs = []; const corner = [];
