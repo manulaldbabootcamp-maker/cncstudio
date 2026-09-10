@@ -103,6 +103,27 @@ for (const [op, a, b, lo, hi] of [
   ok(r.error || (got >= lo - 0.01 && got <= hi + 0.01), `${op} result stays inside its area bounds`, String(got));
 }
 
+console.log('the same shapes must resolve the same anywhere on the bed');
+/* Two butted squares unioned correctly at the origin but returned only ONE of
+   them further out. Area bounds alone could not catch it: when both inputs have
+   the same area, "one of them" satisfies them. The result must also REACH far
+   enough to span both inputs. */
+for (const x of [0, 20, 62, 100]) {
+  const r = BOOL.operate('union', G.rectLoop(x, 0, 5, 5), G.rectLoop(x + 5, 0, 5, 5));
+  ok(r.loops && near(A(r.loops), 50, 0.05), `butted squares union to 50 at x=${x}`, r.error || (r.loops && A(r.loops)));
+  /* And as ONE outline. Touching shapes have no crossings, only contact, so a
+     naive read of "no crossings" returned them unmerged - which would cut the
+     shared edge twice. */
+  ok(r.loops && r.loops.length === 1, `and as a single merged outline at x=${x}`, r.loops && String(r.loops.length));
+  const b = r.loops && G.bbox(r.loops[0]);
+  ok(b && near(b.x0, x, 0.01) && near(b.x1, x + 10, 0.01), `spanning ${x}..${x + 10}`, b && `${b.x0}..${b.x1}`);
+}
+{
+  // shapes that genuinely do not touch must still come back separate
+  const far = BOOL.operate('union', G.rectLoop(0, 0, 5, 5), G.rectLoop(50, 50, 5, 5));
+  ok(far.loops && far.loops.length === 2, 'shapes far apart are still kept as two', far.loops && String(far.loops.length));
+}
+
 console.log('orientation');
 ok(u.loops.every(l => G.signedArea(l) > 0), 'all result loops come back CCW');
 

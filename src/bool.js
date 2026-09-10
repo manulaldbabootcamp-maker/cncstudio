@@ -33,6 +33,15 @@ const BOOL = (() => {
     return out;
   }
 
+  function bboxOf(polys) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const poly of polys) for (const p of poly) {
+      if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+      if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+    }
+    return { x0, y0, x1, y1 };
+  }
+
   function area(poly) {
     let a = 0;
     for (let i = 0; i < poly.length; i++) { const p = poly[i], q = poly[(i + 1) % poly.length]; a += p.x * q.y - q.x * p.y; }
@@ -147,8 +156,19 @@ const BOOL = (() => {
      accepted: a near-degenerate configuration can yield a plausible-looking but
      wrong outline, and returning the first non-null answer would short-circuit
      the strategies that would have got it right. */
-  function clipRobust(a, b, subInside, clipInside, validate) {
-    const ok = (r) => r && (r.disjoint || (r.length && (!validate || validate(r))));
+  function clipRobust(a, b, subInside, clipInside, validate, mayTouch) {
+    /* "No crossings" is reported as disjoint - but two shapes butted edge to
+       edge have no crossings either, they merely touch. Taking that at face
+       value returned the two parts unmerged, so their shared edge would be cut
+       twice. When the outlines are close enough to touch, a disjoint answer is
+       held as a fallback and the perturbations are tried first; a perturbation
+       turns a touch into a real crossing and the union comes back merged. */
+    let fallback = null;
+    const ok = (r) => {
+      if (!r) return false;
+      if (r.disjoint) { if (!mayTouch) return true; if (!fallback) fallback = r; return false; }
+      return r.length && (!validate || validate(r));
+    };
     let r = clipPolys(a, b, subInside, clipInside);
     if (ok(r)) return r;
 
@@ -159,7 +179,7 @@ const BOOL = (() => {
       const un = (poly) => poly.map(p => ({ x: p.x * c + p.y * sn, y: -p.x * sn + p.y * c }));
       const rr = clipPolys(rot(a), rot(b), subInside, clipInside);
       if (!rr) continue;
-      if (rr.disjoint) return rr;
+      if (rr.disjoint) { if (!mayTouch) return rr; if (!fallback) fallback = rr; continue; }
       const back = rr.map(un);
       if (ok(back)) return back;
     }
@@ -179,12 +199,12 @@ const BOOL = (() => {
         const moved = b.map(p => ({ x: p.x + dx, y: p.y + dy }));
         const rr = clipPolys(a, moved, subInside, clipInside);
         if (!rr) continue;
-        if (rr.disjoint) return rr;
+        if (rr.disjoint) { if (!mayTouch) return rr; if (!fallback) fallback = rr; continue; }
         const back = rr.map(poly => poly.map(p => ({ x: p.x - dx, y: p.y - dy })));
         if (ok(back)) return back;
       }
     }
-    return null;
+    return fallback;      // they really do just touch, or not meet at all
   }
 
   // ---------- arc refit ----------
@@ -277,14 +297,33 @@ const BOOL = (() => {
        outline here gets cut into real material. */
     const aA = Math.abs(area(A)), aB = Math.abs(area(B));
     const slack = 1e-4 * Math.max(aA, aB) + 1e-6;
+    const bA = bboxOf([A]), bB = bboxOf([B]);
+    const reach = 1e-3 * Math.max(bA.x1 - bA.x0, bA.y1 - bA.y0, bB.x1 - bB.x0, bB.y1 - bB.y0) + 1e-6;
+    /* Area bounds alone are too weak: when both inputs have the same area, a
+       union that returns only ONE of them still satisfies them. So also require
+       the result to REACH as far as it must - the union has to span both inputs,
+       and the other operations cannot exceed their inputs. */
     const plausible = (polys) => {
       const got = polys.reduce((t, poly) => t + Math.abs(area(poly)), 0);
-      if (op === 'union') return got >= Math.max(aA, aB) - slack && got <= aA + aB + slack;
-      if (op === 'intersect') return got <= Math.min(aA, aB) + slack;
-      return got <= aA + slack;                       // subtract
+      const g = bboxOf(polys);
+      if (op === 'union') {
+        if (!(got >= Math.max(aA, aB) - slack && got <= aA + aB + slack)) return false;
+        return g.x0 <= Math.min(bA.x0, bB.x0) + reach && g.x1 >= Math.max(bA.x1, bB.x1) - reach
+            && g.y0 <= Math.min(bA.y0, bB.y0) + reach && g.y1 >= Math.max(bA.y1, bB.y1) - reach;
+      }
+      if (op === 'intersect') {
+        if (!(got <= Math.min(aA, aB) + slack)) return false;
+        return g.x0 >= Math.max(bA.x0, bB.x0) - reach && g.x1 <= Math.min(bA.x1, bB.x1) + reach
+            && g.y0 >= Math.max(bA.y0, bB.y0) - reach && g.y1 <= Math.min(bA.y1, bB.y1) + reach;
+      }
+      if (!(got <= aA + slack)) return false;         // subtract
+      return g.x0 >= bA.x0 - reach && g.x1 <= bA.x1 + reach && g.y0 >= bA.y0 - reach && g.y1 <= bA.y1 + reach;
     };
 
-    const res = clipRobust(A, B, cfg[0], cfg[1], plausible);
+    // do the outlines come close enough to touch? then "disjoint" needs proving
+    const mayTouch = !(bA.x1 < bB.x0 - reach || bB.x1 < bA.x0 - reach
+                    || bA.y1 < bB.y0 - reach || bB.y1 < bA.y0 - reach);
+    const res = clipRobust(A, B, cfg[0], cfg[1], plausible, mayTouch);
     if (res === null) return { error: 'Could not resolve these shapes (edges may exactly overlap). Nudge one slightly and retry.' };
 
     if (res.disjoint) {
