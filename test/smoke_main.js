@@ -1325,6 +1325,30 @@ app.whenReady().then(async () => {
     ok(nested === 2221, 'a hole inside nested plates pairs with the smallest one containing it', String(nested));
     }
 
+    { // scoped
+    console.log('snaps travel with a part that is dragged');
+    const r = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      document.querySelector('button.tool[data-tool="select"]').click();
+      CNC.job.shapes.push({id:1,name:'disc',kind:'circle',x:20,y:20,rot:0,r:3,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.nextId=2; CNC.refresh();
+      const cv=document.querySelector('#cv'), rect=cv.getBoundingClientRect(), dpr=cv.width/cv.clientWidth;
+      const C=(w)=>{const q=CNC.W2S(w); return {clientX:rect.left+q.x/dpr, clientY:rect.top+q.y/dpr, bubbles:true, button:0};};
+      const mm=(w)=>cv.dispatchEvent(new MouseEvent('mousemove',C(w)));
+      mm({x:20,y:20});                                  // builds the snap cache at the old spot
+      cv.dispatchEvent(new MouseEvent('mousedown',C({x:20,y:23})));
+      for(let i=1;i<=10;i++) mm({x:20+i*2,y:23+i});
+      window.dispatchEvent(new MouseEvent('mouseup',C({x:40,y:33})));
+      const sh=CNC.job.shapes[0];
+      mm({x:20,y:20}); const old=CNC.lastSnapInfo();
+      mm({x:sh.x+0.05,y:sh.y+0.05}); const now=CNC.lastSnapInfo();
+      return JSON.stringify({moved:[sh.x,sh.y], old:old&&old.type, now:now&&now.type, nowAt:now&&[now.p.x,now.p.y]});
+    })()`));
+    ok(Math.abs(r.moved[0] - 20) > 5, 'the circle really moved', JSON.stringify(r.moved));
+    ok(r.old !== 'center', 'its old centre no longer snaps', JSON.stringify(r));
+    ok(r.now === 'center' && Math.abs(r.nowAt[0]-r.moved[0])<1e-6 && Math.abs(r.nowAt[1]-r.moved[1])<1e-6, 'its new centre does', JSON.stringify(r));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error" && e.t >= ${loadedAt}).map(e=>e.msg))`);
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

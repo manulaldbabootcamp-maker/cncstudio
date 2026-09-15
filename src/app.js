@@ -826,6 +826,9 @@
         const a = drag.a, b = drag.cur;
         doMarquee(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y));
       }
+      /* A move changes geometry without going through refresh(), so the snap
+         cache would keep offering the part's old centre and endpoints. */
+      if (drag.moved) invalidateLoops();
       if (drag.kind === 'move' && drag.moved) { updateStats(); LOG.action(`Moved ${drag.orig.length} part(s)`); }
       if (drag.kind === 'grip' && drag.moved) {
         const g = drag.grip;

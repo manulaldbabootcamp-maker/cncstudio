@@ -5,6 +5,21 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Snaps follow a part you drag
+
+### Fixed
+- **Dragging a part left its snap points behind.** Draw a circle, drag it
+  somewhere else, and hovering where it *used* to be still snapped to its old
+  centre and quadrants, while its new centre offered nothing. Snap geometry is
+  cached for speed and cleared on every edit, but a drag-move updated the part's
+  position without clearing it. The cache is now cleared when any drag ends.
+
+### Tests
+- Smoke test now 263 assertions: drag a circle with real mouse events, then
+  check the old centre no longer snaps and the new one does.
+
+---
+
 ## One-click nesting that follows the real outline
 
 ### Added
