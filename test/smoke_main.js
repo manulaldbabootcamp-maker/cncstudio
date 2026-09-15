@@ -1349,6 +1349,39 @@ app.whenReady().then(async () => {
     ok(r.now === 'center' && Math.abs(r.nowAt[0]-r.moved[0])<1e-6 && Math.abs(r.nowAt[1]-r.moved[1])<1e-6, 'its new centre does', JSON.stringify(r));
     }
 
+    { // scoped
+    console.log('dragging a part snaps its own centre, not the spot you grabbed');
+    const r = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.S.snap.on=true; CNC.S.snap.ortho=false; const oldR=CNC.S.snap.radius; CNC.S.snap.radius=0.125;
+      document.querySelector('button.tool[data-tool="select"]').click();
+      const target={x:21.1003,y:12.0371};
+      CNC.job.shapes.push({id:1,name:'disc',kind:'circle',x:10,y:12,rot:0,r:2,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:2,name:'arm',kind:'path',x:0,y:0,rot:0,open:true,op:'on',toolId:2,climb:false,
+        loop:[CNC.G.line({x:target.x+5,y:target.y},{x:target.x,y:target.y})]});
+      CNC.job.nextId=3;
+      const cv=document.querySelector('#cv');
+      CNC.view.scale=60*(cv.width/cv.clientWidth);
+      const mid={x:15.5,y:12};
+      let q=CNC.W2S(mid); CNC.view.ox+=cv.width/2-q.x;
+      q=CNC.W2S(mid); const want=cv.height/2; CNC.view.oy-=(want-q.y);
+      q=CNC.W2S(mid); if(Math.abs(q.y-want)>1) { CNC.view.oy+=2*(want-q.y); }
+      CNC.refresh();
+      const rect=cv.getBoundingClientRect(), dpr=cv.width/cv.clientWidth;
+      const C=(w)=>{const s=CNC.W2S(w); return {clientX:rect.left+s.x/dpr, clientY:rect.top+s.y/dpr, bubbles:true, button:0};};
+      const grab={x:10+0.05,y:12-0.04};                 // a hand is never exactly on the centre mark
+      const drop={x:target.x+0.05+0.03,y:target.y-0.04+0.02};
+      cv.dispatchEvent(new MouseEvent('mousemove',C(grab)));
+      cv.dispatchEvent(new MouseEvent('mousedown',C(grab)));
+      for(let i=1;i<=12;i++){ const u=i/12; cv.dispatchEvent(new MouseEvent('mousemove',C({x:grab.x+(drop.x-grab.x)*u,y:grab.y+(drop.y-grab.y)*u}))); }
+      window.dispatchEvent(new MouseEvent('mouseup',C(drop)));
+      const sh=CNC.job.shapes.find(s=>s.id===1);
+      CNC.S.snap.radius=oldR;
+      return JSON.stringify({centre:[sh.x,sh.y], target:[target.x,target.y], err:Math.hypot(sh.x-target.x, sh.y-target.y)});
+    })()`));
+    ok(r.err < 1e-6, 'the centre lands exactly on the line end', JSON.stringify(r));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error" && e.t >= ${loadedAt}).map(e=>e.msg))`);
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

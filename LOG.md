@@ -5,6 +5,28 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Dragging a part snaps its own centre, not the spot you grabbed
+
+### Fixed
+- **Circles dropped onto a construction point landed a hair off.** A dragged
+  part snapped the exact spot under the cursor onto the target. Grab a circle
+  one pixel from its centre mark and drop it on a line end, and the grab spot
+  lands on the line end - so the centre lands one pixel away. Found from a real
+  job: four R2 circles dragged onto the ends of 3.5 in arms of an R7 circle
+  measured 1.4747 / 4 / 1.5253 instead of 1.5 / 4 / 1.5. The error was 0.025 in,
+  invisible on screen and silently carried into the cut.
+- A drag now picks the part's **own** feature under the cursor first - centre,
+  endpoint, quadrant or midpoint, within the snap radius - and it is that
+  feature which snaps onto the other geometry, the way CAD base-point moves
+  work. Grabbing away from any feature still moves the part freely.
+
+### Tests
+- Smoke test now 264 assertions: a circle grabbed 0.06 in off its centre and
+  dropped near a line end must land with its centre exactly on it. Before the
+  fix it landed 0.037 in off.
+
+---
+
 ## Snaps follow a part you drag
 
 ### Fixed

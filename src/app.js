@@ -667,7 +667,7 @@
             if (e.shiftKey) { sel.add(ed.id); toggleEdge(ed.id, i); }
             else { sel.clear(); sel.add(ed.id); selEdges = [{ id: ed.id, i }]; }
             // still allow a drag from here to move the part
-            drag = { kind: 'move', start: w, orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false, fromEdge: true };
+            drag = { kind: 'move', start: w, base: moveBase(w, new Set(sel)), orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false, fromEdge: true };
             refreshList(); refreshProps(); draw();
             return;
           }
@@ -676,7 +676,7 @@
         else if (!sel.has(hit.id)) { sel.clear(); sel.add(hit.id); clearEdge(); }
         else clearEdge();
         expandGroups();
-        drag = { kind: 'move', start: w, orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false };
+        drag = { kind: 'move', start: w, base: moveBase(w, new Set(sel)), orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false };
       } else { if (!e.shiftKey) sel.clear(); clearEdge(); drag = { kind: 'marquee', a: w, cur: w }; }
       refreshList(); refreshProps(); draw();
     } else if (tool === 'rect' || tool === 'circle' || tool === 'ellipse') {
@@ -732,6 +732,21 @@
     drag = null;
     refreshList(); refreshProps(); draw();
   });
+  /* The point of a part that a drag carries onto other geometry. Snapping the
+     raw spot under the cursor meant a hand one pixel off the centre mark put
+     the centre one pixel off the target - exactly, and invisibly. Instead the
+     drag picks the part's own feature under the cursor (centre, endpoint,
+     quadrant, midpoint) and it is that feature which snaps. */
+  function moveBase(w, ids) {
+    if (!S.snap.on) return w;
+    const own = snapLoops().filter(l => ids.has(l.id));
+    if (!own.length) return w;
+    const hit = SNAP.snapPoint(w, own, snapTol(), {
+      enabled: { ...S.snap.types, grid: false, on: false }, gridStep: 0,
+      extra: S.snap.types.center ? own.flatMap(l => (l.centres || []).map(p => ({ x: p.x, y: p.y, type: 'center', ref: l.id }))) : [],
+    });
+    return hit ? hit.p : w;
+  }
   cv.addEventListener('mousemove', e => {
     const { s, w } = evPos(e); mouse = { ...mouse, x: s.x, y: s.y, wx: w.x, wy: w.y };
     const excl = drag && drag.kind === 'grip' ? new Set([drag.sh.id]) : undefined;
@@ -751,7 +766,8 @@
            by one of its corners lands that corner exactly on another part. */
         if (S.snap.on && !(S.snap.ortho || orthoTemp)) {
           const moving = new Set(drag.orig.map(o => o.id));
-          const held = { x: drag.start.x + dx, y: drag.start.y + dy };
+          const b = drag.base || drag.start;
+          const held = { x: b.x + dx, y: b.y + dy };
           const hit = SNAP.snapPoint(held, snapLoops(moving), snapTol(), {
             enabled: { ...S.snap.types, grid: false }, gridStep: 0, exclude: moving,
           });
