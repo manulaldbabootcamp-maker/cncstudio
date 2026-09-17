@@ -5,6 +5,41 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## A circle that met a line came back pointy
+
+### Fixed
+- **Drawing a line across a circle and merging the two deformed the circle.**
+  Half a 6 in disc must measure 12 x 6 in; what came back measured
+  **16.124 x 7.07**, a squashed dome with corners strung along its baseline, and
+  one of those corners sat **8.14 in** from the centre of a circle whose radius
+  is 6. Its area read 78.52 where half a disc is 56.55.
+- The cause was the last step of a merge, which turns the result into an
+  editable polygon. **A polygon holds a curved side as a bulge off its chord.**
+  That describes an arc of less than half a turn exactly, and an arc of half a
+  turn or more badly - the chord is then a diameter or shorter, so the bulge no
+  longer picks out one particular arc and the rebuilt side lands somewhere else.
+  A chord across a circle produces exactly that arc, every time.
+- The conversion now **checks itself**: the area and the bounding box have to
+  survive it. When they do not, the shape is put back as it was and kept as a
+  path, which stores true arcs. This guards every route into the conversion -
+  merging, clicking a side, selecting an edge - not merely the one that was
+  reported.
+- The trade, stated plainly: a shape whose curves a polygon cannot hold is no
+  longer editable point by point. Not deforming it is worth more than that.
+
+### Now
+Merging a disc with a chord gives a true half disc: **56.56 sq in**, the rim
+still a real arc, no corner outside the circle. Trimming a circle already
+behaved, and still does.
+
+### Tests
+- 5 assertions, smoke now 296: the merged half disc has the right area, keeps a
+  true arc, and flings no corner outside the circle; and a half-turn arc with
+  its chord survives being clicked on, staying a path rather than being
+  flattened into a polygon.
+
+---
+
 ## Coordinates typed at the command line
 
 ### Added

@@ -1938,11 +1938,46 @@
       const closed = G.same(loop[loop.length - 1].b, loop[0].a, 1e-6);
       if (!closed) pts.push({ x: loop[loop.length - 1].b.x, y: loop[loop.length - 1].b.y, r: 0, arcR: 0 });
       const x0 = Math.min(...pts.map(p => p.x)), y0 = Math.min(...pts.map(p => p.y));
+
+      /* A polygon holds a curved side as a bulge off its chord. That describes
+         an arc of less than half a turn exactly, and an arc of half a turn or
+         more badly - the chord is a diameter or shorter than one, so the bulge
+         no longer picks out a single arc and the rebuilt side comes back in the
+         wrong place. A circle merged with a chord came back with a corner 2 in
+         outside its own rim: the pointy ellipse.
+
+         So the conversion is attempted and then CHECKED. If the shape that
+         comes back is not the shape that went in, it is put back as it was and
+         left as a path, which stores true arcs. Nothing is editable by point
+         afterwards, and nothing is deformed either - the second is worth more
+         than the first. */
+      const was = { kind: sh.kind, loop: sh.loop, x: sh.x, y: sh.y, rot: sh.rot, open: sh.open };
+      const before = { area: Math.abs(G.signedArea(loop)), bb: G.bbox(loop) };
+
       sh.kind = 'poly';
       sh.pts = pts.map(p => ({ ...p, x: p.x - x0, y: p.y - y0 }));
       sh.x = x0; sh.y = y0; sh.rot = 0;
       sh.open = !closed;
       delete sh.loop;
+
+      let after = null;
+      try { after = worldLoop(sh); } catch (e) { after = null; }
+      const faithful = after && after.length && (() => {
+        const area = Math.abs(G.signedArea(after)), bb = G.bbox(after);
+        const tolA = Math.max(1e-4, before.area * 0.002);      // 0.2%, or a ten-thousandth
+        const tolB = 0.002;                                     // two thousandths of an inch
+        return Math.abs(area - before.area) <= tolA
+          && Math.abs(bb.x0 - before.bb.x0) <= tolB && Math.abs(bb.x1 - before.bb.x1) <= tolB
+          && Math.abs(bb.y0 - before.bb.y0) <= tolB && Math.abs(bb.y1 - before.bb.y1) <= tolB;
+      })();
+      if (!faithful) {
+        sh.kind = was.kind; sh.loop = was.loop; sh.x = was.x; sh.y = was.y; sh.rot = was.rot; sh.open = was.open;
+        delete sh.pts;
+        invalidateLoops();
+        LOG.info(`"${sh.name}" kept as true arcs - a polygon could not hold its curves without deforming them`);
+        return null;
+      }
+      invalidateLoops();
       LOG.info(`"${sh.name}" converted to an editable polygon (${sh.pts.length} points)`);
       return sh;
     }

@@ -1551,6 +1551,58 @@ app.whenReady().then(async () => {
     ok(xy === 'x', 'the X command jumps to the X field of the selection', xy);
     }
 
+    { // scoped
+    console.log('a circle keeps its shape through a merge');
+    const r = JSON.parse(await run(`(() => {
+      const G=CNC.G;
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1; CNC.S.units='in';
+      CNC.job.shapes.push({id:1,name:'disc',kind:'circle',x:20,y:20,rot:0,r:6,op:'outside',toolId:1,climb:false,open:false});
+      // a chord straight across it, running past the rim at both ends
+      CNC.job.shapes.push({id:2,name:'cut',kind:'poly',x:0,y:0,rot:0,open:true,op:'on',toolId:1,climb:false,
+        pts:[{x:12,y:20},{x:28,y:20}]});
+      CNC.job.nextId=3; CNC.refresh();
+      /* Draw the line the way the app does. Pushing a shape straight into the
+         job skips the split at the crossings that every drawn line gets, and
+         merge has no vertex on the rim to trace through. */
+      CNC.autoSplitAround(CNC.job.shapes[1]);
+      CNC.refresh();
+      CNC.job.shapes.forEach(s=>CNC.selectShape(s.id));
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,bubbles:true}));
+      CNC.mergeSelected(0.125);
+      const sh=CNC.job.shapes[0], l=CNC.worldLoop(sh);
+      // how far every corner of the result sits from the circle's centre
+      let worst=0;
+      for (const sg of l) for (const p of [sg.a, sg.b]) worst=Math.max(worst, Math.hypot(p.x-20,p.y-20));
+      return JSON.stringify({parts:CNC.job.shapes.length, kind:sh.kind,
+        arcs:l.filter(x=>x.type==='arc').length,
+        area:+Math.abs(G.signedArea(l)).toFixed(2), worstRadius:+worst.toFixed(3)});
+    })()`));
+    // half of a 6in disc is 56.55 sq in; the two stubs beyond the rim add no area
+    ok(Math.abs(r.area - 56.55) < 0.2, 'merging a disc with a chord leaves half a disc', JSON.stringify(r));
+    ok(r.arcs >= 1, 'the rim is still a true arc', JSON.stringify(r));
+    ok(r.worstRadius <= 8.01, 'and no corner is flung outside the circle', String(r.worstRadius));
+    }
+
+    { // scoped
+    console.log('a shape whose curves a polygon cannot hold stays a path');
+    const r = JSON.parse(await run(`(() => {
+      const G=CNC.G;
+      CNC.job.shapes.length=0; CNC.job.nextId=1;
+      // half a turn of arc plus its chord: a polygon bulge cannot describe this
+      const A={x:14,y:20}, B={x:26,y:20};
+      CNC.job.shapes.push({id:1,name:'halfdisc',kind:'path',x:0,y:0,rot:0,open:false,op:'outside',toolId:1,climb:false,
+        loop:[G.arc(A,B,{x:20,y:20},false), G.line(B,A)]});
+      CNC.job.nextId=2; CNC.refresh();
+      const before=+Math.abs(G.signedArea(CNC.worldLoop(CNC.job.shapes[0]))).toFixed(2);
+      const got = CNC.makeEditable(CNC.job.shapes[0]);
+      const sh=CNC.job.shapes[0];
+      const after=+Math.abs(G.signedArea(CNC.worldLoop(sh))).toFixed(2);
+      return JSON.stringify({refused: got === null, kind:sh.kind, before, after});
+    })()`));
+    ok(r.before === r.after, 'its area is unchanged by being clicked on', JSON.stringify(r));
+    ok(r.kind === 'path', 'and it stays a path, keeping true arcs', JSON.stringify(r));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error" && e.t >= ${loadedAt}).map(e=>e.msg))`);
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
