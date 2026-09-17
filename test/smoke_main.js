@@ -1499,6 +1499,58 @@ app.whenReady().then(async () => {
     })()`)) === 'rect', 'single-key mode still picks a tool with one press');
     }
 
+    { // scoped
+    console.log('coordinates typed at the command line');
+    const rect = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.S.units='in'; CNC.S.keys.mode='command';
+      CNC.runCommand('REC'); CNC.runCommand('10,5'); CNC.runCommand('20,12');
+      const s=CNC.job.shapes[0];
+      return JSON.stringify({n:CNC.job.shapes.length, x:s&&s.x, y:s&&s.y, w:s&&s.w, h:s&&s.h});
+    })()`));
+    ok(rect.n === 1, 'REC then two corners makes one rectangle', JSON.stringify(rect));
+    ok(rect.x === 10 && rect.y === 5, 'at the absolute point typed', JSON.stringify([rect.x, rect.y]));
+    ok(Math.abs(rect.w - 10) < 1e-9 && Math.abs(rect.h - 7) < 1e-9, 'and the size the two corners give', JSON.stringify([rect.w, rect.h]));
+
+    const segs = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.nextId=1;
+      CNC.runCommand('L'); CNC.runCommand('0,0'); CNC.runCommand('@5,0'); CNC.runCommand('@5<90');
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+      const l=CNC.worldLoop(CNC.job.shapes[0]);
+      return JSON.stringify(l.map(s=>[+s.a.x.toFixed(3),+s.a.y.toFixed(3),+s.b.x.toFixed(3),+s.b.y.toFixed(3)]));
+    })()`));
+    ok(JSON.stringify(segs[0]) === JSON.stringify([0,0,5,0]), '@5,0 goes 5 along from the last point', JSON.stringify(segs[0]));
+    ok(JSON.stringify(segs[1]) === JSON.stringify([5,0,5,5]), '@5<90 goes 5 up from there', JSON.stringify(segs[1]));
+
+    const mm = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.nextId=1;
+      CNC.S.units='mm'; CNC.syncUnitsUI();
+      CNC.runCommand('REC'); CNC.runCommand('0,0'); CNC.runCommand('254,127');
+      const s=CNC.job.shapes[0];
+      CNC.S.units='in'; CNC.syncUnitsUI();
+      return JSON.stringify({w:+s.w.toFixed(4), h:+s.h.toFixed(4)});
+    })()`));
+    ok(Math.abs(mm.w - 10) < 1e-4 && Math.abs(mm.h - 5) < 1e-4, 'in mm mode 254,127 is 10 x 5 inches inside', JSON.stringify(mm));
+
+    const typed = await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.nextId=1; CNC.S.keys.mode='command';
+      document.querySelector('button.tool[data-tool="select"]').click();
+      for (const ch of '12,5') window.dispatchEvent(new KeyboardEvent('keydown',{key:ch,bubbles:true}));
+      return document.querySelector('#stCmd').textContent;
+    })()`);
+    ok(typed === 'Command: 12,5', 'a coordinate shows in the status bar as it is typed', typed);
+
+    const xy = await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'p',kind:'rect',x:3,y:4,rot:0,w:2,h:2,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.refresh(); CNC.selectShape(1);
+      CNC.runCommand('X');
+      const a = document.activeElement;
+      return a && a.dataset ? a.dataset.k : 'none';
+    })()`);
+    ok(xy === 'x', 'the X command jumps to the X field of the selection', xy);
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error" && e.t >= ${loadedAt}).map(e=>e.msg))`);
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

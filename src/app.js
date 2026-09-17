@@ -77,6 +77,8 @@
     tap: { label: 'Export TAP', run: () => clickBtn('#btnTap') },
     dxf: { label: 'Export DXF', run: () => clickBtn('#btnDxf') },
     pdf: { label: 'Export PDF', run: () => clickBtn('#btnPdf') },
+    setx: { label: 'Set X of the selection', run: () => focusPropField('x') },
+    sety: { label: 'Set Y of the selection', run: () => focusPropField('y') },
     ortho: { label: 'Ortho lock on/off', run: () => { S.snap.ortho = !S.snap.ortho; saveSettings(); syncSnapUI(); toast('Ortho ' + (S.snap.ortho ? 'on' : 'off')); } },
     osnap: { label: 'Object snap on/off', run: () => { S.snap.on = !S.snap.on; saveSettings(); syncSnapUI(); toast('Object snap ' + (S.snap.on ? 'on' : 'off')); } },
   };
@@ -91,8 +93,55 @@
     NE: 'nest', TRACE: 'trace', Z: 'zoom', U: 'undo', RE: 'redo',
     SA: 'save', OP: 'open', TAP: 'tap', DXF: 'dxf', PDF: 'pdf',
     OR: 'ortho', OS: 'osnap', S: 'select', SEL: 'select',
+    X: 'setx', Y: 'sety',
   };
   const clickBtn = (id) => { const b = $(id); if (b) b.click(); else toast('That command is not available here'); };
+  const focusPropField = (k) => {
+    if (!sel.size) return toast('Select a part first');
+    const inp = document.querySelector(`#props [data-k="${k}"]`);
+    if (inp) { inp.focus(); inp.select(); } else toast('That part has no ' + k.toUpperCase() + ' to set');
+  };
+
+  /* ---------- coordinates typed at the command line ----------
+     AutoCAD's three forms, meaning the same here:
+       12,5     an absolute point on the bed
+       @5,3     measured from the last point placed
+       @5<45    the same, given as a distance and an angle
+     The numbers are in whichever unit is showing, so 100,50 in millimetre mode
+     is 100 mm across and 50 up. While a shape is being drawn the number keys
+     belong to the box at the cursor, so an absolute point typed mid-draw takes
+     a # in front of it - which is what AutoCAD does when dynamic input is on. */
+  const NUM = '(-?(?:\\d+\\.?\\d*|\\.\\d+))';
+  const RE_ABS = new RegExp('^#?' + NUM + ',' + NUM + '$');
+  const RE_REL = new RegExp('^@' + NUM + ',' + NUM + '$');
+  const RE_POLAR = new RegExp('^@?' + NUM + '<' + NUM + '$');
+  function parseCoord(txt) {
+    const t = String(txt).replace(/\s+/g, '');
+    let m = RE_ABS.exec(t);
+    if (m) return { x: fromU(parseFloat(m[1])), y: fromU(parseFloat(m[2])), rel: false };
+    m = RE_REL.exec(t);
+    if (m) return { x: fromU(parseFloat(m[1])), y: fromU(parseFloat(m[2])), rel: true };
+    m = RE_POLAR.exec(t);
+    if (m) {
+      const d = fromU(parseFloat(m[1])), a = parseFloat(m[2]) * Math.PI / 180;
+      return { x: d * Math.cos(a), y: d * Math.sin(a), rel: true };
+    }
+    return null;
+  }
+  // put a point exactly where a click would have put one
+  function placePoint(c) {
+    const from = drawAnchor() || (drawing && drawing.a) || { x: 0, y: 0 };
+    const p = c.rel ? { x: from.x + c.x, y: from.y + c.y } : { x: c.x, y: c.y };
+    if (tool === 'rect' || tool === 'circle' || tool === 'ellipse') {
+      if (!drawing) { drawing = { kind: tool, a: p, b: p }; syncDyn(); draw(); }
+      else { const d = drawing; d.b = p; drawing = null; finishDragShape(d); }
+      return p;
+    }
+    if (tool === 'select') { toast('Pick a tool first, then type a coordinate'); return null; }
+    commitPoint(p);
+    draw(); syncDyn();
+    return p;
+  }
   const aliasMap = () => (S.keys && S.keys.aliases) || DEFAULT_ALIASES;
   let cmdBuf = '';
   function showCmd() {
@@ -102,6 +151,12 @@
   function runCommand(raw) {
     const name = String(raw || '').trim().toUpperCase();
     if (!name) return;
+    const c = parseCoord(name);
+    if (c) {
+      const p = placePoint(c);
+      if (p) LOG.action(`Point typed at ${fmtIn(p.x)}, ${fmtIn(p.y)} ${uLabel()}`);
+      return;
+    }
     const id = aliasMap()[name];
     if (!id || !COMMANDS[id]) { toast('Unknown command "' + name + '"'); LOG.info('Unknown command typed: ' + name); return; }
     LOG.action('Command ' + name + ' - ' + COMMANDS[id].label);
@@ -962,18 +1017,23 @@
     }
     if (drawing && (drawing.kind === 'rect' || drawing.kind === 'circle' || drawing.kind === 'ellipse')) {
       const d = drawing; drawing = null;
-      if (d.kind === 'ellipse') { finishEllipse(d); syncDyn(); draw(); return; }
-      if (d.kind === 'rect') {
-        const w = Math.abs(d.b.x - d.a.x), h = Math.abs(d.b.y - d.a.y);
-        if (w > 0.01 && h > 0.01) { const sh = makeShape('rect', { x: Math.min(d.a.x, d.b.x), y: Math.min(d.a.y, d.b.y), w, h, r: 0 }); addShape(sh); dynTarget = sh.id; }
-      } else {
-        const r = G.dist(d.a, d.b);
-        if (r > 0.01) { const sh = makeShape('circle', { x: d.a.x, y: d.a.y, r }); addShape(sh); dynTarget = sh.id; }
-      }
-      syncDyn();
-      draw();
+      finishDragShape(d);
     }
   });
+  /* Finishing a dragged shape is the same work whether the second point came
+     from releasing the mouse or from a coordinate typed at the command line. */
+  function finishDragShape(d) {
+    if (d.kind === 'ellipse') { finishEllipse(d); syncDyn(); draw(); return; }
+    if (d.kind === 'rect') {
+      const w = Math.abs(d.b.x - d.a.x), h = Math.abs(d.b.y - d.a.y);
+      if (w > 0.01 && h > 0.01) { const sh = makeShape('rect', { x: Math.min(d.a.x, d.b.x), y: Math.min(d.a.y, d.b.y), w, h, r: 0 }); addShape(sh); dynTarget = sh.id; }
+    } else {
+      const r = G.dist(d.a, d.b);
+      if (r > 0.01) { const sh = makeShape('circle', { x: d.a.x, y: d.a.y, r }); addShape(sh); dynTarget = sh.id; }
+    }
+    syncDyn();
+    draw();
+  }
   function finishPoly() {
     const d = drawing; drawing = null; showDyn(false); if (!d || d.pts.length < 2) { draw(); return; }
     const open = d.kind === 'pline'; if (!open && d.pts.length < 3) { draw(); return; }
@@ -1019,7 +1079,7 @@
 
   window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    if ((drawAnchor() || dynTarget || (drawing && ['rect', 'circle', 'ellipse'].includes(drawing.kind))) && /^[0-9.]$/.test(e.key)) {
+    if (!cmdBuf && (drawAnchor() || dynTarget || (drawing && ['rect', 'circle', 'ellipse'].includes(drawing.kind))) && /^[0-9.]$/.test(e.key)) {
       const el = $('#dynLen'); if (el) { el.value = e.key; el.focus(); dynActive = true; e.preventDefault(); return; }
     }
     /* Command entry. Letters build up a command, Enter or Space runs it. Space
@@ -1027,6 +1087,8 @@
        polyline, so neither is taken away. */
     if (S.keys.mode !== 'direct' && !e.ctrlKey && !e.metaKey && !e.altKey) {
       if (/^[a-zA-Z]$/.test(e.key)) { cmdBuf += e.key.toUpperCase(); showCmd(); e.preventDefault(); return; }
+      // digits, comma, @ and # build a coordinate rather than a command name
+      if (/^[0-9.,@#<-]$/.test(e.key)) { cmdBuf += e.key; showCmd(); e.preventDefault(); return; }
       if (cmdBuf) {
         if (e.key === 'Enter' || e.code === 'Space') { const c = cmdBuf; cmdBuf = ''; showCmd(); runCommand(c); e.preventDefault(); return; }
         if (e.key === 'Backspace') { cmdBuf = cmdBuf.slice(0, -1); showCmd(); e.preventDefault(); return; }
@@ -4125,5 +4187,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();

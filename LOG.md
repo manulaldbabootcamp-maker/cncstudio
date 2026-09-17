@@ -5,6 +5,39 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Coordinates typed at the command line
+
+### Added
+- **Type a point instead of clicking one**, in AutoCAD's three forms:
+  - `12,5` — an absolute point on the bed
+  - `@5,3` — measured from the last point placed
+  - `@5<45` — the same, given as a distance and an angle
+- It drives every drawing tool. `REC` then `10,5` then `20,12` gives a
+  rectangle at exactly those corners; `L` then `0,0`, `@5,0`, `@5<90` draws two
+  sides of a square without touching the mouse.
+- **The numbers follow the unit that is showing.** In millimetre mode
+  `254,127` is a 10 x 5 in part, because that is what 254 x 127 mm is.
+- While a shape is being drawn the number keys still belong to the box at the
+  cursor, which is where they were most useful. An absolute point typed
+  mid-draw therefore takes a `#` in front of it - the same thing AutoCAD does
+  when its dynamic input is on. `@` and `#` are not digits, so they reach the
+  command line untouched.
+- **`X` and `Y` are commands again**, jumping to the X or Y field of the
+  selection. Typed-command mode had taken those single keys away.
+
+### How it is built
+Finishing a rectangle or circle from a typed coordinate runs the **same code**
+as releasing the mouse does - the finish step was lifted out of the mouse
+handler rather than copied - so the two routes cannot drift apart.
+
+### Tests
+- 8 assertions: two typed corners give the right rectangle at the right place,
+  `@5,0` and `@5<90` step correctly from the previous point, `254,127` in
+  millimetre mode stores 10 x 5 in, the coordinate shows in the status bar as it
+  is typed, and `X` jumps to the X field. Smoke now 291.
+
+---
+
 ## Typed commands, the way AutoCAD works
 
 ### Added
