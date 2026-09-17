@@ -5,6 +5,60 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Typed commands, the way AutoCAD works
+
+### Added
+- **Type a command, press Enter.** `L` for a line, `REC` for a rectangle, `C`
+  for a circle, `TR` to trim, `J` to merge, `Z` to zoom to the bed. Space runs
+  the command too, `Esc` clears it, and what you have typed shows in the status
+  bar. Space still pans while nothing is being typed and Enter still finishes a
+  polyline, so neither is taken away.
+- Aliases are AutoCAD's own wherever a command matches: L, PL, REC, C, A, EL,
+  TR, EX, J, E, M, CO, RO, SC, MI, O, AR, F, CHA, UNI, SU, G, Z, U, DI.
+- **Every one is editable** in Settings → Keyboard, and a command can answer to
+  several aliases at once - type them comma separated. "Restore defaults" puts
+  the AutoCAD set back.
+- **Single-key mode is still there** for anyone who prefers one press and no
+  Enter: Settings → Keyboard → Style. Note that in typed-command mode the old
+  single-letter shortcuts (X, Y, A to jump to a field, F to fit the bed) are
+  read as commands instead - switch to single-key mode to get them back.
+
+### Tests
+- 8 assertions: REC/C/A + Enter and L + Space pick the right tool, the status
+  bar shows what is being typed, Esc clears it, a rebound alias works, and
+  single-key mode still selects a tool with one press.
+
+---
+
+## Millimetres
+
+### Added
+- **Settings → Machine → Units** switches the whole app between inches and
+  millimetres: the property panel, the dimensions and size labels drawn on the
+  part, the rulers, the status bar, the snap steps, the tool table, the material
+  thickness and the job summary.
+- The grid and rulers **step in whole units of whichever system is showing** -
+  12 in majors, or 100 mm majors. Relabelling inch lines would have put them at
+  3.937 mm intervals, which is no use to anyone reading a drawing in mm.
+- Snap steps change to the sizes you actually think in: 0.01, 0.05, 0.1, 0.5, 1,
+  2, 5, 10 mm. The values stay inches underneath, so nothing downstream had to
+  learn about units.
+- Feeds read **mm/min** in mm mode, and tool diameters and pass depths convert
+  with everything else.
+
+### What does not change
+**The drawing is stored in inches and the post writes inches.** Millimetres are
+a display skin: numbers convert on the way to the screen and back on the way in
+from the keyboard. Switching units cannot move a part, and the TAP your machine
+runs is byte-for-byte what it was - the EnRoute reproduction test still passes.
+
+### Tests
+- 4 assertions: a 10 in plate reads 254 mm, typing 100 mm stores 3.937 in,
+  the posted program is still in inches, and switching back leaves the drawing
+  untouched.
+
+---
+
 ## Merge works out which region you drew
 
 ### Fixed

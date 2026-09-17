@@ -9,6 +9,8 @@
     machine: { ...PO.DEFAULT_MACHINE },
     tools: PO.DEFAULT_TOOLS.map(t => ({ ...t })),
     materials: PO.DEFAULT_MATERIALS.map(m => ({ ...m })),
+    units: 'in',
+    keys: { mode: 'command', aliases: null },      // null = the defaults below
     nest: { gap: 0.5, margin: 0.375, rotate: true, rotateMode: 'quarter' },
     ai: { key: '', model: 'claude-sonnet-4-5' },
     snap: { on: true, ortho: false, autoSplit: true, trimTol: 0.125, radius: 0.125, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
@@ -26,6 +28,86 @@
     return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   }
   function saveSettings() { try { localStorage.setItem('cncstudio.settings', JSON.stringify(S)); } catch (e) { } }
+
+  /* ---------- commands ----------
+     AutoCAD is driven by typing: a short alias, then Enter or Space. Anyone who
+     has used it types L-Enter for a line without thinking, and that muscle
+     memory is worth more than any button. Each command here is the same thing
+     the toolbar button does, so there is one behaviour and one place it lives.
+
+     The aliases are AutoCAD's own where a command matches; the operator can
+     change any of them in Settings, and a changed set is stored with the other
+     settings rather than in the code. */
+  const COMMANDS = {
+    select: { label: 'Select', run: () => setTool('select') },
+    line: { label: 'Line (open polyline)', run: () => setTool('pline') },
+    polygon: { label: 'Closed polygon', run: () => setTool('poly') },
+    rect: { label: 'Rectangle', run: () => setTool('rect') },
+    circle: { label: 'Circle', run: () => setTool('circle') },
+    arc: { label: 'Arc (3 point)', run: () => setTool('arc') },
+    ellipse: { label: 'Ellipse', run: () => setTool('ellipse') },
+    spline: { label: 'Spline', run: () => setTool('spline') },
+    text: { label: 'Text / engraving', run: () => clickBtn('#btnText') },
+    dim: { label: 'Dimension', run: () => setTool('dim') },
+    measure: { label: 'Measure (distance)', run: () => setTool('measure') },
+    trim: { label: 'Trim / delete an edge', run: () => { setTool('trim'); toast('Click the edge you want to remove'); } },
+    extend: { label: 'Extend', run: () => setTool('extend') },
+    join: { label: 'Merge selection into one part', run: () => sel.size > 1 ? mergeSelected(trimTol()) : toast('Select two or more parts to merge') },
+    erase: { label: 'Delete selection', run: () => deleteSel() },
+    move: { label: 'Move by an exact distance', run: () => clickBtn('#btnMoveBy') },
+    copy: { label: 'Duplicate', run: () => duplicateSel() },
+    rotate: { label: 'Rotate 90 degrees', run: () => rotateSel(90) },
+    scale: { label: 'Scale', run: () => clickBtn('#btnScale') },
+    mirror: { label: 'Mirror', run: () => clickBtn('#btnMirror') },
+    offset: { label: 'Offset', run: () => clickBtn('#btnOffset') },
+    array: { label: 'Array', run: () => clickBtn('#btnArray') },
+    fillet: { label: 'Fillet a corner', run: () => clickBtn('#btnFillet') },
+    chamfer: { label: 'Chamfer a corner', run: () => clickBtn('#btnChamfer') },
+    union: { label: 'Union', run: () => clickBtn('#btnUnion') },
+    subtract: { label: 'Subtract', run: () => clickBtn('#btnSubtract') },
+    group: { label: 'Group', run: () => groupSel() },
+    ungroup: { label: 'Ungroup', run: () => ungroupSel() },
+    nest: { label: 'Auto-arrange on the bed', run: () => clickBtn('#btnNest') },
+    trace: { label: 'Trace a paper template', run: () => openOffsetTrace() },
+    zoom: { label: 'Zoom to the bed', run: () => { fitBed(); draw(); } },
+    undo: { label: 'Undo', run: () => undo() },
+    redo: { label: 'Redo', run: () => redo() },
+    save: { label: 'Save project', run: () => saveProject() },
+    open: { label: 'Open a file', run: () => clickBtn('#btnOpen') },
+    tap: { label: 'Export TAP', run: () => clickBtn('#btnTap') },
+    dxf: { label: 'Export DXF', run: () => clickBtn('#btnDxf') },
+    pdf: { label: 'Export PDF', run: () => clickBtn('#btnPdf') },
+    ortho: { label: 'Ortho lock on/off', run: () => { S.snap.ortho = !S.snap.ortho; saveSettings(); syncSnapUI(); toast('Ortho ' + (S.snap.ortho ? 'on' : 'off')); } },
+    osnap: { label: 'Object snap on/off', run: () => { S.snap.on = !S.snap.on; saveSettings(); syncSnapUI(); toast('Object snap ' + (S.snap.on ? 'on' : 'off')); } },
+  };
+  const DEFAULT_ALIASES = {
+    L: 'line', PL: 'line', POL: 'polygon', REC: 'rect', RECTANG: 'rect',
+    C: 'circle', A: 'arc', EL: 'ellipse', SPL: 'spline', T: 'text',
+    DIM: 'dim', DI: 'measure', DIST: 'measure',
+    TR: 'trim', EX: 'extend', J: 'join', E: 'erase', ERASE: 'erase',
+    M: 'move', CO: 'copy', CP: 'copy', RO: 'rotate', SC: 'scale', MI: 'mirror',
+    O: 'offset', AR: 'array', F: 'fillet', CHA: 'chamfer',
+    UNI: 'union', SU: 'subtract', G: 'group', UNG: 'ungroup',
+    NE: 'nest', TRACE: 'trace', Z: 'zoom', U: 'undo', RE: 'redo',
+    SA: 'save', OP: 'open', TAP: 'tap', DXF: 'dxf', PDF: 'pdf',
+    OR: 'ortho', OS: 'osnap', S: 'select', SEL: 'select',
+  };
+  const clickBtn = (id) => { const b = $(id); if (b) b.click(); else toast('That command is not available here'); };
+  const aliasMap = () => (S.keys && S.keys.aliases) || DEFAULT_ALIASES;
+  let cmdBuf = '';
+  function showCmd() {
+    const el = $('#stCmd');
+    if (el) el.textContent = cmdBuf ? 'Command: ' + cmdBuf : '';
+  }
+  function runCommand(raw) {
+    const name = String(raw || '').trim().toUpperCase();
+    if (!name) return;
+    const id = aliasMap()[name];
+    if (!id || !COMMANDS[id]) { toast('Unknown command "' + name + '"'); LOG.info('Unknown command typed: ' + name); return; }
+    LOG.action('Command ' + name + ' - ' + COMMANDS[id].label);
+    COMMANDS[id].run();
+    draw();
+  }
 
   // ---------- job state ----------
   let job = newJob();
@@ -116,12 +198,7 @@
 
   function snapV() { return parseFloat($('#selSnap').value) || 0; }
   // decimals worth showing: enough for the current snap, capped at the post's 4
-  function coordDp() {
-    const s = snapV();
-    if (!s) return 4;
-    if (s >= 0.0625) return 4;
-    return 4;
-  }
+  function coordDp() { return isMM() ? 2 : 4; }
   let zoomToast = 0;
   function showZoomLimit(atMax) {
     if (Date.now() - zoomToast < 1500) return;
@@ -208,15 +285,24 @@
     const bl = W2S({ x: 0, y: 0 }), tr = W2S({ x: m.bedW, y: m.bedH });
     ctx.fillStyle = '#1c2027'; ctx.fillRect(bl.x, tr.y, tr.x - bl.x, bl.y - tr.y);
     // grid
-    const step = view.scale > 20 ? 1 : view.scale > 6 ? 6 : 12;
+    /* Grid and rulers step in whole units of whichever system is showing:
+       feet-ish 12 in majors, or 100 mm majors. Stepping in inches and merely
+       relabelling would put the lines at 3.937 mm intervals, which is no use to
+       anyone reading a drawing in millimetres. */
+    const major = isMM() ? 100 / MM_PER_IN : 12;
+    const step = isMM()
+      ? (view.scale > 20 ? 10 / MM_PER_IN : view.scale > 6 ? 50 / MM_PER_IN : 100 / MM_PER_IN)
+      : (view.scale > 20 ? 1 : view.scale > 6 ? 6 : 12);
     ctx.lineWidth = 1;
-    for (let x = 0; x <= m.bedW + 1e-9; x += step) { const p = W2S({ x, y: 0 }); ctx.strokeStyle = x % 12 === 0 ? '#343a44' : '#262b33'; ctx.beginPath(); ctx.moveTo(p.x, bl.y); ctx.lineTo(p.x, tr.y); ctx.stroke(); }
-    for (let y = 0; y <= m.bedH + 1e-9; y += step) { const p = W2S({ x: 0, y }); ctx.strokeStyle = y % 12 === 0 ? '#343a44' : '#262b33'; ctx.beginPath(); ctx.moveTo(bl.x, p.y); ctx.lineTo(tr.x, p.y); ctx.stroke(); }
+    const onMajor = (v) => Math.abs(v / major - Math.round(v / major)) < 1e-6;
+    for (let i = 0; i * step <= m.bedW + 1e-9; i++) { const x = i * step; const p = W2S({ x, y: 0 }); ctx.strokeStyle = onMajor(x) ? '#343a44' : '#262b33'; ctx.beginPath(); ctx.moveTo(p.x, bl.y); ctx.lineTo(p.x, tr.y); ctx.stroke(); }
+    for (let i = 0; i * step <= m.bedH + 1e-9; i++) { const y = i * step; const p = W2S({ x: 0, y }); ctx.strokeStyle = onMajor(y) ? '#343a44' : '#262b33'; ctx.beginPath(); ctx.moveTo(bl.x, p.y); ctx.lineTo(tr.x, p.y); ctx.stroke(); }
     ctx.strokeStyle = '#5a6473'; ctx.lineWidth = 1.5; ctx.strokeRect(bl.x, tr.y, tr.x - bl.x, bl.y - tr.y);
     // axis labels (feet)
     ctx.fillStyle = '#6f7a88'; ctx.font = `${11 * dpr}px system-ui`;
-    for (let x = 0; x <= m.bedW; x += 12) { const p = W2S({ x, y: 0 }); ctx.fillText(x + '"', p.x + 2, bl.y + 12 * dpr); }
-    for (let y = 0; y <= m.bedH; y += 12) { const p = W2S({ x: 0, y }); ctx.fillText(y + '"', bl.x - 26 * dpr, p.y - 2); }
+    const tick = (v) => isMM() ? String(Math.round(toU(v))) : v + '"';
+    for (let i = 0; i * major <= m.bedW + 1e-9; i++) { const x = i * major; const p = W2S({ x, y: 0 }); ctx.fillText(tick(x), p.x + 2, bl.y + 12 * dpr); }
+    for (let i = 0; i * major <= m.bedH + 1e-9; i++) { const y = i * major; const p = W2S({ x: 0, y }); ctx.fillText(tick(y), bl.x - 30 * dpr, p.y - 2); }
     // origin marker
     ctx.fillStyle = '#ff5c5c'; ctx.beginPath(); ctx.arc(bl.x, bl.y, 4 * dpr, 0, Math.PI * 2); ctx.fill();
     // shapes
@@ -265,7 +351,7 @@
     if (drawing) {
       ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([5 * dpr, 4 * dpr]);
       if (drawing.kind === 'rect') { const a = W2S(drawing.a), b = W2S(drawing.b); ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y)); dimLabel(drawing.b, `${fmtIn(Math.abs(drawing.b.x - drawing.a.x))} × ${fmtIn(Math.abs(drawing.b.y - drawing.a.y))}`); }
-      if (drawing.kind === 'circle') { const c = W2S(drawing.a); const r = G.dist(drawing.a, drawing.b) * view.scale; ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.stroke(); dimLabel(drawing.b, `R ${fmtIn(G.dist(drawing.a, drawing.b))}  Ø ${fmtIn(2 * G.dist(drawing.a, drawing.b))}`); }
+      if (drawing.kind === 'circle') { const c = W2S(drawing.a); const r = G.dist(drawing.a, drawing.b) * view.scale; ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.stroke(); dimLabel(drawing.b, `R ${fmtLen(G.dist(drawing.a, drawing.b))}  Ø ${fmtLen(2 * G.dist(drawing.a, drawing.b))}`); }
       if (drawing.kind === 'ellipse') { const c = W2S(drawing.a); const rx = Math.abs(drawing.b.x - drawing.a.x) * view.scale, ry = Math.abs(drawing.b.y - drawing.a.y) * view.scale; if (rx > 0.5 && ry > 0.5) { ctx.beginPath(); ctx.ellipse(c.x, c.y, rx, ry, 0, 0, Math.PI * 2); ctx.stroke(); } dimLabel(drawing.b, `${fmtIn(Math.abs(drawing.b.x - drawing.a.x) * 2)} × ${fmtIn(Math.abs(drawing.b.y - drawing.a.y) * 2)}`); }
       if (drawing.kind === 'spline' && drawing.pts.length) { const pv = drawing.pts.concat([drawing.cur]); const prev = pv.length > 2 ? G.splineLoop(pv, false) : []; ctx.beginPath(); if (prev.length) { const s0 = W2S(prev[0].a); ctx.moveTo(s0.x, s0.y); prev.forEach(sg => { const q = W2S(sg.b); ctx.lineTo(q.x, q.y); }); } else { pv.forEach((p, i) => { const q = W2S(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); }); } ctx.stroke(); pv.forEach(p => { const q = W2S(p); ctx.fillStyle = '#4da3ff'; ctx.fillRect(q.x - 2.5, q.y - 2.5, 5, 5); }); }
       if (drawing.kind === 'poly' || drawing.kind === 'pline') { ctx.beginPath(); drawing.pts.forEach((p, i) => { const s = W2S(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); const s = W2S(drawing.cur); ctx.lineTo(s.x, s.y); ctx.stroke(); if (drawing.pts.length) { const prev = drawing.pts[drawing.pts.length - 1]; dimLabel(drawing.cur, `${fmtIn(G.dist(prev, drawing.cur))}  ${fmtAng(prev, drawing.cur)}`); } }
@@ -538,7 +624,7 @@
     }
     delete sh.startPt;
     invalidateLoops();
-    LOG.action(`Set ${key === 'r' ? 'radius' : key === 'h' || key === 'dy' ? 'height' : 'width'} of "${sh.name}" to ${fmtIn(v)} in`);
+    LOG.action(`Set ${key === 'r' ? 'radius' : key === 'h' || key === 'dy' ? 'height' : 'width'} of "${sh.name}" to ${fmtIn(v)} ${uLabel()}`);
     refresh();
   }
 
@@ -593,7 +679,27 @@
     });
     if (!open) ctx.closePath();
   }
-  const fmtIn = (v) => (Math.round(v * 10000) / 10000).toString();
+  /* ---------- units ----------
+     Everything inside the app - every coordinate, radius and offset - is in
+     INCHES, and the post writes inches, so the programs this machine has always
+     run are unchanged by any of this. Millimetres are a display skin: numbers
+     are converted on the way out to the screen and back on the way in from the
+     keyboard. Nothing in the job file changes, so a drawing can be worked on in
+     one unit and finished in the other. */
+  const MM_PER_IN = 25.4;
+  const isMM = () => S.units === 'mm';
+  const toU = (v) => isMM() ? v * MM_PER_IN : v;          // inches -> shown
+  const fromU = (v) => isMM() ? v / MM_PER_IN : v;        // typed -> inches
+  const uLabel = () => isMM() ? 'mm' : 'in';
+  const uRate = () => isMM() ? 'mm/min' : 'ipm';
+  const uStep = (inchStep) => isMM() ? +(inchStep * MM_PER_IN).toPrecision(3) : inchStep;
+  const uParse = (t) => { const v = parseFloat(t); return isFinite(v) ? fromU(v) : NaN; };
+  const uDp = () => isMM() ? 3 : 4;
+  // shows a length in the operator's unit; still called fmtIn because 80-odd
+  // call sites read a length and want exactly this
+  const fmtIn = (v) => { const p = Math.pow(10, uDp()); return (Math.round(toU(v) * p) / p).toString(); };
+  // the same length carrying its unit mark, for labels drawn on the drawing
+  const fmtLen = (v) => fmtIn(v) + (isMM() ? ' mm' : '"');
 
   // ---------- mouse ----------
   cv.addEventListener('contextmenu', e => e.preventDefault());
@@ -751,9 +857,9 @@
     const { s, w } = evPos(e); mouse = { ...mouse, x: s.x, y: s.y, wx: w.x, wy: w.y };
     const excl = drag && drag.kind === 'grip' ? new Set([drag.sh.id]) : undefined;
     const ws = resolvePoint(w, { from: drawAnchor(), polar: e.altKey, exclude: excl });
-    $('#stX').textContent = ws.x.toFixed(4); $('#stY').textContent = ws.y.toFixed(4);
+    $('#stX').textContent = toU(ws.x).toFixed(isMM() ? 2 : 4); $('#stY').textContent = toU(ws.y).toFixed(isMM() ? 2 : 4);
     const tag = $('#cursorTag'); tag.style.display = 'block'; tag.style.left = (s.x / devicePixelRatio + 16) + 'px'; tag.style.top = (s.y / devicePixelRatio + 16) + 'px';
-    tag.textContent = `${ws.x.toFixed(coordDp())}, ${ws.y.toFixed(coordDp())}` + (lastSnap && lastSnap.type !== 'grid' ? `  ${SNAP_LABEL[lastSnap.type]}` : '');
+    tag.textContent = `${toU(ws.x).toFixed(coordDp())}, ${toU(ws.y).toFixed(coordDp())}` + (lastSnap && lastSnap.type !== 'grid' ? `  ${SNAP_LABEL[lastSnap.type]}` : '');
     $('#stSnap').textContent = (S.snap.ortho || orthoTemp ? 'ORTHO ' : '') + (lastSnap ? SNAP_LABEL[lastSnap.type] : '');
     if (drag) {
       if (drag.kind === 'pan') { view.ox = drag.ox + (s.x - drag.sx); view.oy = drag.oy - (s.y - drag.sy); }
@@ -848,7 +954,7 @@
       if (drag.kind === 'move' && drag.moved) { updateStats(); LOG.action(`Moved ${drag.orig.length} part(s)`); }
       if (drag.kind === 'grip' && drag.moved) {
         const g = drag.grip;
-        if (g.kind === 'edge') LOG.action(`Bowed edge ${g.i + 1} of "${drag.sh.name}" to bulge ${fmtIn(drag.lastSag || 0)} in`);
+        if (g.kind === 'edge') LOG.action(`Bowed edge ${g.i + 1} of "${drag.sh.name}" to bulge ${fmtIn(drag.lastSag || 0)} ${uLabel()}`);
         else LOG.action(`Moved point ${g.i + 1} of "${drag.sh.name}"`);
         updateStats();
       }
@@ -916,6 +1022,17 @@
     if ((drawAnchor() || dynTarget || (drawing && ['rect', 'circle', 'ellipse'].includes(drawing.kind))) && /^[0-9.]$/.test(e.key)) {
       const el = $('#dynLen'); if (el) { el.value = e.key; el.focus(); dynActive = true; e.preventDefault(); return; }
     }
+    /* Command entry. Letters build up a command, Enter or Space runs it. Space
+       still pans while nothing is being typed, and Enter still finishes a
+       polyline, so neither is taken away. */
+    if (S.keys.mode !== 'direct' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (/^[a-zA-Z]$/.test(e.key)) { cmdBuf += e.key.toUpperCase(); showCmd(); e.preventDefault(); return; }
+      if (cmdBuf) {
+        if (e.key === 'Enter' || e.code === 'Space') { const c = cmdBuf; cmdBuf = ''; showCmd(); runCommand(c); e.preventDefault(); return; }
+        if (e.key === 'Backspace') { cmdBuf = cmdBuf.slice(0, -1); showCmd(); e.preventDefault(); return; }
+        if (e.key === 'Escape') { cmdBuf = ''; showCmd(); e.preventDefault(); return; }
+      }
+    }
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
     if (e.key === 'Shift') { orthoTemp = true; draw(); }
     if (e.key === 'Escape') { if (clearDynTarget()) { draw(); return; } if (clearEdge()) { refreshProps(); draw(); return; } drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
@@ -934,19 +1051,21 @@
       if (e.key.toLowerCase() === 'a') return focusField('rot');
       if (e.key === '[' || e.key === ']') { rotateSel((e.key === ']' ? -1 : 1) * (e.shiftKey ? 1 : 15)); e.preventDefault(); return; }
     }
-    if (e.key.toLowerCase() === 'v') setTool('select'); if (e.key.toLowerCase() === 'r') setTool('rect'); if (e.key.toLowerCase() === 'c') setTool('circle'); if (e.key.toLowerCase() === 'p') setTool('poly'); if (e.key.toLowerCase() === 'l') setTool('pline');
-    if (e.key.toLowerCase() === 'a') setTool('arc');
-    if (e.key.toLowerCase() === 'e') setTool('ellipse');
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') { e.shiftKey ? ungroupSel() : groupSel(); e.preventDefault(); }
-    if (e.key.toLowerCase() === 'm') setTool('measure');
-    if (e.key.toLowerCase() === 't' && !sel.size) { openOffsetTrace(); e.preventDefault(); }
-    if (e.key.toLowerCase() === 'k') { setTool('trim'); toast('Click the edge you want to remove'); }
-    if (e.key.toLowerCase() === 'j' && sel.size > 1) { mergeSelected(trimTol()); e.preventDefault(); }
-    if (e.key.toLowerCase() === 'd' && !e.ctrlKey && !e.metaKey) setTool('dim');
-    if (e.key.toLowerCase() === 'g' && sel.size) { openMoveBy(); e.preventDefault(); }
+    if (S.keys.mode === 'direct') {
+      if (e.key.toLowerCase() === 'v') setTool('select'); if (e.key.toLowerCase() === 'r') setTool('rect'); if (e.key.toLowerCase() === 'c') setTool('circle'); if (e.key.toLowerCase() === 'p') setTool('poly'); if (e.key.toLowerCase() === 'l') setTool('pline');
+      if (e.key.toLowerCase() === 'a') setTool('arc');
+      if (e.key.toLowerCase() === 'e') setTool('ellipse');
+      if (e.key.toLowerCase() === 'm') setTool('measure');
+      if (e.key.toLowerCase() === 't' && !sel.size) { openOffsetTrace(); e.preventDefault(); }
+      if (e.key.toLowerCase() === 'k') { setTool('trim'); toast('Click the edge you want to remove'); }
+      if (e.key.toLowerCase() === 'j' && sel.size > 1) { mergeSelected(trimTol()); e.preventDefault(); }
+      if (e.key.toLowerCase() === 'd' && !e.ctrlKey && !e.metaKey) setTool('dim');
+      if (e.key.toLowerCase() === 'g' && sel.size) { openMoveBy(); e.preventDefault(); }
+    }
     if (e.key === 'F8') { S.snap.ortho = !S.snap.ortho; saveSettings(); syncSnapUI(); toast('Ortho ' + (S.snap.ortho ? 'on' : 'off')); e.preventDefault(); }
     if (e.key === 'F3') { S.snap.on = !S.snap.on; saveSettings(); syncSnapUI(); toast('Object snap ' + (S.snap.on ? 'on' : 'off')); e.preventDefault(); }
-    if (e.key.startsWith('Arrow') && sel.size) { const st = e.shiftKey ? 1 : (snapV() || 0.125); const dx = e.key === 'ArrowRight' ? st : e.key === 'ArrowLeft' ? -st : 0, dy = e.key === 'ArrowUp' ? st : e.key === 'ArrowDown' ? -st : 0; snapshot(); for (const sh of job.shapes) if (sel.has(sh.id)) { sh.x += dx; sh.y += dy; } refresh(); e.preventDefault(); }
+    if (e.key.startsWith('Arrow') && sel.size) { const st = e.shiftKey ? (isMM() ? 10 / MM_PER_IN : 1) : (snapV() || (isMM() ? 1 / MM_PER_IN : 0.125)); const dx = e.key === 'ArrowRight' ? st : e.key === 'ArrowLeft' ? -st : 0, dy = e.key === 'ArrowUp' ? st : e.key === 'ArrowDown' ? -st : 0; snapshot(); for (const sh of job.shapes) if (sel.has(sh.id)) { sh.x += dx; sh.y += dy; } refresh(); e.preventDefault(); }
   });
   window.addEventListener('keyup', e => {
     if (e.code === 'Space') spaceDown = false;
@@ -1013,13 +1132,13 @@
     const shs = job.shapes.filter(s => sel.has(s.id));
     if (!shs.length) { el.innerHTML = `<p class="muted">Select a part to edit it.<br><br><b>Canvas</b><br>Wheel: zoom · Right/middle drag or <span class="kbd">Space</span>+drag: pan<br><span class="kbd">Del</span> delete · <span class="kbd">Ctrl+D</span> duplicate · <span class="kbd">Ctrl+Z</span> undo · arrows nudge<br><span class="kbd">F</span> fit bed · <span class="kbd">Esc</span> cancel tool</p>`; return; }
     const sh = shs[0]; const multi = shs.length > 1;
-    const num = (k, label, step = 0.125) => `<div class="row"><label>${label}</label><input type="number" step="${step}" data-k="${k}" value="${fmtIn(sh[k] ?? 0)}"></div>`;
+    const num = (k, label, step = 0.125) => `<div class="row"><label>${label}</label><input type="number" step="${uStep(step)}" data-k="${k}" value="${fmtIn(sh[k] ?? 0)}"></div>`;
     // same treatment the selected edge gets: type an exact value or drag it
     const numSlide = (k, label, step = 0.125, max) => {
       const v = +(sh[k] ?? 0);
       const hi = max || Math.max(1, Math.ceil(v * 2));
-      return `<div class="row"><label>${label}</label><input type="number" step="${step}" data-k="${k}" value="${fmtIn(v)}"> in</div>`
-        + `<div class="row"><input type="range" class="slider" data-ks="${k}" min="${step}" max="${hi}" step="${step / 8}" value="${v}"></div>`;
+      return `<div class="row"><label>${label}</label><input type="number" step="${uStep(step)}" data-k="${k}" value="${fmtIn(v)}"> ${uLabel()}</div>`
+        + `<div class="row"><input type="range" class="slider" data-ks="${k}" min="${uStep(step)}" max="${toU(hi)}" step="${uStep(step / 8)}" value="${toU(v)}"></div>`;
     };
     let h = `<h3>${multi ? shs.length + ' parts' : esc(sh.kind)}</h3>`;
     if (!multi) h = edgePanel(sh) + h;
@@ -1033,7 +1152,7 @@
     if (!multi && sh.kind === 'ellipse') h += numSlide('rx', 'Radius X', 0.0625) + numSlide('ry', 'Radius Y', 0.0625);
     if (!multi && sh.textSpec) h += `<div class="row"><button class="small" id="btnEditText">Edit text…</button></div>`;
     if (!multi && sh.group) h += `<div class="row muted">In group ${esc(sh.group)}</div>`;
-    if (!multi && sh.kind === 'circle') h += numSlide('r', 'Radius', 0.0625) + `<div class="row"><label>Diameter</label><input type="number" step="0.125" data-k="dia" value="${fmtIn(sh.r * 2)}"> in</div>`;
+    if (!multi && sh.kind === 'circle') h += numSlide('r', 'Radius', 0.0625) + `<div class="row"><label>Diameter</label><input type="number" step="${uStep(0.125)}" data-k="dia" value="${fmtIn(sh.r * 2)}"> ${uLabel()}</div>`;
     if (!multi && sh.kind === 'poly' && !sh.open) h += `<div class="row"><label>All corners R</label><input type="number" step="0.0625" data-k="allr" value="${fmtIn(sh.pts[0].r || 0)}"></div>`;
     if (!multi && sh.kind === 'poly') h += polyTable(sh);
     h += num('rot', 'Rotation °', 15) + `<div class="row"><label></label><button class="small" data-rot="-90">↺ 90</button><button class="small" data-rot="90">↻ 90</button><button class="small" data-rot="-15">↺ 15</button><button class="small" data-rot="15">↻ 15</button></div>`;
@@ -1047,8 +1166,8 @@
     h += `<p class="muted" style="font-size:11px">Keys: <span class="kbd">X</span> <span class="kbd">Y</span> <span class="kbd">A</span> jump to X / Y / angle · <span class="kbd">[</span> <span class="kbd">]</span> rotate 15° (Shift = 1°) · arrows nudge</p>`;
     el.innerHTML = h;
     el.querySelectorAll('[data-rot]').forEach(b => b.onclick = () => rotateSel(parseFloat(b.dataset.rot)));
-    el.querySelectorAll('[data-rc]').forEach(inp => inp.addEventListener('change', () => { snapshot(); sh.rc = sh.rc || [null, null, null, null]; sh.rc[+inp.dataset.rc] = inp.value === '' ? null : parseFloat(inp.value); delete sh.startPt; refresh(); }));
-    el.querySelectorAll('[data-pv]').forEach(inp => inp.addEventListener('change', () => { snapshot(); polyEdit(sh, inp.dataset.pv, +inp.dataset.i, parseFloat(inp.value)); delete sh.startPt; refresh(); }));
+    el.querySelectorAll('[data-rc]').forEach(inp => inp.addEventListener('change', () => { snapshot(); sh.rc = sh.rc || [null, null, null, null]; sh.rc[+inp.dataset.rc] = inp.value === '' ? null : uParse(inp.value); delete sh.startPt; refresh(); }));
+    el.querySelectorAll('[data-pv]').forEach(inp => inp.addEventListener('change', () => { snapshot(); polyEdit(sh, inp.dataset.pv, +inp.dataset.i, inp.dataset.pv === 'ang' ? parseFloat(inp.value) : uParse(inp.value)); delete sh.startPt; refresh(); }));
     const pb = $('#btnPolyBuild'); if (pb) pb.onclick = () => openPolyBuilder(sh);
     el.querySelectorAll('tr.edgeRow').forEach(tr => tr.addEventListener('click', (ev) => {
       if (ev.target.tagName === 'INPUT') return;      // let the number fields work
@@ -1059,7 +1178,7 @@
     el.querySelectorAll('[data-ks]').forEach(sl => {
       sl.addEventListener('pointerdown', () => snapshot());
       sl.addEventListener('input', () => {
-        const k = sl.dataset.ks, v = parseFloat(sl.value);
+        const k = sl.dataset.ks, v = fromU(parseFloat(sl.value));
         if (!isFinite(v) || v <= 0) return;
         sh[k] = v; delete sh.startPt;
         const num2 = el.querySelector(`[data-k="${k}"]`);
@@ -1075,7 +1194,12 @@
     el.querySelectorAll('[data-k]').forEach(inp => {
       inp.addEventListener('change', () => {
         snapshot();
-        const k = inp.dataset.k; let v = inp.type === 'checkbox' ? inp.checked : inp.type === 'number' ? parseFloat(inp.value) : inp.value;
+        const k = inp.dataset.k;
+        // x, y, sizes and radii are lengths; rotation is degrees and tool ids are ids
+        const LEN = new Set(['x', 'y', 'w', 'h', 'r', 'dia', 'allr', 'rx', 'ry']);
+        let v = inp.type === 'checkbox' ? inp.checked
+          : inp.type === 'number' ? (LEN.has(k) ? uParse(inp.value) : parseFloat(inp.value))
+          : inp.value;
         if (inp.tagName === 'SELECT' && k === 'toolId') v = parseInt(v, 10);
         for (const s of shs) {
           if (k === 'dia') s.r = v / 2; else if (k === 'allr') s.pts.forEach(p => p.r = v); else s[k] = v;
@@ -1350,8 +1474,8 @@
       <p class="muted">Current size ${fmtIn(bb0.w)} × ${fmtIn(bb0.h)} in</p>
       <div class="row"><label>Factor</label><input type="number" step="0.1" id="scF" value="1"></div>
       <p class="muted">— or scale to a target size —</p>
-      <div class="row"><label>Width</label><input type="number" step="0.125" id="scW" value="${fmtIn(bb0.w)}"> in</div>
-      <div class="row"><label>Height</label><input type="number" step="0.125" id="scH" value="${fmtIn(bb0.h)}"> in</div>
+      <div class="row"><label>Width</label><input type="number" step="${uStep(0.125)}" id="scW" value="${fmtIn(bb0.w)}"> ${uLabel()}</div>
+      <div class="row"><label>Height</label><input type="number" step="${uStep(0.125)}" id="scH" value="${fmtIn(bb0.h)}"> ${uLabel()}</div>
       <div class="row"><label><input type="checkbox" id="scLock" checked> Keep proportions</label></div>
       <p class="muted" style="font-size:11px">Scaling changes part geometry, not tool diameters. Fillet and arc radii scale with the part.</p>
       <div class="row" style="margin-top:10px"><button class="primary" id="scOk">Scale</button><button id="scCancel">Cancel</button></div>`,
@@ -1489,14 +1613,14 @@
       <div id="arGrid">
         <div class="row"><label>Columns</label><input type="number" step="1" min="1" id="arC" value="3"> across</div>
         <div class="row"><label>Rows</label><input type="number" step="1" min="1" id="arR" value="1"> up</div>
-        <div class="row"><label>X spacing</label><input type="number" step="0.125" id="arDX" value="${fmtIn(bb.w + 1)}"> in <span class="muted">centre to centre</span></div>
-        <div class="row"><label>Y spacing</label><input type="number" step="0.125" id="arDY" value="${fmtIn(bb.h + 1)}"> in</div>
+        <div class="row"><label>X spacing</label><input type="number" step="0.125" id="arDX" value="${fmtIn(bb.w + 1)}"> ${uLabel()} <span class="muted">centre to centre</span></div>
+        <div class="row"><label>Y spacing</label><input type="number" step="0.125" id="arDY" value="${fmtIn(bb.h + 1)}"> ${uLabel()}</div>
       </div>
       <div id="arCirc" style="display:none">
         <div class="row"><label>Count</label><input type="number" step="1" min="2" id="arN" value="6"></div>
         <div class="row"><label>Circle dia</label><input type="number" step="0.125" id="arBD" value="6"> in</div>
-        <div class="row"><label>Centre X</label><input type="number" step="0.125" id="arCX" value="${fmtIn(bb.x0 + bb.w / 2)}"> in</div>
-        <div class="row"><label>Centre Y</label><input type="number" step="0.125" id="arCY" value="${fmtIn(bb.y0 + bb.h / 2)}"> in</div>
+        <div class="row"><label>Centre X</label><input type="number" step="0.125" id="arCX" value="${fmtIn(bb.x0 + bb.w / 2)}"> ${uLabel()}</div>
+        <div class="row"><label>Centre Y</label><input type="number" step="0.125" id="arCY" value="${fmtIn(bb.y0 + bb.h / 2)}"> ${uLabel()}</div>
         <div class="row"><label>Start angle</label><input type="number" step="15" id="arA0" value="0"> °</div>
         <div class="row"><label><input type="checkbox" id="arRot"> Rotate each copy to face out</label></div>
       </div>
@@ -1638,7 +1762,7 @@
       <div class="row"><button class="small" id="tjTrim">Trim tool</button><span class="muted">then click the piece of an open path to remove, between its crossings</span></div>
       <div class="row"><button class="small" id="tjExtend">Extend tool</button><span class="muted">then click near the end of an open path to run it out to the next shape it meets</span></div>
       <div class="row"><button class="small" id="tjHeal">Snap loose ends to edges</button><span class="muted">pull endpoints that stop just short onto the line they should meet</span></div>
-      <div class="row"><label>Tolerance</label><input type="number" step="0.001" id="tjTol" value="${fmtIn(trimTol())}"> in</div>
+      <div class="row"><label>Tolerance</label><input type="number" step="0.001" id="tjTol" value="${fmtIn(trimTol())}"> ${uLabel()}</div>
       <p class="muted" style="font-size:11px">Used for joining, healing and trimming. Drawn or imported paths often stop a few thousandths short of the line they were meant to meet — geometrically that is not a crossing, so trim would have nothing to cut back to. Anything within this distance is treated as touching.</p>
       <div class="row" style="margin-top:10px"><button id="tjCancel">Close</button></div>`,
       (ov, close) => {
@@ -1877,11 +2001,11 @@
     const sag = edgeSagitta(sh, i);
     const maxL = Math.max(1, Math.ceil(L * 2));
     return `<h3>Side ${i + 1} <span class="muted">P${i + 1} → P${(i + 1) % n + 1}</span></h3>
-      <div class="row"><label>Length</label><input type="number" step="0.001" data-ev="len" value="${fmtIn(L)}"> in</div>
+      <div class="row"><label>Length</label><input type="number" step="0.001" data-ev="len" value="${fmtIn(L)}"> ${uLabel()}</div>
       <div class="row"><input type="range" class="slider" data-es="len" min="0.01" max="${maxL}" step="0.001" value="${L}"></div>
       <div class="row"><label>Angle</label><input type="number" step="1" data-ev="ang" value="${(+A.toFixed(3))}"> °</div>
       <div class="row"><input type="range" class="slider" data-es="ang" min="0" max="360" step="0.1" value="${A}"></div>
-      <div class="row"><label>Bulge</label><input type="number" step="0.0625" data-ev="sag" value="${sag ? fmtIn(sag) : ''}" placeholder="0"> in</div>
+      <div class="row"><label>Bulge</label><input type="number" step="0.0625" data-ev="sag" value="${sag ? fmtIn(sag) : ''}" placeholder="0"> ${uLabel()}</div>
       <div class="row"><input type="range" class="slider" data-es="sag" min="${-(L / 2).toFixed(4)}" max="${(L / 2).toFixed(4)}" step="0.001" value="${sag || 0}"></div>
       <div class="row"><button class="small" id="btnDelEdge">Delete this side</button><span class="muted">or press Delete</span></div>
       <p class="muted" style="font-size:11px">Changing the length or angle moves P${(i + 1) % n + 1}; the rest of the part follows. Drag a slider to feel it out, or type an exact value.</p>`;
@@ -2045,7 +2169,7 @@
           const d = parseFloat(ov.querySelector('#dsD').value);
           let cc = null;
           if (isFinite(d)) cc = ccFor(m, d, eA, eB);
-          NOTE.innerHTML = txt + (cc != null ? `<br>That puts the centres <b>${fmtIn(cc)}"</b> apart.` : '');
+          NOTE.innerHTML = txt + (cc != null ? `<br>That puts the centres <b>${fmtLen(cc)}</b> apart.` : '');
           ov.querySelector('#dsAngRow').style.display = DIR.value === 'ang' ? '' : 'none';
         };
         // convert the chosen measurement into a centre-to-centre distance along u
@@ -2083,7 +2207,7 @@
           const grp = B.group ? job.shapes.filter(s => s.group === B.group) : [B];
           for (const s of grp) { s.x += move.x; s.y += move.y; }
           const label = { cc: 'centre to centre', gap: 'edge gap', ce: 'centre to edge', ec: 'edge to centre', ff: 'overall' }[MODE.value];
-          LOG.action(`Set ${label} = ${fmtIn(d)} in between "${A.name}" and "${B.name}" (centres ${fmtIn(cc)} in apart)`);
+          LOG.action(`Set ${label} = ${fmtIn(d)} ${uLabel()} between "${A.name}" and "${B.name}" (centres ${fmtIn(cc)} ${uLabel()} apart)`);
           close(); refresh();
         };
       });
@@ -2212,8 +2336,11 @@
   }
   function commitDyn() {
     const mode = dynMode(); if (!mode) return;
-    const v1 = parseFloat($('#dynLen').value);
-    const v2 = parseFloat($('#dynAng').value);
+    /* The length box is always a length. The second box is an angle while
+       drawing a line, but a diameter on a circle and a height on a rectangle -
+       those are lengths and convert, the angle does not. */
+    const v1 = uParse($('#dynLen').value);
+    const v2 = mode.kind === 'polar' ? parseFloat($('#dynAng').value) : uParse($('#dynAng').value);
     dynActive = false;
     $('#dynLen').blur(); $('#dynAng').blur();
 
@@ -2231,7 +2358,7 @@
       if (t.kind === 'rect') {
         if (v1 > 0) t.w = v1;
         if (v2 > 0) t.h = v2;
-        LOG.action('Resized "' + t.name + '" to ' + fmtIn(t.w) + ' x ' + fmtIn(t.h) + ' in');
+        LOG.action('Resized "' + t.name + '" to ' + fmtIn(t.w) + ' x ' + fmtIn(t.h) + ' ' + uLabel());
       } else if (t.kind === 'circle') {
         const rNew = dynLastEditedRef() === 'ang' ? (v2 > 0 ? v2 / 2 : NaN) : v1;
         if (!(rNew > 0)) { toast('Enter a radius or a diameter'); return; }
@@ -2240,7 +2367,7 @@
       } else {
         if (v1 > 0) t.rx = v1;
         if (v2 > 0) t.ry = v2;
-        LOG.action('Resized "' + t.name + '" to ' + fmtIn(t.rx * 2) + ' x ' + fmtIn(t.ry * 2) + ' in');
+        LOG.action('Resized "' + t.name + '" to ' + fmtIn(t.rx * 2) + ' x ' + fmtIn(t.ry * 2) + ' ' + uLabel());
       }
       delete t.startPt;
       clearDynTarget();
@@ -3140,7 +3267,7 @@
     ctx.font = `${12 * dpr}px ui-monospace, monospace`;
     for (const d of dims.concat(dimDraft && dimDraft.b ? [dimDraft] : [])) {
       const L = G.dist(d.a, d.b);
-      drawDimLine(d.a, d.b, d.off || 0, d.text || fmtIn(L) + '"', '#d38cff');
+      drawDimLine(d.a, d.b, d.off || 0, d.text || fmtLen(L), '#d38cff');
     }
     ctx.restore();
   }
@@ -3168,7 +3295,7 @@
         const r = sh.kind === 'circle' ? sh.r : sh.rx;
         // diameter across the centre, plus the radius value beside it
         // radius, drawn from the centre out - not the diameter
-        const rb = drawDimLine({ x: sh.x, y: sh.y }, { x: sh.x + r, y: sh.y }, 0, `R ${fmtIn(r)}"`, '#7fd8a0');
+        const rb = drawDimLine({ x: sh.x, y: sh.y }, { x: sh.x + r, y: sh.y }, 0, `R ${fmtLen(r)}`, '#7fd8a0');
         if (rb) sizeHits.push({ ...rb, id: sh.id, key: 'r', value: r, label: 'Radius' });
         continue;
       }
@@ -3180,8 +3307,8 @@
         continue;
       }
       // everything else: overall width and height across the bounding box
-      const wLabel = (sh.kind === 'rect' && !sh.rot) ? fmtIn(sh.w) + '"' : fmtIn(b.w) + '"';
-      const hLabel = (sh.kind === 'rect' && !sh.rot) ? fmtIn(sh.h) + '"' : fmtIn(b.h) + '"';
+      const wLabel = (sh.kind === 'rect' && !sh.rot) ? fmtLen(sh.w) : fmtLen(b.w);
+      const hLabel = (sh.kind === 'rect' && !sh.rot) ? fmtLen(sh.h) : fmtLen(b.h);
       const wb = drawDimLine({ x: b.x0, y: b.y0 }, { x: b.x1, y: b.y0 }, -gap, wLabel, '#7fd8a0');
       if (wb) sizeHits.push({ ...wb, id: sh.id, key: 'w', value: (sh.kind === 'rect' && !sh.rot) ? sh.w : b.w, label: 'Width' });
       const hb = drawDimLine({ x: b.x0, y: b.y1 }, { x: b.x0, y: b.y0 }, -gap, hLabel, '#7fd8a0');
@@ -3189,7 +3316,7 @@
       // corner radius, when there is one and it is uniform
       if (sh.kind === 'rect' && sh.r > 0 && !(sh.rc || []).some(v => v != null)) {
         const p = W2S({ x: b.x0 + sh.r * 0.3, y: b.y1 - sh.r * 0.3 });
-        const rl = `R ${fmtIn(sh.r)}"`;
+        const rl = `R ${fmtLen(sh.r)}`;
         const w = ctx.measureText(rl).width;
         ctx.fillStyle = 'rgba(20,22,26,.85)'; ctx.fillRect(p.x + 6, p.y - 8 * dpr, w + 8, 16 * dpr);
         ctx.fillStyle = '#7fd8a0'; ctx.fillText(rl, p.x + 10, p.y + 5 * dpr);
@@ -3307,7 +3434,7 @@
       const issues = st.issues || [];
       for (const msg of issues) if (!warnedIssues.has(msg)) { warnedIssues.add(msg); LOG.warn('Toolpath: ' + msg); }
       for (const msg of Array.from(warnedIssues)) if (!issues.includes(msg)) warnedIssues.delete(msg);
-      el.innerHTML = `${job.shapes.length} parts · ${st.passes} passes · ${st.tools.map(esc).join(', ')}<br>Cut length ${st.length.toFixed(1)} in · est. ${st.timeMin.toFixed(1)} min<br>Material ${esc(job.material.name)} (${job.material.thickness}")`
+      el.innerHTML = `${job.shapes.length} parts · ${st.passes} passes · ${st.tools.map(esc).join(', ')}<br>Cut length ${toU(st.length).toFixed(1)} ${uLabel()} · est. ${st.timeMin.toFixed(1)} min<br>Material ${esc(job.material.name)} (${fmtIn(job.material.thickness)} ${uLabel()})`
         + (bad.length ? `<br><span class="warnbox">⚠ ${bad.length} part(s) outside the bed</span>` : '')
         + (issues.length ? `<br><span class="warnbox">⚠ ${issues.map(esc).join('<br>⚠ ')}</span>` : '');
     } catch (e) { el.innerHTML = `<span class="warnbox">Toolpath error: ${esc(e.message)}</span>`; console.error(e); }
@@ -3564,8 +3691,8 @@
         if (opts.sizes) {
           // green, matching the size labels on screen
           d.fillRgb(0.30, 0.62, 0.47);
-          if (sh.kind === 'circle') d.text(sh.x, sh.y, 'R ' + fmtIn(sh.r) + '"', 8, 'center', 0, 8);
-          else d.text((b.x0 + b.x1) / 2, b.y0, fmtIn(b.w) + '" x ' + fmtIn(b.h) + '"', 8, 'center', 0, -11);
+          if (sh.kind === 'circle') d.text(sh.x, sh.y, 'R ' + fmtLen(sh.r), 8, 'center', 0, 8);
+          else d.text((b.x0 + b.x1) / 2, b.y0, fmtLen(b.w) + ' x ' + fmtLen(b.h), 8, 'center', 0, -11);
           d.fillRgb(0, 0, 0);
         }
       }
@@ -3584,7 +3711,7 @@
           d.moveTo(A.x, A.y); d.lineTo(B.x, B.y);
           d.stroke();
           d.fillRgb(0.83, 0.55, 1);
-          d.text((A.x + B.x) / 2, (A.y + B.y) / 2, dm.text || fmtIn(L) + '"', 8, 'center', 0, 3);
+          d.text((A.x + B.x) / 2, (A.y + B.y) / 2, dm.text || fmtLen(L), 8, 'center', 0, 3);
           d.fillRgb(0, 0, 0);
         }
       }
@@ -3726,7 +3853,7 @@
       ? `Placed ${res.placed.length} of ${units.length} — ${pct}% of the sheet used. ${res.failed.length} would not fit and ${res.failed.length === 1 ? 'is' : 'are'} parked off the bed in red.`
       : `Placed all ${res.placed.length} — ${pct}% of the sheet used.`;
     toast(msg);
-    LOG.action(`Nest: ${msg} (${rots.length} orientation${rots.length > 1 ? 's' : ''}, ${res.resolution}" grid, ${res.ms} ms)`);
+    LOG.action(`Nest: ${msg} (${rots.length} orientation${rots.length > 1 ? 's' : ''}, ${fmtLen(res.resolution)} grid, ${res.ms} ms)`);
     if (res.failed.length) LOG.warn(`${res.failed.length} part(s) do not fit on a ${S.machine.bedW} x ${S.machine.bedH} in sheet`);
   }
 
@@ -3776,32 +3903,65 @@
   // ---------- settings UI ----------
   function renderSettings() {
     const m = S.machine;
-    $('#mBedW').value = m.bedW; $('#mBedH').value = m.bedH; $('#mSafeZ').value = m.safeZ; $('#mDec').value = m.decimals; $('#mEol').value = m.eol || 'crlf';
+    $('#mBedW').value = fmtIn(m.bedW); $('#mBedH').value = fmtIn(m.bedH); $('#mSafeZ').value = fmtIn(m.safeZ); $('#mDec').value = m.decimals; $('#mEol').value = m.eol || 'crlf';
+    $('#mUnits').value = S.units || 'in';
+    $('#mZLift').value = m.zLift == null ? '' : fmtIn(m.zLift);
+    $('#mLeadIn').value = fmtIn(m.leadIn || 0);
     $('#mHeader').value = m.header; $('#mToolChange').value = m.toolChange; $('#mFooter').value = m.footer;
-    $('#nGap').value = S.nest.gap; $('#nMargin').value = S.nest.margin; $('#nRotate').value = S.nest.rotateMode || (S.nest.rotate ? 'quarter' : 'none');
+    $('#nGap').value = fmtIn(S.nest.gap); $('#nMargin').value = fmtIn(S.nest.margin); $('#nRotate').value = S.nest.rotateMode || (S.nest.rotate ? 'quarter' : 'none');
     $('#aiKey').value = S.ai.key || ''; $('#aiModel').value = S.ai.model || '';
+    renderKeys();
     const tb = $('#toolTable tbody'); tb.innerHTML = '';
     S.tools.forEach((t, i) => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td><input type="number" step="1" value="${t.slot}" data-f="slot"></td><td><input type="text" value="${esc(t.name)}" data-f="name"></td><td><select data-f="type"><option ${t.type === 'endmill' ? 'selected' : ''}>endmill</option><option ${t.type === 'drill' ? 'selected' : ''}>drill</option><option ${t.type === 'vbit' ? 'selected' : ''}>vbit</option></select></td><td><input type="number" step="0.0625" value="${t.dia}" data-f="dia"></td><td><input type="number" step="500" value="${t.rpm}" data-f="rpm"></td><td><input type="number" step="10" value="${t.feed}" data-f="feed"></td><td><input type="number" step="5" value="${t.plunge}" data-f="plunge"></td><td><input type="number" step="0.03125" value="${t.passDepth}" data-f="passDepth"></td><td><button class="small" data-del="${i}">✕</button></td>`;
-      tr.querySelectorAll('[data-f]').forEach(inp => inp.addEventListener('change', () => { const f = inp.dataset.f; t[f] = inp.type === 'number' ? parseFloat(inp.value) : inp.value; saveSettings(); refresh(); }));
+      tr.innerHTML = `<td><input type="number" step="1" value="${t.slot}" data-f="slot"></td><td><input type="text" value="${esc(t.name)}" data-f="name"></td><td><select data-f="type"><option ${t.type === 'endmill' ? 'selected' : ''}>endmill</option><option ${t.type === 'drill' ? 'selected' : ''}>drill</option><option ${t.type === 'vbit' ? 'selected' : ''}>vbit</option></select></td><td><input type="number" step="${uStep(0.0625)}" value="${fmtIn(t.dia)}" data-f="dia"></td><td><input type="number" step="500" value="${t.rpm}" data-f="rpm"></td><td><input type="number" step="10" value="${fmtIn(t.feed)}" data-f="feed"></td><td><input type="number" step="5" value="${fmtIn(t.plunge)}" data-f="plunge"></td><td><input type="number" step="${uStep(0.03125)}" value="${fmtIn(t.passDepth)}" data-f="passDepth"></td><td><button class="small" data-del="${i}">✕</button></td>`;
+      tr.querySelectorAll('[data-f]').forEach(inp => inp.addEventListener('change', () => {
+        const f = inp.dataset.f;
+        const LEN = new Set(['dia', 'passDepth', 'feed', 'plunge']);   // feeds are a length per minute
+        t[f] = inp.type === 'number' ? (LEN.has(f) ? uParse(inp.value) : parseFloat(inp.value)) : inp.value;
+        saveSettings(); refresh();
+      }));
       tr.querySelector('[data-del]').onclick = () => { if (S.tools.length <= 1) return; S.tools.splice(i, 1); saveSettings(); renderSettings(); refresh(); };
       tb.appendChild(tr);
     });
     const mb = $('#matTable tbody'); mb.innerHTML = '';
     S.materials.forEach((mt, i) => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td><input type="text" value="${esc(mt.name)}" data-f="name"></td><td><input type="number" step="0.0625" value="${mt.thickness}" data-f="thickness"></td><td><button class="small" data-del="${i}">✕</button></td>`;
-      tr.querySelectorAll('[data-f]').forEach(inp => inp.addEventListener('change', () => { const f = inp.dataset.f; mt[f] = inp.type === 'number' ? parseFloat(inp.value) : inp.value; saveSettings(); syncMaterialUI(); }));
+      tr.innerHTML = `<td><input type="text" value="${esc(mt.name)}" data-f="name"></td><td><input type="number" step="${uStep(0.0625)}" value="${fmtIn(mt.thickness)}" data-f="thickness"></td><td><button class="small" data-del="${i}">✕</button></td>`;
+      tr.querySelectorAll('[data-f]').forEach(inp => inp.addEventListener('change', () => { const f = inp.dataset.f; mt[f] = inp.type === 'number' ? uParse(inp.value) : inp.value; saveSettings(); syncMaterialUI(); }));
       tr.querySelector('[data-del]').onclick = () => { if (S.materials.length <= 1) return; S.materials.splice(i, 1); saveSettings(); renderSettings(); syncMaterialUI(); };
       mb.appendChild(tr);
     });
   }
+  function renderKeys() {
+    const tb = $('#keyTable tbody');
+    if (!tb) return;
+    $('#keyMode').value = S.keys.mode === 'direct' ? 'direct' : 'command';
+    const map = aliasMap();
+    const byId = {};
+    for (const [alias, id] of Object.entries(map)) { (byId[id] = byId[id] || []).push(alias); }
+    tb.innerHTML = '';
+    for (const [id, cmd] of Object.entries(COMMANDS)) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${esc(cmd.label)}</td><td><input type="text" data-cmd="${id}" value="${esc((byId[id] || []).join(', '))}" style="width:150px"></td>`;
+      tr.querySelector('input').addEventListener('change', (ev) => {
+        const wanted = ev.target.value.split(',').map(x => x.trim().toUpperCase()).filter(Boolean);
+        const next = { ...aliasMap() };
+        for (const [a, cid] of Object.entries(next)) if (cid === id) delete next[a];
+        for (const a of wanted) next[a] = id;
+        S.keys.aliases = next;
+        saveSettings(); renderKeys();
+        LOG.action('Shortcut for "' + cmd.label + '" set to ' + (wanted.join(', ') || 'nothing'));
+      });
+      tb.appendChild(tr);
+    }
+  }
   const bindSetting = (id, fn) => $(id).addEventListener('change', () => { fn($(id)); saveSettings(); refresh(); });
-  bindSetting('#mBedW', el => S.machine.bedW = parseFloat(el.value)); bindSetting('#mBedH', el => S.machine.bedH = parseFloat(el.value));
-  bindSetting('#mSafeZ', el => S.machine.safeZ = parseFloat(el.value)); bindSetting('#mDec', el => S.machine.decimals = parseInt(el.value, 10)); bindSetting('#mEol', el => S.machine.eol = el.value);
-  bindSetting('#mZLift', el => S.machine.zLift = el.value === '' ? null : parseFloat(el.value));
-  bindSetting('#mLeadIn', el => S.machine.leadIn = parseFloat(el.value) || 0);
+  bindSetting('#mBedW', el => S.machine.bedW = uParse(el.value)); bindSetting('#mBedH', el => S.machine.bedH = uParse(el.value));
+  bindSetting('#mSafeZ', el => S.machine.safeZ = uParse(el.value)); bindSetting('#mDec', el => S.machine.decimals = parseInt(el.value, 10)); bindSetting('#mEol', el => S.machine.eol = el.value);
+  bindSetting('#mZLift', el => S.machine.zLift = el.value === '' ? null : uParse(el.value));
+  bindSetting('#mLeadIn', el => S.machine.leadIn = uParse(el.value) || 0);
+  bindSetting('#mUnits', el => { S.units = el.value === 'mm' ? 'mm' : 'in'; syncUnitsUI(); renderSettings(); syncMaterialUI(); LOG.action('Units switched to ' + (isMM() ? 'millimetres' : 'inches') + ' - programs are still posted in inches'); });
   bindSetting('#mCreationDate', el => S.machine.creationDate = el.checked);
   bindSetting('#mSpindleTC', el => S.machine.spindleInToolChange = el.checked);
   $('#mApplyPreset').onclick = () => {
@@ -3815,8 +3975,14 @@
     toast('Applied preset: ' + src.name);
   };
   bindSetting('#mHeader', el => S.machine.header = el.value); bindSetting('#mToolChange', el => S.machine.toolChange = el.value); bindSetting('#mFooter', el => S.machine.footer = el.value);
-  bindSetting('#nGap', el => S.nest.gap = parseFloat(el.value)); bindSetting('#nMargin', el => S.nest.margin = parseFloat(el.value)); bindSetting('#nRotate', el => { S.nest.rotateMode = el.value; S.nest.rotate = el.value !== 'none'; });
+  bindSetting('#nGap', el => S.nest.gap = uParse(el.value)); bindSetting('#nMargin', el => S.nest.margin = uParse(el.value)); bindSetting('#nRotate', el => { S.nest.rotateMode = el.value; S.nest.rotate = el.value !== 'none'; });
   bindSetting('#aiKey', el => S.ai.key = el.value.trim()); bindSetting('#aiModel', el => S.ai.model = el.value.trim());
+  $('#keyMode').addEventListener('change', () => {
+    S.keys.mode = $('#keyMode').value === 'direct' ? 'direct' : 'command';
+    cmdBuf = ''; showCmd(); saveSettings();
+    LOG.action('Keyboard set to ' + (S.keys.mode === 'direct' ? 'single keys' : 'typed commands'));
+  });
+  $('#keyReset').onclick = () => { S.keys.aliases = null; saveSettings(); renderKeys(); toast('Shortcuts back to the AutoCAD set'); };
   $('#toolAdd').onclick = () => { const id = Math.max(0, ...S.tools.map(t => t.id)) + 1; S.tools.push({ id, slot: id, name: 'New tool', type: 'endmill', dia: 0.25, rpm: 18000, feed: 120, plunge: 20, passDepth: 0.125 }); saveSettings(); renderSettings(); };
   $('#matAdd').onclick = () => { S.materials.push({ name: 'New material', thickness: 0.25 }); saveSettings(); renderSettings(); syncMaterialUI(); };
   $('#setExport').onclick = () => download('cncstudio-settings.json', JSON.stringify(S, null, 1), 'application/json');
@@ -3824,13 +3990,38 @@
   $('#fileSet').addEventListener('change', async e => { const f = e.target.files[0]; if (!f) return; try { S = { ...DEFAULT_SETTINGS, ...JSON.parse(await f.text()) }; saveSettings(); renderSettings(); syncMaterialUI(); refresh(); toast('Settings imported'); } catch (err) { toast('Bad settings file'); } e.target.value = ''; });
   $('#setReset').onclick = async () => { if (!(await askConfirm('Reset settings', 'Reset machine, tools, materials and nesting back to defaults?', 'Reset'))) return; S = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); saveSettings(); renderSettings(); syncMaterialUI(); refresh(); };
 
+  /* The snap steps are the sizes an operator actually thinks in, and they are
+     not the same list in each system. The VALUES stay in inches so nothing
+     downstream has to know about any of this; only the labels and the choice of
+     steps change. */
+  const SNAP_STEPS = {
+    in: [['0', 'off (free)'], ['0.001', '0.001'], ['0.005', '0.005'], ['0.01', '0.01'], ['0.015625', '1/64'], ['0.03125', '1/32'], ['0.0625', '1/16'], ['0.125', '1/8'], ['0.25', '1/4'], ['0.5', '1/2'], ['1', '1']],
+    mm: [['0', 'off (free)'], [String(0.01 / 25.4), '0.01'], [String(0.05 / 25.4), '0.05'], [String(0.1 / 25.4), '0.1'], [String(0.5 / 25.4), '0.5'], [String(1 / 25.4), '1'], [String(2 / 25.4), '2'], [String(5 / 25.4), '5'], [String(10 / 25.4), '10']],
+  };
+  function syncUnitsUI() {
+    const sel = $('#selSnap');
+    if (sel) {
+      const had = parseFloat(sel.value) || 0;
+      const steps = SNAP_STEPS[isMM() ? 'mm' : 'in'];
+      sel.innerHTML = steps.map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+      // keep the closest equivalent step rather than silently changing precision
+      let best = steps[1][0], bd = Infinity;
+      for (const [v] of steps) { const d = Math.abs(parseFloat(v) - had); if (d < bd) { bd = d; best = v; } }
+      sel.value = had === 0 ? '0' : best;
+    }
+    $$('.u-len').forEach(el => el.textContent = uLabel());
+    $$('.u-rate').forEach(el => el.textContent = uRate());
+    saveSettings();
+    refresh();
+  }
+
   // material UI (left panel)
   function syncMaterialUI() {
     const sel = $('#selMaterial'); sel.innerHTML = S.materials.map((m, i) => `<option value="${i}" ${m.name === job.material.name ? 'selected' : ''}>${esc(m.name)}</option>`).join('');
-    $('#inThick').value = job.material.thickness; $('#inCutThrough').value = job.cutThrough || 0;
+    $('#inThick').value = fmtIn(job.material.thickness); $('#inCutThrough').value = fmtIn(job.cutThrough || 0);
   }
-  $('#selMaterial').addEventListener('change', e => { const m = S.materials[parseInt(e.target.value, 10)]; job.material = { name: m.name, thickness: m.thickness }; $('#inThick').value = m.thickness; updateStats(); });
-  $('#inThick').addEventListener('change', e => { job.material.thickness = parseFloat(e.target.value); updateStats(); });
+  $('#selMaterial').addEventListener('change', e => { const m = S.materials[parseInt(e.target.value, 10)]; job.material = { name: m.name, thickness: m.thickness }; $('#inThick').value = fmtIn(m.thickness); updateStats(); });
+  $('#inThick').addEventListener('change', e => { job.material.thickness = uParse(e.target.value); updateStats(); });
   $('#inCutThrough').addEventListener('change', e => { job.cutThrough = parseFloat(e.target.value) || 0; updateStats(); });
   $('#chkPaths').addEventListener('change', draw); $('#chkKerf').addEventListener('change', draw); $('#selSnap').addEventListener('change', draw);
 
@@ -3934,5 +4125,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();

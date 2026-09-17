@@ -153,8 +153,8 @@
   <div id="left">
     <h3>Job</h3>
     <div class="row"><label>Material</label><select id="selMaterial"></select></div>
-    <div class="row"><label>Thickness</label><input type="number" id="inThick" step="any"> in</div>
-    <div class="row"><label>Cut-through</label><input type="number" id="inCutThrough" step="0.005" value="0"> in</div>
+    <div class="row"><label>Thickness</label><input type="number" id="inThick" step="any"> <span class="u-len">in</span></div>
+    <div class="row"><label>Cut-through</label><input type="number" id="inCutThrough" step="0.005" value="0"> <span class="u-len">in</span></div>
     <div class="row"><label>Snap</label><select id="selSnap"><option value="0">off (free)</option><option value="0.001" selected>0.001</option><option value="0.005">0.005</option><option value="0.01">0.01</option><option value="0.015625">1/64</option><option value="0.03125">1/32</option><option value="0.0625">1/16</option><option value="0.125">1/8</option><option value="0.25">1/4</option><option value="0.5">1/2</option><option value="1">1</option></select></div>
     <div class="row"><label><input type="checkbox" id="chkPaths" checked> Toolpaths</label><label><input type="checkbox" id="chkKerf"> Kerf</label></div>
     <div class="row"><label><input type="checkbox" id="chkCentres" checked> Centre marks</label><label><input type="checkbox" id="chkPtNums" checked> Point numbers</label><label><input type="checkbox" id="chkSizes" checked> Size labels</label></div>
@@ -205,14 +205,19 @@
       <div class="grid2">
         <div class="card">
           <h3>Machine</h3>
-          <div class="row"><label>Bed W × H</label><input type="number" id="mBedW" step="1"> × <input type="number" id="mBedH" step="1"> in</div>
+          <div class="row"><label>Bed W × H</label><input type="number" id="mBedW" step="1"> × <input type="number" id="mBedH" step="1"> <span class="u-len">in</span></div>
+          <div class="row"><label>Units</label><select id="mUnits" style="flex:1">
+            <option value="in">Inches</option>
+            <option value="mm">Millimetres</option>
+          </select></div>
+          <div class="row"><label></label><span class="muted" style="font-size:11px">Display only. Drawings are stored, and programs are posted, in inches - so switching cannot move anything.</span></div>
           <div class="row"><label>Preset</label><select id="mPreset" style="flex:1">
             <option value="enroute">EnRoute current — Z Lift, ramp lead-in</option>
             <option value="legacy">Legacy — absolute safe Z, straight plunge</option>
           </select><button class="small" id="mApplyPreset">Apply</button></div>
-          <div class="row"><label>Z Lift</label><input type="number" id="mZLift" step="0.05" placeholder="blank = absolute"> in <span class="muted">above material</span></div>
-          <div class="row"><label>Safe Z (abs)</label><input type="number" id="mSafeZ" step="0.0625"> in <span class="muted">used when Z Lift is blank</span></div>
-          <div class="row"><label>Lead-in ramp</label><input type="number" id="mLeadIn" step="0.25"> in <span class="muted">0 = plunge straight down</span></div>
+          <div class="row"><label>Z Lift</label><input type="number" id="mZLift" step="0.05" placeholder="blank = absolute"> <span class="u-len">in</span> <span class="muted">above material</span></div>
+          <div class="row"><label>Safe Z (abs)</label><input type="number" id="mSafeZ" step="0.0625"> <span class="u-len">in</span> <span class="muted">used when Z Lift is blank</span></div>
+          <div class="row"><label>Lead-in ramp</label><input type="number" id="mLeadIn" step="0.25"> <span class="u-len">in</span> <span class="muted">0 = plunge straight down</span></div>
           <div class="row"><label></label><label><input type="checkbox" id="mCreationDate"> Creation-date line</label><label><input type="checkbox" id="mSpindleTC"> S in tool block</label></div>
           <div class="row"><label>Decimals</label><input type="number" id="mDec" step="1" min="2" max="6"></div>
           <div class="row"><label>Line ending</label><select id="mEol"><option value="crlf">CRLF (Windows)</option><option value="lf">LF</option></select></div>
@@ -228,8 +233,8 @@
           </div>
           <div class="card">
             <h3>Nesting</h3>
-            <div class="row"><label>Part gap</label><input type="number" id="nGap" step="0.125"> in</div>
-            <div class="row"><label>Bed margin</label><input type="number" id="nMargin" step="0.125"> in</div>
+            <div class="row"><label>Part gap</label><input type="number" id="nGap" step="0.125"> <span class="u-len">in</span></div>
+            <div class="row"><label>Bed margin</label><input type="number" id="nMargin" step="0.125"> <span class="u-len">in</span></div>
             <div class="row"><label>Rotation</label><select id="nRotate" style="flex:1">
               <option value="none">Keep orientation</option>
               <option value="half">180° only</option>
@@ -247,8 +252,21 @@
       </div>
       <div class="card">
         <h3>Tools (auto tool changer)</h3>
-        <table id="toolTable"><thead><tr><th>Slot</th><th>Name</th><th>Type</th><th>Dia (in)</th><th>RPM</th><th>Feed (ipm)</th><th>Plunge (ipm)</th><th>Pass depth</th><th></th></tr></thead><tbody></tbody></table>
+        <table id="toolTable"><thead><tr><th>Slot</th><th>Name</th><th>Type</th><th>Dia (<span class="u-len">in</span>)</th><th>RPM</th><th>Feed (<span class="u-rate">ipm</span>)</th><th>Plunge (<span class="u-rate">ipm</span>)</th><th>Pass depth</th><th></th></tr></thead><tbody></tbody></table>
         <div class="row" style="margin-top:6px"><button class="small" id="toolAdd">+ Add tool</button><button class="small" id="setExport">Export settings</button><button class="small" id="setImport">Import settings</button><button class="small" id="setReset">Reset defaults</button></div>
+      </div>
+
+      <div class="card">
+        <h3>Keyboard</h3>
+        <div class="row"><label>Style</label><select id="keyMode" style="flex:1">
+          <option value="command">Typed commands, like AutoCAD — L then Enter</option>
+          <option value="direct">Single keys — one key, no Enter</option>
+        </select><button class="small" id="keyReset">Restore defaults</button></div>
+        <p class="muted" style="font-size:11px">Type a command and press <span class="kbd">Enter</span> or
+          <span class="kbd">Space</span>; <span class="kbd">Esc</span> clears it. Space still pans while nothing
+          is typed, and Enter still finishes a polyline. Several aliases can share a command — separate them
+          with commas.</p>
+        <table id="keyTable"><thead><tr><th>Command</th><th>Types as</th></tr></thead><tbody></tbody></table>
       </div>
 
       <div class="card">
@@ -285,6 +303,7 @@
     <span>X <b id="stX">0.0000</b></span><span>Y <b id="stY">0.0000</b></span>
     <span id="stSnap" style="color:var(--accent)"></span>
     <span id="stTool"></span>
+    <span id="stCmd" style="color:var(--accent)"></span>
     <span id="stMsg" style="margin-left:auto"></span>
   </footer>
 </div>

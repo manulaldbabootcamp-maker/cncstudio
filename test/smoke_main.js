@@ -1428,6 +1428,77 @@ app.whenReady().then(async () => {
     ok(Math.abs(r.area-32) < 0.01, 'and the shared edge is gone from the outline', String(r.area));
     }
 
+    { // scoped
+    console.log('millimetres are a display skin over an inch drawing');
+    const r = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'plate',kind:'rect',x:0,y:0,rot:0,w:10,h:4,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.job.nextId=2;
+      CNC.S.units='mm'; CNC.syncUnitsUI(); CNC.selectShape(1);
+      const w = document.querySelector('#props [data-k="w"]').value;
+      // type 100 mm into the width and it must store 3.937 in
+      const inp = document.querySelector('#props [data-k="w"]');
+      inp.value = '100'; inp.dispatchEvent(new Event('change', {bubbles:true}));
+      const stored = CNC.job.shapes[0].w;
+      // the post is unaffected by any of it
+      const tap = CNC.PO.generate({shapes:[{loop:CNC.worldLoop(CNC.job.shapes[0]),op:'outside',toolId:1,open:false}],
+        tools:CNC.S.tools, material:{thickness:0.1875}, cutThrough:0, machine:CNC.S.machine}).gcode;
+      const firstX = (tap.match(/X(-?[0-9.]+)/) || [])[1];
+      CNC.S.units='in'; CNC.syncUnitsUI();
+      const backIn = document.querySelector('#props [data-k="w"]') ? CNC.job.shapes[0].w : null;
+      return JSON.stringify({shownMM:w, stored:+stored.toFixed(4), firstX:+firstX, backIn:+backIn.toFixed(4)});
+    })()`));
+    ok(r.shownMM === '254', 'a 10 in plate reads 254 mm', r.shownMM);
+    ok(Math.abs(r.stored - 3.937) < 0.001, 'typing 100 mm stores 3.937 in', String(r.stored));
+    ok(r.firstX < 100, 'and the posted program is still in inches', String(r.firstX));
+    ok(Math.abs(r.backIn - 3.937) < 0.001, 'switching back changes nothing in the drawing', String(r.backIn));
+    }
+
+    { // scoped
+    console.log('AutoCAD-style typed commands');
+    const type = (txt, end) => `(() => {
+      CNC.S.keys.mode='command';
+      for (const ch of ${JSON.stringify(txt)}) window.dispatchEvent(new KeyboardEvent('keydown',{key:ch,bubbles:true}));
+      window.dispatchEvent(new KeyboardEvent('keydown', ${end === 'space' ? "{key:' ',code:'Space',bubbles:true}" : "{key:'Enter',bubbles:true}"}));
+      return document.querySelector('button.tool.active').dataset.tool;
+    })()`;
+    ok((await run(type('REC', 'enter'))) === 'rect', 'REC then Enter picks the rectangle tool');
+    ok((await run(type('C', 'enter'))) === 'circle', 'C then Enter picks the circle tool');
+    ok((await run(type('L', 'space'))) === 'pline', 'L then Space picks the line tool');
+    ok((await run(type('A', 'enter'))) === 'arc', 'A then Enter picks the arc tool');
+
+    const esc2 = await run(`(() => {
+      CNC.S.keys.mode='command';
+      for (const ch of 'REC') window.dispatchEvent(new KeyboardEvent('keydown',{key:ch,bubbles:true}));
+      const mid = document.querySelector('#stCmd').textContent;
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+      return JSON.stringify({mid, after: document.querySelector('#stCmd').textContent});
+    })()`);
+    const ev = JSON.parse(esc2);
+    ok(ev.mid === 'Command: REC', 'what is being typed shows in the status bar', ev.mid);
+    ok(ev.after === '', 'and Escape clears it', JSON.stringify(ev.after));
+
+    // an operator can rebind anything
+    ok((await run(`(() => {
+      CNC.S.keys.aliases = Object.assign({}, CNC.aliasMap(), {ZZ:'circle'});
+      CNC.S.keys.mode='command';
+      for (const ch of 'ZZ') window.dispatchEvent(new KeyboardEvent('keydown',{key:ch,bubbles:true}));
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+      const t = document.querySelector('button.tool.active').dataset.tool;
+      CNC.S.keys.aliases = null;
+      return t;
+    })()`)) === 'circle', 'a rebound alias works');
+
+    // single-key mode is still there for anyone who prefers it
+    ok((await run(`(() => {
+      CNC.S.keys.mode='direct';
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'r',bubbles:true}));
+      const t = document.querySelector('button.tool.active').dataset.tool;
+      CNC.S.keys.mode='command';
+      return t;
+    })()`)) === 'rect', 'single-key mode still picks a tool with one press');
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error" && e.t >= ${loadedAt}).map(e=>e.msg))`);
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
