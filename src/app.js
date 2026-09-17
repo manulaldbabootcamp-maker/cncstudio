@@ -2648,6 +2648,89 @@
     clearEdge(); invalidateLoops(); refresh();
   }
 
+  /* ---------- planar faces ----------
+     Which region did the operator actually draw? Chaining segments end to end
+     cannot answer that at a junction where three ends meet: merge took whatever
+     came next in the list, and when nothing continued the run it spliced on a
+     disconnected piece, which then drew as a phantom edge straight across the
+     part. That is where the butterfly came from.
+
+     The segments form a planar arrangement, and its bounded faces are the
+     regions genuinely enclosed. A slot drawn inside a disc makes two of them -
+     the slot, and the disc minus the slot - so the part wanted is the larger.
+     Parts that merely touch are welded instead: an edge interior to two faces
+     dissolves, leaving a single outline around both. */
+  const TWO_PI = Math.PI * 2;
+  const wrap2pi = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
+  // where a segment runs, so the same edge traced backwards still matches
+  const segKey = (sg, tol) => {
+    const r = (v) => Math.round(v / Math.max(tol, 1e-6));
+    const ka = r(sg.a.x) + ',' + r(sg.a.y), kb = r(sg.b.x) + ',' + r(sg.b.y);
+    return (ka < kb ? ka + '|' + kb : kb + '|' + ka) + '|' + (sg.type === 'arc' ? r(G.radius(sg)) : 'L');
+  };
+  function tracedFaces(segs, tol) {
+    const nodes = [];
+    const nodeAt = (p) => {
+      for (let i = 0; i < nodes.length; i++) if (G.dist(nodes[i].p, p) <= tol) return i;
+      nodes.push({ p: { x: p.x, y: p.y }, out: [] });
+      return nodes.length - 1;
+    };
+    const de = [];                       // both directions round every segment
+    const rings = [];                    // a segment closing on itself is already a face
+    for (const sg of segs) {
+      if (G.segLen(sg) <= 1e-9) continue;
+      const a = nodeAt(sg.a), b = nodeAt(sg.b);
+      if (a === b) { rings.push([sg]); continue; }
+      de.push({ seg: sg, from: a, to: b });
+      de.push({ seg: G.reverseLoop([sg])[0], from: b, to: a });
+    }
+    de.forEach((e, i) => nodes[e.from].out.push(i));
+    const outAng = (i) => { const t = G.tangentAt(de[i].seg, true); return Math.atan2(t.y, t.x); };
+    const backAng = (i) => { const t = G.tangentAt(de[i].seg, false); return Math.atan2(-t.y, -t.x); };
+    const faces = [];
+    const used = new Set();
+    for (let start = 0; start < de.length; start++) {
+      if (used.has(start)) continue;
+      const cyc = [];
+      let cur = start;
+      while (!used.has(cur)) {
+        used.add(cur); cyc.push(cur);
+        const outs = nodes[de[cur].to].out;
+        if (!outs.length) break;
+        /* Turn as sharply clockwise as the junction allows: that walks the face
+           instead of wandering off across it. Going straight back the way we
+           came is the last resort, so a dangling spur is walked out and back
+           rather than ending the trace. */
+        const back = backAng(cur);
+        let best = -1, bestD = Infinity;
+        for (const oi of outs) {
+          const d = wrap2pi(back - outAng(oi)) || TWO_PI;
+          if (d < bestD) { bestD = d; best = oi; }
+        }
+        if (best < 0) break;
+        cur = best;
+      }
+      if (cyc.length && de[cyc[cyc.length - 1]].to === de[cyc[0]].from) faces.push(cyc.map(i => de[i].seg));
+    }
+    for (const r of rings) faces.push(G.signedArea(r) < 0 ? G.reverseLoop(r) : r);
+    return faces
+      .map(sgs => ({ segs: sgs, area: G.signedArea(sgs) }))
+      .filter(f => f.area > 1e-6)                  // the face outside everything comes out negative
+      .sort((a, b) => b.area - a.area);
+  }
+  // an edge shared by two faces is interior to the pair, so it is not outline
+  function dissolveFaces(faces, tol) {
+    const key = (sg) => segKey(sg, tol);
+    const count = new Map();
+    for (const f of faces) for (const sg of f.segs) { const k = key(sg); count.set(k, (count.get(k) || 0) + 1); }
+    const border = [];
+    for (const f of faces) for (const sg of f.segs) if (count.get(key(sg)) === 1) border.push(sg);
+    if (!border.length) return null;
+    const runs = G.chainOpen(border.map(sg => [sg]));
+    if (runs.length !== 1 || !runs[0].closed) return null;
+    return runs[0].segs;
+  }
+
   function mergeSelected(tol) {
     /* Any shapes, open or closed. Restricting this to open paths meant a
        leftover closed outline sitting next to an open piece could never be
@@ -2674,22 +2757,69 @@
     const ids = new Set(shs.map(x => x.id));
     const first = shs[0];
     job.shapes = job.shapes.filter(x => !ids.has(x.id));
-    const ordered = orderSegs(all, tol);
-    const closed = G.dist(ordered[ordered.length - 1].b, ordered[0].a) <= tol && ordered.length > 2;
-    // pull the ends exactly together so the outline is genuinely closed, not nearly
-    if (closed) { const f = ordered[0], l = ordered[ordered.length - 1]; if (l.type === 'line') l.b = f.a; else if (f.type === 'line') f.a = l.b; }
-    const ns = pathShape(ordered, {
-      name: first.name, open: !closed, op: closed ? 'outside' : 'on',
-      toolId: first.toolId, climb: first.climb, group: first.group,
-    });
-    job.shapes.push(ns);
-    sel.clear(); sel.add(ns.id); clearEdge();
-    makeEditable(ns);
-    LOG.action('Merged ' + shs.length + ' parts into one ' + (closed ? 'closed' : 'open') + ' part with ' + ordered.length + ' sides'
-      + (splits ? ' (' + splits + ' side(s) split where a line landed partway along)' : ''));
-    toast(closed
-      ? 'Merged into one closed part - ' + ordered.length + ' sides, cutting outside'
-      : 'Merged into one open part - ' + ordered.length + ' sides (ends do not meet, so it cuts on the line)');
+    const faces = tracedFaces(all, tol);
+    const anyOpen = shs.some(x => x.open);
+    /* An open path is a cut line: it divides material, so the biggest piece is
+       the part. Closed parts are material: they weld together. */
+    let outline = null;
+    if (faces.length === 1) outline = faces[0].segs;
+    else if (faces.length > 1) outline = anyOpen ? faces[0].segs : (dissolveFaces(faces, tol) || faces[0].segs);
+    if (outline) {
+      /* A segment that encloses nothing at all - a tie line landing partway
+         along a side, a tail hanging off a square - is a spur, and merge's
+         whole point is that it becomes a numbered side of the part, selectable
+         and deletable like any other. Those are kept. What gets dropped is only
+         what bounds a DIFFERENT region: the arc across the mouth of a slot
+         belongs to the slot, not to the part around it. */
+      const enclosed = new Set();
+      for (const f of faces) for (const sg of f.segs) enclosed.add(segKey(sg, tol));
+      const spurs = all.filter(sg => !enclosed.has(segKey(sg, tol)));
+      const extra = spurs.length ? G.chainOpen(spurs.map(sg => [sg])).reduce((a, ch) => a.concat(ch.segs), []) : [];
+      /* The outline is a cycle, so it may begin anywhere. Begin it where the
+         spur joins: the walk then runs round the outline, returns to that
+         junction and carries on out along the spur, in one continuous line.
+         Started anywhere else the two ends do not meet, and the part drew - and
+         cut - a phantom edge across the gap. */
+      if (extra.length) {
+        const attach = extra[0].a;
+        const i = outline.findIndex(sg => G.dist(sg.a, attach) <= tol);
+        if (i > 0) outline = outline.slice(i).concat(outline.slice(0, i));
+      }
+      const segsOut = outline.concat(extra);
+      const hasSpurs = extra.length > 0;
+      const ns = pathShape(segsOut, {
+        name: first.name, open: hasSpurs, op: hasSpurs ? 'on' : 'outside',
+        toolId: first.toolId, climb: first.climb, group: first.group,
+      });
+      job.shapes.push(ns);
+      sel.clear(); sel.add(ns.id); clearEdge();
+      makeEditable(ns);
+      LOG.action('Merged ' + shs.length + ' parts into one part with ' + segsOut.length + ' sides'
+        + (hasSpurs ? ' (' + extra.length + ' of them enclosing nothing, kept as sides)' : ', closed')
+        + (splits ? ' (' + splits + ' side(s) split where a line landed partway along)' : ''));
+      toast(hasSpurs
+        ? 'Merged into one part - ' + segsOut.length + ' sides, ' + extra.length + ' of which enclose nothing'
+        : 'Merged into one closed part - ' + segsOut.length + ' sides, cutting outside');
+      refresh();
+      return;
+    }
+    /* Nothing encloses anything. Keep whatever genuinely chains, and never
+       splice two pieces that do not meet - an edge between them is not geometry
+       anybody drew. */
+    const runs = G.chainOpen(all.map(sg => [sg]));
+    sel.clear();
+    for (const ch of runs) {
+      const ns = pathShape(ch.segs, {
+        name: first.name, open: !ch.closed, op: ch.closed ? 'outside' : 'on',
+        toolId: first.toolId, climb: first.climb, group: first.group,
+      });
+      job.shapes.push(ns); sel.add(ns.id);
+    }
+    clearEdge();
+    LOG.action('Merged ' + shs.length + ' parts into ' + runs.length + ' path(s) - nothing encloses an area');
+    toast(runs.length === 1
+      ? 'Merged into one open path - the ends do not meet, so it cuts on the line'
+      : 'These do not all meet - left as ' + runs.length + ' separate paths');
     refresh();
   }
 

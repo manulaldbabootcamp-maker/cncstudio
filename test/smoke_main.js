@@ -1382,6 +1382,52 @@ app.whenReady().then(async () => {
     ok(r.err < 1e-6, 'the centre lands exactly on the line end', JSON.stringify(r));
     }
 
+    { // scoped
+    console.log('merging a slot into a disc gives the keyhole, not a butterfly');
+    const r = JSON.parse(await run(`(() => {
+      const G=CNC.G;
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      const cx=20, cy=20, R=6, yOn=cy-Math.sqrt(R*R-1.5*1.5);
+      CNC.job.shapes.push({id:1,name:'disc',kind:'circle',x:cx,y:cy,rot:0,r:R,op:'outside',toolId:2,climb:false,open:false});
+      const A={x:cx-1.5,y:yOn}, B={x:cx-1.5,y:cy-2}, C={x:cx+1.5,y:cy-2}, D={x:cx+1.5,y:yOn};
+      CNC.job.shapes.push({id:2,name:'slot',kind:'path',x:0,y:0,rot:0,open:true,op:'on',toolId:2,climb:false,
+        loop:[G.line(A,B), G.arc(B,C,{x:cx,y:cy-2},false), G.line(C,D)]});
+      CNC.job.nextId=3; CNC.refresh();
+      CNC.job.shapes.forEach(s=>CNC.selectShape(s.id));
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,bubbles:true}));
+      CNC.mergeSelected(0.125);
+      const out=CNC.job.shapes.map(s=>{const l=CNC.worldLoop(s);
+        return {open:s.open, op:s.op, segs:l.length, arcs:l.filter(x=>x.type==='arc').length,
+                area:+Math.abs(G.signedArea(l)).toFixed(2)};});
+      return JSON.stringify({parts:CNC.job.shapes.length, out});
+    })()`));
+    ok(r.parts === 1, 'the merge leaves one part', JSON.stringify(r));
+    ok(r.parts === 1 && r.out[0].open === false && r.out[0].op === 'outside', 'and it is closed, cutting outside', JSON.stringify(r.out));
+    // disc 113.10 less the slot it encloses: the slot arc is kept, the mouth is not
+    ok(r.parts === 1 && r.out[0].area > 96 && r.out[0].area < 100, 'with the slot taken out of the disc', JSON.stringify(r.out));
+    ok(r.parts === 1 && r.out[0].arcs >= 3, 'and its arcs survive as arcs', JSON.stringify(r.out));
+    }
+
+    { // scoped
+    console.log('merging two parts that share an edge welds them');
+    const r = JSON.parse(await run(`(() => {
+      const G=CNC.G;
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'a',kind:'rect',x:10,y:10,rot:0,w:4,h:4,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:2,name:'b',kind:'rect',x:14,y:10,rot:0,w:4,h:4,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.nextId=3; CNC.refresh();
+      CNC.job.shapes.forEach(s=>CNC.selectShape(s.id));
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,bubbles:true}));
+      CNC.mergeSelected(0.125);
+      const s=CNC.job.shapes[0], l=CNC.worldLoop(s), b=G.bbox(l);
+      return JSON.stringify({parts:CNC.job.shapes.length, open:s.open,
+        size:[+b.w.toFixed(3),+b.h.toFixed(3)], area:+Math.abs(G.signedArea(l)).toFixed(2)});
+    })()`));
+    ok(r.parts === 1 && !r.open, 'two butted squares weld into one closed part', JSON.stringify(r));
+    ok(Math.abs(r.size[0]-8) < 1e-6 && Math.abs(r.size[1]-4) < 1e-6, 'spanning both, 8 x 4', JSON.stringify(r.size));
+    ok(Math.abs(r.area-32) < 0.01, 'and the shared edge is gone from the outline', String(r.area));
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error" && e.t >= ${loadedAt}).map(e=>e.msg))`);
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);

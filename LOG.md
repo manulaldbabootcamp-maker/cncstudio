@@ -5,6 +5,37 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Merge works out which region you drew
+
+### Fixed
+- **Merging a slot into a disc produced a butterfly.** Merge chained segments
+  end to end, which cannot answer the question a junction asks: where three ends
+  meet, it took whatever came next in the list, and when nothing continued the
+  run it spliced on a disconnected piece. That splice drew - and would have cut -
+  as a phantom edge straight across the part.
+- Merge now reads the segments as a **planar arrangement** and traces its
+  bounded faces. A slot drawn inside a disc encloses two regions, the slot and
+  the disc minus the slot, and the part wanted is the larger. The arc across the
+  mouth of the slot bounds the slot, not the part, so it is dropped.
+- **Parts that merely touch are welded.** Two squares sharing an edge dissolve
+  that edge and come back as one outline, 8 x 4, area 32.
+- **Spurs are kept**, which is the whole point of merge: a tie line landing
+  partway along a side, or a tail hanging off a square, encloses nothing but
+  still becomes a numbered side of the part, selectable and deletable.
+- The outline is a cycle, so it can start anywhere; it now starts **where the
+  spur joins it**. Started anywhere else the two ends did not meet and the
+  polygon lost a side to a duplicated point.
+
+### Tests
+- Smoke test now 271 assertions. New: a slot merged into a disc gives one closed
+  part of 6 sides, 4 of them arcs, area 97.75 (the disc's 113.10 less the slot)
+  and 12 x 11.81 - the height is short by the mouth arc, exactly as it should be.
+  Two butted squares weld into one 8 x 4 part of area 32.
+- The existing T-junction contracts still hold: C + tie line = 5 sides, closed
+  square + tail = 5 sides, two open halves = one closed 100 sq in part.
+
+---
+
 ## Dragging a part snaps its own centre, not the spot you grabbed
 
 ### Fixed
