@@ -8,7 +8,7 @@ const path = require('path');
 
 const root = __dirname;
 const OUT = path.join(root, 'electron', 'app', 'CNCStudio.html');
-const MODULES = ['log', 'geom', 'post', 'nest', 'snap', 'bool', 'font', 'pdf', 'icons', 'app'];
+const MODULES = ['log', 'geom', 'post', 'nest', 'snap', 'bool', 'region', 'font', 'pdf', 'icons', 'app'];
 
 const html = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 if (!html.includes('<!--SCRIPTS-->')) throw new Error('src/index.html is missing the <!--SCRIPTS--> placeholder');

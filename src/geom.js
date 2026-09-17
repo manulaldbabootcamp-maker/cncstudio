@@ -225,6 +225,62 @@ const GEOM = (() => {
     return nearest(circleCircle(s1.c, radius(s1), s2.c, radius(s2)), ref);
   }
 
+  /* ---- offset an OPEN path to one side ----
+     offsetLoop wraps round, joining the last turn back to the first, so it can
+     only work on something closed. A line cut to one side needs its own:
+
+       - Corners are MITERED, not rounded. On a closed outside profile a round
+         cutter cannot leave a sharp outside corner anyway, which is why EnRoute
+         puts a radius arc there and why that is left alone. On an open cut the
+         miter decides where the cut actually stops, so a square drawn as lines
+         stays square.
+       - The ends are EXTENDED by the offset distance, so the cut EDGE reaches
+         the point that was drawn rather than stopping a radius short of it.
+         Without that, a line drawn to meet a wall leaves a radius of material.
+       - A corner tighter than the offset can fold the path over itself; the
+         caller checks for that, because only it knows the tool.
+     d > 0 offsets to the RIGHT of travel, matching offsetLoop. */
+  function offsetOpen(path, d, opts = {}) {
+    if (!path || !path.length) return [];
+    if (Math.abs(d) < EPS) return path.map(s => ({ ...s }));
+    const extend = opts.extend !== false;
+    const segs = [];
+    for (const s of path) {
+      if (s.type === 'line') {
+        const n = rightN(norm(sub(s.b, s.a)));
+        segs.push(line(add(s.a, mul(n, d)), add(s.b, mul(n, d))));
+      } else {
+        const r = radius(s), nr = s.ccw ? r + d : r - d;
+        if (nr <= 5e-4) return [];                     // the arc collapses: nothing to cut
+        const na = add(s.c, mul(norm(sub(s.a, s.c)), nr));
+        const nb = add(s.c, mul(norm(sub(s.b, s.c)), nr));
+        segs.push(arc(na, nb, s.c, s.ccw));
+      }
+    }
+    // miter each joint: run both neighbours out to where they actually meet
+    for (let i = 0; i + 1 < segs.length; i++) {
+      const cur = segs[i], nx = segs[i + 1];
+      if (same(cur.b, nx.a, 1e-9)) continue;
+      const ip = segSegTrim(cur, nx, cur.b);
+      const reach = Math.abs(d) * 8 + segLen(cur) + segLen(nx);
+      if (ip && dist(ip, cur.b) < reach) {
+        cur.b = ip; nx.a = ip;
+        if (cur.type === 'arc') fixArcEnd(cur);
+      } else {
+        segs.splice(i + 1, 0, line(cur.b, nx.a));       // too far to miter: bridge it
+        i++;
+      }
+    }
+    if (extend) {
+      const first = segs[0], last = segs[segs.length - 1];
+      const t0 = tangentAt(path[0], true), t1 = tangentAt(path[path.length - 1], false);
+      const e = Math.abs(d);
+      if (first.type === 'line') first.a = add(first.a, mul(t0, -e));
+      if (last.type === 'line') last.b = add(last.b, mul(t1, e));
+    }
+    return segs.filter(s => segLen(s) > 1e-9);
+  }
+
   // ---- offset a closed loop. d>0 = to the right of travel (outside for CCW loops)
   const STRAIGHT_TOL = 5e-3;
   function offsetLoop(loop, d) {
@@ -450,6 +506,6 @@ const GEOM = (() => {
     return o;
   }
 
-  return { EPS, P, add, sub, mul, dot, cross, len, dist, norm, rot, same, line, arc, radius, sweep, tangentAt, segLen, pointAt, samplePts, loopPts, signedArea, reverseLoop, bbox, transformLoop, translateLoop, rotateLoop, mirrorLoopX, pointInLoop, polyLoop, normalizePolyPts, rectLoop, circleLoop, ellipseLoop, splineLoop, offsetLoop, splitArcs, startLoopAt, longestLineIndex, midOfSeg, parseDXF, writeDXF, bulgeArc, arcBulge, chainOpen };
+  return { EPS, P, add, sub, mul, dot, cross, len, dist, norm, rot, same, line, arc, radius, sweep, tangentAt, segLen, pointAt, samplePts, loopPts, signedArea, reverseLoop, bbox, transformLoop, translateLoop, rotateLoop, mirrorLoopX, pointInLoop, polyLoop, normalizePolyPts, rectLoop, circleLoop, ellipseLoop, splineLoop, offsetLoop, offsetOpen, splitArcs, startLoopAt, longestLineIndex, midOfSeg, parseDXF, writeDXF, bulgeArc, arcBulge, chainOpen };
 })();
 if (typeof module !== 'undefined') module.exports = GEOM;

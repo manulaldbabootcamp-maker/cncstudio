@@ -1,6 +1,6 @@
 /* ===== app.js — CNC Studio UI ===== */
 (() => {
-  const G = GEOM, PO = POST, NE = NEST;
+  const G = GEOM, PO = POST, NE = NEST, RG = REGION;
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
 
@@ -50,6 +50,8 @@
     text: { label: 'Text / engraving', run: () => clickBtn('#btnText') },
     dim: { label: 'Dimension', run: () => setTool('dim') },
     measure: { label: 'Measure (distance)', run: () => setTool('measure') },
+    divide: { label: 'Divide into regions (every enclosed area becomes a part)', run: () => explodeRegions() },
+    boundary: { label: 'Region from a point inside it', run: () => { setTool('boundary'); toast('Click inside the area you want to become a part'); } },
     trim: { label: 'Trim / delete an edge', run: () => { setTool('trim'); toast('Click the edge you want to remove'); } },
     extend: { label: 'Extend', run: () => setTool('extend') },
     join: { label: 'Merge selection into one part', run: () => sel.size > 1 ? mergeSelected(trimTol()) : toast('Select two or more parts to merge') },
@@ -94,6 +96,8 @@
     SA: 'save', OP: 'open', TAP: 'tap', DXF: 'dxf', PDF: 'pdf',
     OR: 'ortho', OS: 'osnap', S: 'select', SEL: 'select',
     X: 'setx', Y: 'sety',
+    BO: 'boundary', BOUNDARY: 'boundary', BPOLY: 'boundary', REG: 'boundary',
+    DIV: 'divide', DIVIDE: 'divide', SLICE: 'divide',
   };
   const clickBtn = (id) => { const b = $(id); if (b) b.click(); else toast('That command is not available here'); };
   const focusPropField = (k) => {
@@ -390,7 +394,7 @@
         const tp = toolpathOf(sh);
         if (tp && tp.length) {
           if (showKerf) { const t = toolOf(sh); ctx.strokeStyle = 'rgba(255,184,77,.35)'; ctx.lineWidth = t.dia * view.scale; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; tracePath(tp, sh.open); ctx.stroke(); }
-          if (showPaths) { ctx.strokeStyle = sh.op === 'inside' ? '#41c77a' : sh.op === 'on' ? '#d38cff' : '#ffb84d'; ctx.lineWidth = 1 * dpr; ctx.setLineDash([4 * dpr, 3 * dpr]); tracePath(tp, sh.open); ctx.stroke(); ctx.setLineDash([]);
+          if (showPaths) { ctx.strokeStyle = sh.op === 'inside' ? '#41c77a' : sh.op === 'on' ? '#d38cff' : (sh.op === 'left' || sh.op === 'right') ? '#41c77a' : '#ffb84d'; ctx.lineWidth = 1 * dpr; ctx.setLineDash([4 * dpr, 3 * dpr]); tracePath(tp, sh.open); ctx.stroke(); ctx.setLineDash([]);
             // start point + direction
             const st = tp[0].a, p = W2S(st); ctx.fillStyle = '#ffb84d'; ctx.beginPath(); ctx.arc(p.x, p.y, 3 * dpr, 0, Math.PI * 2); ctx.fill();
           }
@@ -800,6 +804,7 @@
       }
       draw(); return;
     }
+    if (tool === 'boundary') { boundaryAt(w); setTool('select'); return; }
     if (tool === 'trim') { trimAt(w); return; }
     if (tool === 'extend') { extendAt(w); return; }
     if (tool === 'dim') { dimClick(ws); draw(); return; }
@@ -822,7 +827,11 @@
            instinct, and it should not need a tool change or a second click. */
         const onLine = edgeIndexAt(hit, w) >= 0;
         if (onLine && !e.altKey) {
-          const ed = makeEditable(hit) || hit;
+          /* Clicking a side used to CONVERT the shape so its points could be
+             edited, which is how a circle turned into a polygon with 4 points
+             without anybody asking. Clicking now only selects; the conversion
+             is an explicit choice (Edit points, in the panel). */
+          const ed = hit;
           const i = edgeIndexAt(ed, w);
           if (i >= 0) {
             if (e.shiftKey) { sel.add(ed.id); toggleEdge(ed.id, i); }
@@ -1217,10 +1226,16 @@
     if (!multi && sh.kind === 'circle') h += numSlide('r', 'Radius', 0.0625) + `<div class="row"><label>Diameter</label><input type="number" step="${uStep(0.125)}" data-k="dia" value="${fmtIn(sh.r * 2)}"> ${uLabel()}</div>`;
     if (!multi && sh.kind === 'poly' && !sh.open) h += `<div class="row"><label>All corners R</label><input type="number" step="0.0625" data-k="allr" value="${fmtIn(sh.pts[0].r || 0)}"></div>`;
     if (!multi && sh.kind === 'poly') h += polyTable(sh);
+    if (!multi && sh.kind !== 'poly') h += `<div class="row"><label></label><button class="small" id="btnEditPts">Edit points…</button><span class="muted">turns this into a polygon so each point can be typed</span></div>`;
     h += num('rot', 'Rotation °', 15) + `<div class="row"><label></label><button class="small" data-rot="-90">↺ 90</button><button class="small" data-rot="90">↻ 90</button><button class="small" data-rot="-15">↺ 15</button><button class="small" data-rot="15">↻ 15</button></div>`;
     const bb = shapeBBox(sh);
     if (!multi) h += `<div class="row muted">Size ${fmtIn(bb.w)} × ${fmtIn(bb.h)}</div>`;
-    h += `<h3>Cut</h3><div class="row"><label>Operation</label><select data-k="op">${['outside', 'inside', 'on', 'none'].map(o => `<option ${sh.op === o ? 'selected' : ''} ${o !== 'on' && o !== 'none' && sh.open ? 'disabled' : ''}>${o}</option>`).join('')}</select></div>`;
+    /* A closed outline has an inside and an outside. An open path has neither,
+       so it gets a SIDE instead - and the side is what makes the line the
+       finished edge rather than the centre of the cut. */
+    const ops = sh.open ? ['left', 'right', 'on', 'none'] : ['outside', 'inside', 'on', 'none'];
+    h += `<h3>Cut</h3><div class="row"><label>Operation</label><select data-k="op">${ops.map(o => `<option ${sh.op === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>`;
+    if (sh.open) h += `<div class="row"><label></label><button class="small" id="btnFlipSide">Flip side</button><span class="muted">the dashed path shows which side the cutter takes</span></div>`;
     h += `<div class="row"><label>Tool</label><select data-k="toolId">${S.tools.map(t => `<option value="${t.id}" ${t.id === sh.toolId ? 'selected' : ''}>T${t.slot} ${esc(t.name)}</option>`).join('')}</select></div>`;
     h += `<div class="row"><label>Climb</label><input type="checkbox" data-k="climb" ${sh.climb ? 'checked' : ''}> <span class="muted">reverse direction</span></div>`;
     if (!multi) h += `<div class="row"><button class="small" id="btnSetStart">Set start point</button><button class="small" id="btnClearStart">Auto start</button></div>`;
@@ -1272,6 +1287,22 @@
     });
     const bs = $('#btnSetStart'); if (bs) bs.onclick = () => { toast('Click on the part outline to set the start point'); const h2 = (e) => { const { w } = evPos(e); snapshot(); sh.startPt = w; cv.removeEventListener('mousedown', h2, true); e.stopPropagation(); refresh(); }; cv.addEventListener('mousedown', h2, true); };
     const bc = $('#btnClearStart'); if (bc) bc.onclick = () => { snapshot(); delete sh.startPt; refresh(); };
+    const ep = $('#btnEditPts');
+    if (ep) ep.onclick = () => {
+      snapshot();
+      if (makeEditable(sh)) { refresh(); toast('Points are editable now'); }
+      else toast('This shape keeps true arcs - a polygon could not hold its curves');
+    };
+    const fs = $('#btnFlipSide');
+    if (fs) fs.onclick = () => {
+      snapshot();
+      for (const x of shs) {
+        if (!x.open) continue;
+        x.op = x.op === 'left' ? 'right' : x.op === 'right' ? 'left' : 'left';
+      }
+      LOG.action(`Cut side flipped to "${sh.op}" on ${shs.length} path(s)`);
+      refresh();
+    };
     $('#btnMirror').onclick = () => { snapshot(); for (const s of shs) { const bb = shapeBBox(s); const cx = (bb.x0 + bb.x1) / 2; if (s.kind === 'rect' || s.kind === 'circle') { /* symmetric */ } else if (s.kind === 'poly') { const w = Math.max(...s.pts.map(p => p.x)); s.pts = s.pts.map(p => ({ ...p, x: w - p.x })); } else if (s.kind === 'path') { const l = G.mirrorLoopX(s.loop, 0); const b2 = G.bbox(l); s.loop = G.translateLoop(l, -b2.x0, 0); } delete s.startPt; } refresh(); };
     $('#btnToOrigin').onclick = () => { snapshot(); for (const s of shs) { const bb = shapeBBox(s); s.x -= bb.x0 - S.nest.margin; s.y -= bb.y0 - S.nest.margin; } refresh(); };
   }
@@ -1602,6 +1633,25 @@
     const shs = selInOrder().filter(s => !s.open);
     if (shs.length !== 2) return toast('Select exactly two closed parts (the first is the one kept)');
     const [A, B] = shs;
+    /* A shape wholly inside another is already how this app models a plate
+       with a hole: the outer part cut outside, the inner cut inside. There is
+       nothing to compute, so nothing is rebuilt - which is what used to turn a
+       pair of circles into paths, and then into 4-point polygons the moment one
+       was clicked. Both parts keep exactly what they are. */
+    if (op === 'subtract') {
+      const la = worldLoop(A), lb = worldLoop(B);
+      const bInA = lb.every(sg => G.pointInLoop(sg.a, la)) && Math.abs(G.signedArea(lb)) < Math.abs(G.signedArea(la));
+      if (bInA) {
+        snapshot();
+        B.op = 'inside';
+        if (B.toolId !== A.toolId) B.toolId = A.toolId;
+        sel.clear(); sel.add(A.id); sel.add(B.id);
+        invalidateLoops(); refresh();
+        LOG.action(`subtract: "${B.name}" is wholly inside "${A.name}", so it is now cut as a hole - both parts kept as they were`);
+        toast(`"${B.name}" is now a hole in "${A.name}"`);
+        return;
+      }
+    }
     const res = BOOL.operate(op, worldLoop(A), worldLoop(B));
     if (res.error) { LOG.warn(`${op} failed: ${res.error}`); return toast(res.error); }
     snapshot();
@@ -1817,6 +1867,8 @@
     modal(`<h3>Trim, extend &amp; join</h3>
       <p class="muted">Selected: ${shs.length} part${shs.length === 1 ? '' : 's'} (${opens.length} open path${opens.length === 1 ? '' : 's'}).</p>
       <div class="row"><button class="small" id="tjErase">Delete an edge</button><span class="muted">then click a side to remove it — e.g. drop one side of a rectangle to leave a C</span></div>
+      <div class="row"><button class="small" id="tjDivide">Divide into regions (DIV)</button><span class="muted">a circle with lines across it becomes one part per slice — each selectable and deletable on its own</span></div>
+      <div class="row"><button class="small" id="tjBoundary">Region from a point (BO)</button><span class="muted">click <b>inside</b> an enclosed area and it becomes a part — works however the curves were drawn or overlap</span></div>
       <div class="row"><button class="small" id="tjJoin">Join open paths</button><span class="muted">chain touching <b>ends</b> into one path; closes it if the ends meet</span></div>
       <div class="row"><button class="small" id="tjSplit">Split at intersections</button><span class="muted">turn every crossing into a vertex, so each piece is its own selectable side</span></div>
       <div class="row"><button class="small" id="tjMerge">Merge into one part (J)</button><span class="muted">works on open <i>and</i> closed parts; also handles a line landing <b>partway along</b> another side: splits it there so the new line becomes a numbered side</span></div>
@@ -1833,6 +1885,8 @@
         ov.querySelector('#tjTol').addEventListener('change', () => { S.snap.trimTol = tol(); saveSettings(); });
         ov.querySelector('#tjHeal').onclick = () => { S.snap.trimTol = tol(); saveSettings(); healSelection(tol()); close(); };
         ov.querySelector('#tjErase').onclick = () => { setTool('trim'); close(); toast('Click the edge you want to remove'); };
+        ov.querySelector('#tjDivide').onclick = () => { close(); explodeRegions(); };
+        ov.querySelector('#tjBoundary').onclick = () => { close(); setTool('boundary'); toast('Click inside the area you want to become a part'); };
         ov.querySelector('#tjJoin').onclick = () => { joinSelected(tol()); close(); };
         ov.querySelector('#tjSplit').onclick = () => { S.snap.trimTol = tol(); saveSettings(); splitAtIntersectionsCmd(); close(); };
         ov.querySelector('#tjMerge').onclick = () => { S.snap.trimTol = tol(); saveSettings(); mergeSelected(tol()); close(); };
@@ -1894,7 +1948,11 @@
       const hits = [];
       loop.forEach((sg, i) => { if (segTouchesBox(sg, box)) hits.push(i); });
       if (!hits.length) continue;
-      const ed = makeEditable(sh) || sh;
+      /* Picking sides does NOT need the part reshaped: the indices come from
+         worldLoop, and deleting a side works off worldLoop too. Converting here
+         is what turned a circle into a polygon of four quadrants just because a
+         selection box crossed it. */
+      const ed = sh;
       for (const i of hits) addEdge(ed.id, i);
       sel.add(ed.id);
     }
@@ -2512,6 +2570,23 @@
   (function wireDyn() {
     const len = $('#dynLen'), ang = $('#dynAng');
     if (!len || !ang) return;
+    /* A comma can only mean a coordinate. While something is being drawn the
+       number keys belong to this box, so "10" lands here and the comma never
+       reaches the command line - which is why an absolute point used to need a
+       # in front of it. On a comma, whatever has been typed here is handed to
+       the command line and the rest of the point is typed there. */
+    const commaToCommand = (el) => (ev) => {
+      if (ev.key !== ',') return;
+      ev.preventDefault();
+      const typed = String(el.value || '').trim();
+      el.value = '';
+      el.blur();
+      dynActive = false;
+      cmdBuf = typed + ',';
+      showCmd();
+    };
+    len.addEventListener('keydown', commaToCommand(len));
+    ang.addEventListener('keydown', commaToCommand(ang));
     /* On a circle the two boxes are the same number twice over, so editing
        either one updates the other. Whichever was touched last is the one the
        operator meant, and that is what Enter uses. */
@@ -2858,7 +2933,6 @@
       if (sh.startPt) ns.startPt = sh.startPt;
       const k = job.shapes.findIndex(x => x.id === sh.id);
       if (k >= 0) job.shapes.splice(k, 1, ns); else job.shapes.push(ns);
-      makeEditable(ns);
     }
     return total;
   }
@@ -2955,6 +3029,82 @@
     return runs[0].segs;
   }
 
+  /* ---------- Boundary: name the area, not the curves ----------
+     The command professional CAD leans on (AutoCAD calls it BOUNDARY / BO).
+     Click a point inside an enclosed area and the loop around it is worked out
+     from every curve on the drawing, whatever drew them and however they
+     overlap. Anything enclosed inside it that the point is not in becomes an
+     island, cut inside - the same thing HATCH does with islands.
+
+     This is what makes a drawing with many overlapping circles workable: there
+     is no question of which curves to select, or which region was meant. */
+  function boundaryAt(wp) {
+    const tol = trimTol();
+    const all = [];
+    for (const sh of job.shapes) {
+      try { for (const sg of worldLoop(sh)) all.push(sg); } catch (e) { }
+    }
+    if (!all.length) return toast('Nothing on the drawing to enclose an area');
+    const arranged = RG.arrange(all, tol);
+    const f = RG.faceAt(arranged, wp, tol);
+    if (!f) {
+      toast('No closed area around that point - the outline has a gap');
+      LOG.info('Boundary: nothing encloses the point clicked. Heal the loose ends (Trim/Join) and try again.');
+      return;
+    }
+    snapshot();
+    const toolId = (S.tools[0] && S.tools[0].id) || 1;
+    const ns = pathShape(f.segs, { name: 'region ' + job.nextId, open: false, op: 'outside', toolId });
+    job.shapes.push(ns);
+    const holes = [];
+    for (const h of (f.holes || [])) {
+      const hs = pathShape(h, { name: ns.name + ' island', open: false, op: 'inside', toolId });
+      job.shapes.push(hs); holes.push(hs.id);
+    }
+    sel.clear(); sel.add(ns.id);
+    clearEdge(); invalidateLoops(); refresh();
+    const note = holes.length ? ` with ${holes.length} island(s) cut inside` : '';
+    LOG.action(`Boundary traced from a point: ${f.segs.length} sides, ${fmtIn(Math.abs(f.area))} sq ${uLabel()}${note}`);
+    toast(`Region made - ${f.segs.length} sides${note}, cutting outside`);
+  }
+
+  /* ---------- Explode into regions ----------
+     A circle with eight lines drawn across it is eight slices, and that is what
+     the operator means by it. The arrangement already knows: every bounded face
+     is a region. So make each one a part, and leave the curves that defined
+     them in the list, no longer cut, to be deleted or kept as construction.
+
+     This is the difference between drawing lines on a part and dividing it. */
+  function explodeRegions() {
+    const tol = trimTol();
+    const picked = selInOrder();
+    const src = picked.length ? picked : job.shapes.slice();
+    const all = [];
+    for (const sh of src) { try { for (const sg of worldLoop(sh)) all.push(sg); } catch (e) { } }
+    if (!all.length) return toast('Nothing to divide');
+    const arranged = RG.arrange(all, tol);
+    const fs = RG.faces(arranged, tol);
+    if (!fs.length) { toast('Nothing enclosed - the lines do not divide a closed area'); return; }
+    snapshot();
+    const toolId = src[0].toolId || (S.tools[0] && S.tools[0].id) || 1;
+    const made = [];
+    for (const f of fs) {
+      const ns = pathShape(f.segs, { name: 'region ' + (made.length + 1), open: false, op: 'outside', toolId });
+      job.shapes.push(ns); made.push(ns);
+    }
+    /* Cut a circle across with a line and what you have is two semicircles:
+       the circle and the line are gone. So the curves that defined the regions
+       are REMOVED, not left switched off - leaving them would keep dead objects
+       in the list and cut down the middle of every join if anyone turned them
+       back on. Ctrl+Z brings them back. */
+    const consumed = new Set(src.map(x => x.id));
+    job.shapes = job.shapes.filter(x => !consumed.has(x.id));
+    sel.clear(); for (const m of made) sel.add(m.id);
+    clearEdge(); invalidateLoops(); refresh();
+    LOG.action(`Divided into ${made.length} region(s); the ${src.length} curve(s) that made them are gone (Ctrl+Z brings them back)`);
+    toast(`${made.length} region(s) made - the circle and lines that defined them are gone`);
+  }
+
   function mergeSelected(tol) {
     /* Any shapes, open or closed. Restricting this to open paths meant a
        leftover closed outline sitting next to an open piece could never be
@@ -2981,13 +3131,20 @@
     const ids = new Set(shs.map(x => x.id));
     const first = shs[0];
     job.shapes = job.shapes.filter(x => !ids.has(x.id));
-    const faces = tracedFaces(all, tol);
+    /* Split at every crossing first, on COPIES. Until now merge could only
+       see junctions where an end happened to land on a curve, so it depended on
+       the split that happens while drawing and fell apart on anything edited,
+       imported, or built by a boolean - which is most real work. The
+       arrangement cuts arcs and circles freely because none of it goes back to
+       the drawing. */
+    const arranged = RG.arrange(all, tol);
+    const faces = RG.faces(arranged, tol);
     const anyOpen = shs.some(x => x.open);
     /* An open path is a cut line: it divides material, so the biggest piece is
        the part. Closed parts are material: they weld together. */
     let outline = null;
     if (faces.length === 1) outline = faces[0].segs;
-    else if (faces.length > 1) outline = anyOpen ? faces[0].segs : (dissolveFaces(faces, tol) || faces[0].segs);
+    else if (faces.length > 1) outline = anyOpen ? faces[0].segs : (RG.unionFaces(faces, tol) || faces[0].segs);
     if (outline) {
       /* A segment that encloses nothing at all - a tie line landing partway
          along a side, a tail hanging off a square - is a spur, and merge's
@@ -2996,8 +3153,8 @@
          what bounds a DIFFERENT region: the arc across the mouth of a slot
          belongs to the slot, not to the part around it. */
       const enclosed = new Set();
-      for (const f of faces) for (const sg of f.segs) enclosed.add(segKey(sg, tol));
-      const spurs = all.filter(sg => !enclosed.has(segKey(sg, tol)));
+      for (const f of faces) for (const sg of f.segs) enclosed.add(RG.segKey(sg, tol));
+      const spurs = arranged.filter(sg => !enclosed.has(RG.segKey(sg, tol)));
       const extra = spurs.length ? G.chainOpen(spurs.map(sg => [sg])).reduce((a, ch) => a.concat(ch.segs), []) : [];
       /* The outline is a cycle, so it may begin anywhere. Begin it where the
          spur joins: the walk then runs round the outline, returns to that
@@ -3017,7 +3174,6 @@
       });
       job.shapes.push(ns);
       sel.clear(); sel.add(ns.id); clearEdge();
-      makeEditable(ns);
       LOG.action('Merged ' + shs.length + ' parts into one part with ' + segsOut.length + ' sides'
         + (hasSpurs ? ' (' + extra.length + ' of them enclosing nothing, kept as sides)' : ', closed')
         + (splits ? ' (' + splits + ' side(s) split where a line landed partway along)' : ''));
@@ -3030,7 +3186,7 @@
     /* Nothing encloses anything. Keep whatever genuinely chains, and never
        splice two pieces that do not meet - an edge between them is not geometry
        anybody drew. */
-    const runs = G.chainOpen(all.map(sg => [sg]));
+    const runs = G.chainOpen(arranged.map(sg => [sg]));
     sel.clear();
     for (const ch of runs) {
       const ns = pathShape(ch.segs, {
@@ -3909,7 +4065,7 @@
       let maxDia = 0;
       for (const sh of u.shapes) {
         try { loops.push(worldLoop(sh)); } catch (e) { }
-        if (sh.op === 'outside') maxDia = Math.max(maxDia, toolOf(sh).dia);
+        if (sh.op === 'outside' || sh.op === 'left' || sh.op === 'right') maxDia = Math.max(maxDia, toolOf(sh).dia);
       }
       /* Half the gap each, plus this part's own tool radius: an outside cut
          runs a radius beyond the outline, so two neighbours must stand off by
@@ -4222,5 +4378,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { const sh = job.shapes.find(x=>x.id===id); if (sh) makeEditable(sh); sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
 })();

@@ -40,6 +40,101 @@ behaved, and still does.
 
 ---
 
+## Regions: name the area, not the curves
+
+The approach here was wrong, and this replaces it rather than patching it again.
+Merge asked you to select curves and then guessed which region you meant.
+AutoCAD never asks that: you click a point inside the area you want and it works
+the loop out from every curve on the drawing. One question, one answer.
+
+### Added
+- **`BO` - click inside an area, get a part.** Whatever drew the curves, however
+  they overlap. Anything enclosed inside it that your point is not in becomes an
+  island, cut inside, the way HATCH treats islands.
+- **`DIV` - divide into regions.** A circle with eight lines across it becomes
+  eight slices, each its own part, each selectable and deletable. The curves that
+  defined them are **consumed**: cut a circle with a line and you have two
+  semicircles, so the circle and the line are gone, not left switched off.
+  Ctrl+Z brings them back.
+- **`src/region.js`** - a planar arrangement: every curve split at every real
+  crossing, arc-on-arc included, ends welded, faces traced. Built from **copies**,
+  which is the whole point: it cuts a circle into arcs to reason about area while
+  the circle on your drawing stays a circle. Protecting the circle and needing to
+  split it were in direct conflict before, and every bug in this corner came from
+  that.
+- **Merge now runs on the arrangement too**, so it no longer depends on the
+  incidental split that happens when a line is drawn. It used to work on fresh
+  geometry and fall apart on anything edited, imported, or made by a boolean.
+
+## Cutting a line to one side
+
+### Added
+- An open path gets **left / right / on / none** instead of inside/outside, with
+  a **Flip side** button. The dashed toolpath shows which side the cutter takes.
+  Cutting on the line takes half a cutter off each side of it, which is exactly
+  how an inner dimension ends up a radius out; naming the side makes the drawn
+  line the finished edge.
+- **Left is left regardless of which way you drew the line.** The path is turned
+  to a fixed direction before a side is taken.
+- **Corners stay sharp.** The offset miters out to the corner point instead of
+  curving round it, so a square drawn as lines comes out square. Closed profiles
+  are untouched: EnRoute puts a tool-radius arc on an outside corner (G3 with
+  I0. J0.125 on a 1/4 in cutter), and a round cutter cannot leave a sharp outside
+  corner anyway.
+- **The ends run a radius past** the line, so the cut edge reaches the point you
+  drew rather than stopping short of it.
+
+### Fixed
+- **A curve tighter than the cutter used to be cut down the middle of the line,
+  silently.** The offset collapsed and the unoffset path was returned as if
+  nothing were wrong - the precise failure this option exists to prevent. Now
+  refused, with the reason given.
+- **selfIntersects could not see a fold on parallel geometry.** It sampled each
+  segment and skipped any pair whose determinant was near zero, which on an
+  offset path throws away exactly the pairs that fold. Measured on a comb with
+  legs 0.4 in apart cut with a 0.5 in tool: real crossings between sides 0-3,
+  3-6 and 4-7, and it reported none. It now uses the exact intersection maths,
+  counting a crossing unless the point ends **both** segments - a point ending
+  only one is a T, which is what a fold looks like once the joints are mitred.
+  That guard protects inside cuts on closed outlines too, not only the new ones.
+
+## Circles stay circles
+
+### Fixed
+- **Nothing converts a shape to a polygon on its own any more.** Three places
+  did: dragging a selection box that merely crossed a shape, merging, and
+  selecting an edge from code. That is how a circle became "a polygon with 4
+  points" - two half-arcs halved again so a polygon could hold at least three
+  points - without anybody asking for it. Picking and deleting a side never
+  needed the shape reshaped: the indices come from its geometry either way.
+- Conversion is now one button, **Edit points...**, pressed deliberately.
+- **Subtracting a shape wholly inside another rebuilds nothing.** That is
+  already how a plate with a hole is modelled - outer cut outside, inner cut
+  inside - so both parts keep exactly what they are. Rebuilding them as paths is
+  what turned a pair of circles into polygons the moment one was clicked.
+- A merged part keeps its **true arcs** rather than being flattened into bulges.
+
+## A comma is enough for a coordinate
+
+### Fixed
+- `10,5` now works on its own. While a shape is being drawn the number keys
+  belong to the box at the cursor, so the digits landed there and the comma never
+  reached the command line - an absolute point needed a `#` in front of it, which
+  was my design and a poor one. A comma can only mean a coordinate, so on a comma
+  whatever was typed in that box is handed to the command line and the rest of
+  the point is typed there. `#10,5` still does the same thing if you prefer it.
+
+### Tests
+- New suite `test/side_test.js`, 30 assertions, wired into `npm test`: the side
+  does not depend on draw direction, corners stay square, the cut edge reaches
+  the ends, a cutter that does not fit is refused on both sides, a collapsed
+  offset is reported, a circle with eight radii gives eight equal slices keeping
+  true arcs, and picking a point inside finds the region with its islands.
+- Smoke 296, node suites 229 across 8 files, EnRoute byte-identical output
+  unchanged throughout.
+
+---
+
 ## Coordinates typed at the command line
 
 ### Added

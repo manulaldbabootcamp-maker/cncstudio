@@ -91,24 +91,41 @@ const POST = (() => {
      paths: the check is O(n^2) and the shapes it protects (holes, slots,
      pockets, brackets) have few segments, while a traced outline with hundreds
      is both expensive and unlikely to be offset that far. */
+  /* snap.js owns the exact line/line, line/arc and arc/arc intersection maths.
+     It is concatenated AFTER this file in the bundle, so it is looked up when
+     called rather than when loaded. */
+  const snapMod = () => (typeof SNAP !== 'undefined' ? SNAP : require('./snap.js'));
+
   function selfIntersects(path, limit = 48) {
     const n = path.length;
     if (n < 4 || n > limit) return false;
-    const pts = path.map(sg => G.samplePts(sg, Math.max(0.02, G.segLen(sg) / 8)));
+    const SN = snapMod();
+    /* This used to sample each segment into a polyline and skip any pair whose
+       determinant was near zero. On an offset path the pieces are often
+       parallel - a comb, a slot, anything with repeated sides - and that skip
+       threw away exactly the pairs that fold over. Measured on a comb with legs
+       0.4 in apart cut with a 0.5 in tool: crossings between sides 0-3, 3-6 and
+       4-7, and this returned false. Exact intersection instead, with only the
+       joints where neighbours legitimately meet excluded. */
+    const closed = G.dist(path[n - 1].b, path[0].a) < 1e-6;
+    const ends = (sg) => [sg.a, sg.b];
     for (let i = 0; i < n; i++) {
       for (let j = i + 2; j < n; j++) {
-        if (i === 0 && j === n - 1) continue;          // ends meet by design
-        const A = pts[i], B = pts[j];
-        for (let a = 0; a + 1 < A.length; a++) {
-          for (let b = 0; b + 1 < B.length; b++) {
-            const p1 = A[a], p2 = A[a + 1], q1 = B[b], q2 = B[b + 1];
-            const d1x = p2.x - p1.x, d1y = p2.y - p1.y, d2x = q2.x - q1.x, d2y = q2.y - q1.y;
-            const den = d1x * d2y - d1y * d2x;
-            if (Math.abs(den) < 1e-12) continue;
-            const t = ((q1.x - p1.x) * d2y - (q1.y - p1.y) * d2x) / den;
-            const u = ((q1.x - p1.x) * d1y - (q1.y - p1.y) * d1x) / den;
-            if (t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6) return true;
-          }
+        if (closed && i === 0 && j === n - 1) continue;      // ends meet by design
+        let hits;
+        try { hits = SN.segSegPoints(path[i], path[j]); } catch (e) { continue; }
+        for (const q of hits) {
+          /* A point that ends BOTH segments is the outline meeting itself - the
+             seam of a closed loop, say - and is no fold. A point that ends only
+             ONE of them is a T: that segment's end has landed partway along
+             another, which is exactly what a fold looks like once the joints
+             have been mitred. Measured on a comb with legs 0.4 in apart cut
+             with a 0.5 in tool, all three folds present that way (sides 0-3,
+             3-6, 4-7), so excluding a point at EITHER endpoint hid every one of
+             them. It has to be both. */
+          const onI = ends(path[i]).some(e => G.dist(q, e) < 1e-6);
+          const onJ = ends(path[j]).some(e => G.dist(q, e) < 1e-6);
+          if (!(onI && onJ)) return true;
         }
       }
     }
@@ -121,10 +138,42 @@ const POST = (() => {
      an empty path silently is the dangerous outcome: the operator runs the job
      and finds a missing hole, or a slot cut to the wrong width, only after the
      material is gone. */
+  /* Which way an open path runs must not depend on which way it was drawn:
+     left has to stay left. So the path is turned to run a fixed way - left to
+     right, and bottom to top when it is vertical - before a side is taken. */
+  function canonicalOpen(loop) {
+    const a = loop[0].a, b = loop[loop.length - 1].b;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const backwards = Math.abs(dx) > 1e-9 ? dx < 0 : dy < 0;
+    return backwards ? G.reverseLoop(loop) : loop;
+  }
+
   function buildToolpathLoop(shape, tool, opts = {}) {
     const issue = (msg) => { if (opts.onIssue) opts.onIssue(msg); return []; };
     let loop = shape.loop;
-    if (shape.open) return loop; // engrave along open path, no offset
+    /* An open path has no inside, so 'left' and 'right' name the side instead.
+        Cutting ON the line takes half a cutter off each side of it, which is
+        how an inner dimension ends up a tool radius out. Naming the side makes
+        the drawn line the finished edge. */
+    if (shape.open) {
+      const side = shape.op === 'left' ? -1 : shape.op === 'right' ? 1 : 0;
+      if (!side) return loop;                      // 'on': engrave down the line
+      const rr = tool.dia / 2;
+      const src = canonicalOpen(loop);
+      const path = G.offsetOpen(src, side * rr);
+      /* An empty offset means the path could not be taken to one side at all -
+         an arc tighter than the cutter radius turns inside out. Falling through
+         to the unoffset line would cut down the middle of it and leave the edge
+         a radius out, silently, which is the whole failure this option exists
+         to prevent. */
+      if (!path.length) {
+        return issue(`cannot be cut to one side with a ${tool.dia}" tool - a curve on it is tighter than the cutter radius`);
+      }
+      if (selfIntersects(path)) {
+        return issue(`folds over when offset for a ${tool.dia}" tool - part of it is narrower than the cutter`);
+      }
+      return path;
+    }
     if (G.signedArea(loop) < 0) loop = G.reverseLoop(loop);
     const r = tool.dia / 2;
 
