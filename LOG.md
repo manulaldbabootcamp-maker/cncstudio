@@ -5,6 +5,71 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## A size you can type, and tabs that hold the part in the sheet
+
+### Added
+- **Holding tabs (bridges).** A part cut right through comes loose before the
+  program ends, lifts on the cutter and in acrylic it breaks. On the passes that
+  go deeper than the tab, the tool now **ramps up** to leave a set thickness of
+  material standing for a set length, then ramps back down — a 1:3 slope either
+  side, never a vertical hop at feed rate. Tabs are spread evenly **by arc
+  length** and offset half an interval from the start of the path, so none lands
+  on the seam where the cut begins and ends.
+  Settings carries the job defaults (off, 4 tabs, 0.3 in long, 0.03 in thick);
+  any part can say yes or no for itself in its Cut panel; a part cut *on* the
+  line never gets one. A path too short for the tabs asked for is **reported in
+  the job panel and cut free**, not chewed up. Tabs draw on the toolpath in blue
+  and are counted in the job stats.
+  **With tabs off, not one byte of the posted program changes** — which is what
+  the EnRoute reproduction depends on.
+- **A Size box on every selection.** Width, height, a scale factor and ×2 / ÷2,
+  scaling the whole selection about its lower-left corner.
+
+### Fixed
+- **Text could not be made bigger.** A rectangle had Width and Height fields; a
+  path had none — and letters from a font, traced regions and boolean results
+  are all paths, so the only size shown was a read-only line of text. A 1 in cap
+  height could never be changed to 6 in.
+- **"Edit text…" vanished once the text existed.** It was offered only for a
+  single selected shape, but clicking a letter selects the whole group. Any
+  selection that is one text group now gets it.
+- **Cap height and letter gap ignored the unit setting**, as did **Cut-through**:
+  all three were labelled "in" and read with `parseFloat`, so a millimetre value
+  was taken as inches.
+- **An empty text result said nothing useful.** It now names the characters that
+  were not in the font and says a `.ttf` can be loaded, and logs it — a character
+  pasted from Character Map used to toast five words and leave no trace.
+
+### Tests
+- `test/tabs_test.js` — 22 assertions: tabs off change nothing, a tab ramps
+  rather than hops, every pass deeper than the tab gets one, on-the-line and
+  per-part overrides, refusal with a reason, and the plan's own geometry.
+- Smoke covers the Size box and the tab rules (305).
+
+---
+
+## Everything in the repo, so a clone is the whole job
+
+### Added
+- `tapfiles/` **moved into the repo** from the directory above it, where it was
+  never tracked: EnRoute's output beside ours for the same part, the DXFs, and
+  the screenshots behind past investigations.
+- `fonts/` — the six Nirmala UI weights and the `.ttc` they came from, for
+  Devanagari and the Om symbol.
+- `tools/extract_ttc.js` — splits a `.ttc` collection into loadable `.ttf`
+  files. The parser stops at the first font in a collection, so without this only
+  one weight of Nirmala is reachable; the script had existed only in scratch.
+- `CLAUDE.md` — the working agreements, the north star, and what is still open,
+  for a session that starts on another machine with no history.
+- README gains **Moving to another PC**, including the one thing the repo cannot
+  hold: the settings, which live in local storage and travel by Export/Import.
+
+### Changed
+- `.gitignore` now keeps out only what is rebuilt — `node_modules`, the generated
+  bundle, installer output. Reference material, fonts and screenshots are
+  tracked on purpose.
+
+
 ## A circle that met a line came back pointy
 
 ### Fixed
