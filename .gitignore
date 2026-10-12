@@ -3,24 +3,15 @@ node_modules/
 # Generated. `npm start` / `npm run bundle` rebuilds it from src/.
 # Tracking it is what let the shipped app drift ahead of src/.
 electron/app/CNCStudio.html
+
+# Installer output - rebuilt by `npm run build`
 dist/
 electron/dist/
 
-# test scratch output
-test/parts.json
-test/regen.tap
-
 *.log
 
-# operator-supplied reference material (kept out of the repo)
-electron/email attachments/
-Screenshot*.png
-
-# scenario screenshots + report (npm run scenarios)
-test/shots/
-
-# Windows system fonts copied in for the text tool (Nirmala UI, 14 MB).
-# They are Microsoft's to licence, not ours to redistribute, and they are
-# already on every Windows machine this app runs on - so the folder stays
-# local. Drop a .ttf in here and the Text box can load it.
-fonts/
+# Everything else in this repo is tracked on purpose, including the reference
+# TAP and DXF files in tapfiles/, the Nirmala fonts the Text box loads, the
+# scenario screenshots and the operator's reference images. They are the
+# material this app is checked against, and a clone of this repo is meant to be
+# the whole job - nothing left behind on one PC.

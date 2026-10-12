@@ -1,0 +1,7 @@
+[
+ {
+  "scenario": "04-booleans",
+  "sev": "low",
+  "msg": "2 segment(s) shorter than 0.0001 in"
+ }
+]

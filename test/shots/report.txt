@@ -1,0 +1,141 @@
+using font: arial.ttf
+  font ok, 4651 glyphs
+
+== 01-plate-holes ==
+   Plate with holes: even-odd fill, kerf, centre marks, inside cuts
+   parts 7, segments 24, arcs 18
+   TAP 154 lines, 14 passes, cut 210.6 in, G2 48 / G3 8
+     plate          rect segs   8 area  239.7853 20x12 outside
+     mount          circle segs   2 area    0.4417 0.75x0.75 inside
+     mount          circle segs   2 area    0.4417 0.75x0.75 inside
+     mount          circle segs   2 area    0.4417 0.75x0.75 inside
+     mount          circle segs   2 area    0.4417 0.75x0.75 inside
+     window         circle segs   2 area   28.2743 6x5.9998 inside
+     slot           rect segs   6 area    9.6646 8x1.25 inside
+   ok
+
+== 02-corners ==
+   Per-corner radii, fillets, chamfers
+   parts 4, segments 31, arcs 13
+   TAP 129 lines, 8 passes, cut 222.4 in, G2 0 / G3 36
+     per-corner     rect segs   7 area   59.2489 10x6 outside
+     filleted       poly segs   8 area   47.2354 8x6 outside
+     chamfered      poly segs   4 area        56 8x7 outside
+     hex            poly segs  12 area   31.7748 6.8749x6.0622 outside
+   ok
+
+== 03-bowed ==
+   Bowed edges: bulge in and out, arc preservation
+   parts 2, segments 6, arcs 4
+   TAP 67 lines, 4 passes, cut 130.9 in, G2 2 / G3 26
+     bowed          poly segs   4 area  100.1044 12x9.5 outside
+     lens           poly segs   2 area   34.9449 10x5 outside
+   ok
+
+== 04-booleans ==
+   Union, subtract (notch + hole), intersect
+   parts 6, segments 31, arcs 4
+   TAP 201 lines, 12 passes, cut 370.3 in, G2 12 / G3 58
+     union          path segs   8 area        96 14x9 outside
+     notched        path segs   6 area   86.1826 12x8 outside
+     holed          path segs   4 area        80 10x8 outside
+     the hole       path segs   2 area    12.557 3.9985x3.9985 inside
+     lens           path segs   3 area   13.0413 2.9996x6.2413 outside
+     butted         path segs   8 area        50 10x5 outside
+   ! 2 segment(s) shorter than 0.0001 in
+   ok
+
+== 05-offset-array ==
+   Offset border, hole grid, bolt circle
+   parts 24, segments 52, arcs 44
+   TAP 422 lines, 48 passes, cut 303.7 in, G2 168 / G3 16
+     plate          rect segs   4 area       160 16x10 outside
+     border         path segs   4 area       135 15x9 on
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     grid           circle segs   2 area    0.1104 0.375x0.375 inside
+     ... 10 more
+   ok
+
+== 06-text ==
+   Single-line engraving + outline text from a real TTF
+   parts 38, segments 1520, arcs 4
+   TAP 4697 lines, 76 passes, cut 442.5 in, G2 0 / G3 1326
+     tag            rect segs   8 area  134.7853 30x4.5 outside
+     text           path segs   6 area    0.5182 0.8482x1.25 on
+     text           path segs   2 area    0.6696 1.0714x1.25 on
+     text           path segs   1 area         0 0.625x0 on
+     text           path segs   6 area    0.5182 0.8482x1.25 on
+     text           path segs   1 area         0 0.4464x0.5804 on
+     text           path segs   1 area         0 0.8929x0 on
+     text           path segs   1 area         0 0x1.25 on
+     text           path segs   2 area    0.1674 0.2679x1.25 on
+     text           path segs   1 area         0 0.5357x0 on
+     text           path segs   6 area    0.2192 0.8036x1.25 on
+     text           path segs   1 area         0 0.5357x0 on
+     text           path segs   2 area    0.6696 1.0714x1.25 on
+     text           path segs   1 area         0 0.625x0 on
+     ... 24 more
+   ok
+
+== 07-traced ==
+   Traced template from measured offsets + placed dimensions
+   parts 1, segments 8, arcs 4
+   TAP 51 lines, 2 passes, cut 152.7 in, G2 0 / G3 16
+     template       path segs   8 area  287.8462 30x11.1733 outside
+   ok
+
+== 08-curves ==
+   Ellipse, splines, 3-point arc, circle
+   parts 5, segments 297, arcs 3
+   TAP 1119 lines, 10 passes, cut 196.9 in, G2 2 / G3 468
+     ellipse        ellipse segs 134 area   47.1066 10x5.9984 outside
+     blob           spline segs  96 area   44.1314 8.2605x7.041 outside
+     wave           spline segs  64 area   13.0941 8x3 on
+     arc            poly segs   1 area   14.3233 8x2.4999 on
+     circle         circle segs   2 area   38.4845 7x7 outside
+   ok
+
+== 09-segmentation ==
+   Auto-split at crossings, delete a side, merge, box-select
+   parts 5, segments 18, arcs 0
+   TAP 103 lines, 10 passes, cut 239.4 in, G2 0 / G3 8
+     square         poly segs   6 area       100 10x10 outside
+     cut            poly segs   3 area         0 14x0 on
+     C              poly segs   5 area        50 10x10 on
+     h              poly segs   2 area         0 10x0 on
+     v              poly segs   2 area         0 0x10 on
+   ok
+
+== 10-full-job ==
+   Nested job, off-bed part, groups, three tools
+   parts 13, segments 74, arcs 36
+   TAP 323 lines, 25 passes, cut 577.1 in, G2 8 / G3 93
+     panel 1        rect segs   8 area   45.4463 6.5x7 outside
+     panel 2        rect segs   8 area   45.4463 6.5x7 outside
+     panel 3        rect segs   8 area   45.4463 6.5x7 outside
+     panel 4        rect segs   8 area   45.4463 6.5x7 outside
+     panel 5        rect segs   8 area   45.4463 6.5x7 outside
+     panel 6        rect segs   8 area   45.4463 6.5x7 outside
+     panel 7        rect segs   8 area   45.4463 6.5x7 outside
+     disc 1         circle segs   2 area   12.5663 4x4 outside
+     disc 2         circle segs   2 area   12.5663 4x4 outside
+     disc 3         circle segs   2 area   12.5663 4x4 outside
+     bracket        poly segs   6 area        45 9x9 outside
+     off the bed    rect segs   4 area        60 10x6 outside
+     panel hole     circle segs   2 area    0.7853 1x1 inside
+   ok
+
+all 10 scenarios clean
+
+=== findings ===
+  [low] 04-booleans: 2 segment(s) shorter than 0.0001 in

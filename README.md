@@ -71,6 +71,32 @@ to the TAP.
 - `test/snap_test.js`, `test/bool_test.js`, `test/font_test.js` — unit suites (`npm test`)
 - `test/smoke_main.js` — headless Electron test: loads the real bundle, fails on any console error (`npm run smoke`)
 - `test/sides_full.dxf` — the 30 parts from your sample job as DXF (Open… it in the app, then Export TAP)
+- `tapfiles/` — reference material: EnRoute's own `.tap` output next to ours for the same part, plus the DXFs and screenshots behind past investigations
+- `fonts/` — TrueType fonts the Text box can load (Nirmala UI, for Devanagari and the Om symbol). Windows' own copy is a `.ttc` collection, which the parser cannot read past the first font, so each weight is split out with `tools/extract_ttc.js`
+- `tools/extract_ttc.js` — splits a `.ttc` collection into loadable `.ttf` files
+
+## Moving to another PC
+
+Everything the app needs is in this repo. Two things are not, because they are
+rebuilt rather than carried: `node_modules` (run `npm install`) and the generated
+bundle (`npm start` rebuilds it).
+
+```
+git clone https://github.com/manulaldbabootcamp-maker/cncstudio.git
+cd cncstudio/electron
+npm install
+npm start
+```
+
+What the repo cannot hold is your **settings** — tools, feeds, machine preset,
+materials, units and keyboard shortcuts live in the app's local storage on that
+PC, not in a file. On the old machine: Settings → **Export settings**. On the new
+one: Settings → **Import settings**. That file carries the Claude API key too, so
+move it directly rather than emailing it.
+
+The fonts in `fonts/` are Microsoft's, shipped with Windows and kept here only so
+this private repo is self-contained. They are not ours to redistribute, so this
+repo stays private.
 
 ## When something misbehaves
 Settings → **Activity log**. It records actions, warnings and errors, including ones
