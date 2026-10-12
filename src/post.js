@@ -244,6 +244,93 @@ const POST = (() => {
     return G.arc(G.pointAt(sg, u0), G.pointAt(sg, u1), sg.c, sg.ccw);
   }
 
+  /* ---- holding tabs (bridges) ----
+     A part cut right through comes loose before the program ends: it lifts on
+     the cutter, chatters, and in acrylic it breaks. Every shop answers that the
+     same way - leave short bridges of material joining the part to the sheet,
+     then snap or sand them off. A tab is a stretch of the deepest pass where
+     the tool rises to leave `height` of material standing under it, with a RAMP
+     at each end, because a vertical hop at feed rate is how cutters get broken.
+
+     Tabs are placed by arc length: spread evenly round the path and offset half
+     an interval from its start, so no tab lands on the seam where the cut
+     begins and ends - the one place the edge is already least tidy. */
+  const DEFAULT_TABS = { on: false, count: 4, len: 0.3, height: 0.03 };
+
+  /* Where the tabs go on this path. `len` is the flat top of the tab; the ramps
+     are extra, one at each end, so a tab consumes len + 2*ramp of the path. The
+     ramp is three times the tab height - a 1:3 slope the cutter can climb -
+     with a floor so a paper-thin tab still gets a real ramp. */
+  function tabPlan(path, cfg) {
+    const t = { ...DEFAULT_TABS, ...(cfg || {}) };
+    const height = Math.max(0, +t.height || 0);
+    const len = Math.max(0.01, +t.len || 0);
+    const count = Math.max(1, Math.round(+t.count || 1));
+    const ramp = Math.max(0.03, height * 3);
+    const total = path.reduce((a, sg) => a + G.segLen(sg), 0);
+    if (!(total > 0)) return { spans: [], total: 0, height, why: 'the path has no length' };
+    if (!(height > 0)) return { spans: [], total, height, why: 'the tab height is zero - there would be nothing holding the part' };
+    const need = count * (len + ramp * 2);
+    if (need > total * 0.6) {
+      return {
+        spans: [], total, height,
+        why: `${count} tabs of ${fmt(len, 3)} in plus ramps need ${fmt(need, 3)} in of a ${fmt(total, 3)} in path, more than the 60% that can be left standing`,
+      };
+    }
+    const spans = [];
+    const step = total / count;
+    for (let i = 0; i < count; i++) {
+      const c = (i + 0.5) * step;
+      spans.push({ s0: c - len / 2 - ramp, m0: c - len / 2, m1: c + len / 2, s1: c + len / 2 + ramp });
+    }
+    return { spans, total, height, len, ramp };
+  }
+
+  /* The path cut into pieces that each END where the Z stops changing slope, so
+     one G1/G2 per piece draws the ramp exactly. The Z given is the Z at the end
+     of that piece; the controller interpolates Z along the move. */
+  function tabPieces(path, plan, cutZ) {
+    const tabZ = plan.height;
+    const marks = [];
+    for (const sp of plan.spans) marks.push(sp.s0, sp.m0, sp.m1, sp.s1);
+    const zAt = (d) => {
+      for (const sp of plan.spans) {
+        if (d <= sp.s0 + 1e-12 || d >= sp.s1 - 1e-12) continue;
+        if (d < sp.m0) return cutZ + (tabZ - cutZ) * (d - sp.s0) / (sp.m0 - sp.s0);
+        if (d <= sp.m1) return tabZ;
+        return tabZ + (cutZ - tabZ) * (d - sp.m1) / (sp.s1 - sp.m1);
+      }
+      return cutZ;
+    };
+    const out = [];
+    let d = 0;
+    for (const sg of path) {
+      const L = G.segLen(sg);
+      if (L <= 1e-12) continue;
+      const inside = marks.filter(mk => mk > d + 1e-9 && mk < d + L - 1e-9).sort((a, b) => a - b);
+      let u0 = 0;
+      for (const mk of inside) {
+        const u = (mk - d) / L;
+        if (u - u0 > 1e-9) { out.push({ seg: subSegment(sg, u0, u), z: zAt(mk) }); u0 = u; }
+      }
+      out.push({ seg: u0 > 1e-9 ? subSegment(sg, u0, 1) : sg, z: zAt(d + L) });
+      d += L;
+    }
+    return out;
+  }
+
+  // the point a given distance along a path - for drawing a tab on screen
+  function pointAlong(path, d) {
+    let run = 0;
+    for (const sg of path) {
+      const L = G.segLen(sg);
+      if (run + L >= d) return G.pointAt(sg, L > 1e-12 ? (d - run) / L : 0);
+      run += L;
+    }
+    const last = path[path.length - 1];
+    return last ? last.b : null;
+  }
+
   // order shapes nearest-neighbour by start point
   function orderPaths(paths) {
     const rem = paths.slice(); const out = []; let cur = { x: 0, y: 0 };
@@ -286,6 +373,15 @@ const POST = (() => {
     if (job.cutThrough > job.material.thickness) {
       stats.issues.push(`Cut-through ${fmt(job.cutThrough, 4)} in is deeper than the ${fmt(job.material.thickness, 4)} in material - the tool will go ${fmt(job.cutThrough - job.material.thickness, 4)} in into the bed`);
     }
+    /* Tabs are a job setting a part can override: sh.tabs true or false wins
+       over the job, undefined follows it. A part cut ON the line is not being
+       cut free, so it never gets tabs. */
+    const jobTabs = { ...DEFAULT_TABS, ...(job.tabs || {}) };
+    const tabsFor = (sh) => {
+      const want = sh.tabs === true ? true : sh.tabs === false ? false : !!jobTabs.on;
+      if (!want || sh.op === 'on' || sh.op === 'none') return null;
+      return jobTabs;
+    };
     let pos = { x: null, y: null, z: null };
     for (const [toolId, shapes] of byTool) {
       const tool = job.tools.find(t => t.id === toolId) || job.tools[0];
@@ -307,6 +403,17 @@ const POST = (() => {
       const depths = passDepths(job.material.thickness, tool.passDepth, job.cutThrough || 0);
       let first = true;
       for (const { shape, path } of paths) {
+        /* One plan per part, not per pass: the tabs have to land in the same
+           place on every pass that reaches them, or the ramps cut each other
+           away and nothing is left holding the part. */
+        const tcfg = tabsFor(shape);
+        const plan = tcfg ? tabPlan(path, tcfg) : null;
+        // counted once per part, not once per pass - it is how many bridges will
+        // be left standing, which is what the operator has to snap out
+        if (plan && plan.spans.length) stats.tabs = (stats.tabs || 0) + plan.spans.length;
+        if (plan && !plan.spans.length) {
+          stats.issues.push(`"${shape.name || 'a part'}" asked for holding tabs but got none: ${plan.why} - it will be cut free`);
+        }
         const sd = shape.depth != null ? passDepths(shape.depth, tool.passDepth, 0).map(z => z + (job.material.thickness - shape.depth)) : depths;
         const useDepths = shape.op === 'on' && shape.depth != null ? sd : depths;
         for (const z of useDepths) {
@@ -355,20 +462,33 @@ const POST = (() => {
           } else {
             emit(`G1 Z${fmt(z, dec)}`);
           }
+          /* Where the tool actually is in Z, tracked apart from `pos`: `pos` is
+             only updated by contour moves, so it cannot say whether the first
+             move of a pass needs a Z word. */
+          let curZ = rnd(z, dec);
           stats.timeMin += (safeZ - z) / tool.plunge;
-          for (const s of path) {
+          /* Tabs only exist on a pass that goes deeper than the tab itself. On a
+             shallower pass there is nothing to leave standing, so that pass is
+             emitted exactly as it always was - and with tabs off, so is this
+             one, which is what keeps the EnRoute reproduction byte for byte. */
+          const tabbing = plan && plan.spans.length && z < plan.height - 1e-9;
+          const moves = tabbing ? tabPieces(path, plan, z) : path.map(sg => ({ seg: sg, z }));
+          for (const { seg: s, z: mz } of moves) {
             const b = { x: rnd(s.b.x, dec), y: rnd(s.b.y, dec) };
+            const bz = rnd(mz, dec);
+            const zw = bz !== curZ ? `Z${fmt(bz, dec)}` : '';
             if (s.type === 'line') {
               const parts = [];
               if (b.x !== pos.x) parts.push(`X${fmt(b.x, dec)}`);
               if (b.y !== pos.y) parts.push(`Y${fmt(b.y, dec)}`);
+              if (zw) parts.push(zw);
               if (parts.length) emit(`G1 ${parts.join(' ')}`);
             } else {
               const i = s.c.x - s.a.x, j = s.c.y - s.a.y;
-              emit(`${s.ccw ? 'G3' : 'G2'} X${fmt(b.x, dec)} Y${fmt(b.y, dec)} I${fmt(i, dec)} J${fmt(j, dec)}`);
+              emit(`${s.ccw ? 'G3' : 'G2'} X${fmt(b.x, dec)} Y${fmt(b.y, dec)} I${fmt(i, dec)} J${fmt(j, dec)}${zw ? ' ' + zw : ''}`);
             }
             const l = G.segLen(s); stats.length += l; stats.timeMin += l / tool.feed;
-            pos = { x: b.x, y: b.y, z };
+            pos = { x: b.x, y: b.y, z: bz }; curZ = bz;
           }
           emit(`G0 Z${fmt(safeZ, dec)}`);
           emit('');
@@ -402,6 +522,6 @@ const POST = (() => {
     return moves;
   }
 
-  return { DEFAULT_MACHINE, ENROUTE_CURRENT, DEFAULT_TOOLS, leadInSegs, formatStamp, selfIntersects, DEFAULT_MATERIALS, fmt, rnd, passDepths, buildToolpathLoop, orderPaths, generate, parseGcode };
+  return { DEFAULT_TABS, tabPlan, tabPieces, pointAlong, DEFAULT_MACHINE, ENROUTE_CURRENT, DEFAULT_TOOLS, leadInSegs, formatStamp, selfIntersects, DEFAULT_MATERIALS, fmt, rnd, passDepths, buildToolpathLoop, orderPaths, generate, parseGcode };
 })();
 if (typeof module !== 'undefined') module.exports = POST;

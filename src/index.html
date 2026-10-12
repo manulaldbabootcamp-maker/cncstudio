@@ -232,6 +232,14 @@
             <button class="small" id="matAdd" style="margin-top:6px">+ Add material</button>
           </div>
           <div class="card">
+            <h3>Holding tabs (bridges)</h3>
+            <div class="row"><label></label><label><input type="checkbox" id="tabOn"> Leave holding tabs on parts cut free</label></div>
+            <div class="row"><label>Tabs per part</label><input type="number" id="tabCount" step="1" min="1"></div>
+            <div class="row"><label>Tab length</label><input type="number" id="tabLen" step="0.05"> <span class="u-len">in</span> <span class="muted">flat top; a ramp is added each side</span></div>
+            <div class="row"><label>Tab height</label><input type="number" id="tabHeight" step="0.005"> <span class="u-len">in</span> <span class="muted">material left under the tool</span></div>
+            <p class="muted" style="font-size:11px">A part cut all the way through comes loose, lifts on the cutter and usually breaks. A tab is a short bridge left joining it to the sheet, snapped or sanded off afterwards. Tabs show on the toolpath in blue, and any part can override this in its own Cut panel. A part cut <i>on</i> the line never gets them.</p>
+          </div>
+          <div class="card">
             <h3>Nesting</h3>
             <div class="row"><label>Part gap</label><input type="number" id="nGap" step="0.125"> <span class="u-len">in</span></div>
             <div class="row"><label>Bed margin</label><input type="number" id="nMargin" step="0.125"> <span class="u-len">in</span></div>

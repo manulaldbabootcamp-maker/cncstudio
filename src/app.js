@@ -13,6 +13,11 @@
     keys: { mode: 'command', aliases: null },      // null = the defaults below
     nest: { gap: 0.5, margin: 0.375, rotate: true, rotateMode: 'quarter' },
     ai: { key: '', model: 'claude-sonnet-4-5' },
+    /* Holding tabs. Off by default: a program that silently left bridges in it
+       would be a nasty surprise, and the EnRoute files this app reproduces have
+       none. 4 tabs of 0.3 in leaving 0.03 in of material is the usual starting
+       point for acrylic - enough to hold a part, thin enough to snap. */
+    tabs: { on: false, count: 4, len: 0.3, height: 0.03 },
     snap: { on: true, ortho: false, autoSplit: true, trimTol: 0.125, radius: 0.125, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
   };
   let S = loadSettings();
@@ -22,6 +27,7 @@
       if (j) return {
         ...DEFAULT_SETTINGS, ...j,
         machine: { ...DEFAULT_SETTINGS.machine, ...(j.machine || {}) },
+        tabs: { ...DEFAULT_SETTINGS.tabs, ...(j.tabs || {}) },
         snap: { ...DEFAULT_SETTINGS.snap, ...(j.snap || {}), types: { ...DEFAULT_SETTINGS.snap.types, ...((j.snap || {}).types || {}) } },
       };
     } catch (e) { LOG.warn('Could not read saved settings, using defaults', e); }
@@ -393,6 +399,22 @@
       if (showPaths || showKerf) {
         const tp = toolpathOf(sh);
         if (tp && tp.length) {
+          const tb = tabsOf(sh, tp);
+          if (tb && tb.marks.length) {
+            /* Drawn as a short bar across the path with a dot in the middle: the
+               bar is the stretch that is ramped and raised, the dot is the tab
+               itself. Blue, because it is the one thing on the path that is NOT
+               being cut. */
+            ctx.save();
+            for (const mk of tb.marks) {
+              const A = W2S(mk.a), B = W2S(mk.b), M = W2S(mk.m);
+              ctx.strokeStyle = '#6fb3ff'; ctx.lineWidth = 3 * devicePixelRatio; ctx.setLineDash([]);
+              ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(M.x, M.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+              ctx.fillStyle = '#6fb3ff';
+              ctx.beginPath(); ctx.arc(M.x, M.y, 3 * devicePixelRatio, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.restore();
+          }
           if (showKerf) { const t = toolOf(sh); ctx.strokeStyle = 'rgba(255,184,77,.35)'; ctx.lineWidth = t.dia * view.scale; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; tracePath(tp, sh.open); ctx.stroke(); }
           if (showPaths) { ctx.strokeStyle = sh.op === 'inside' ? '#41c77a' : sh.op === 'on' ? '#d38cff' : (sh.op === 'left' || sh.op === 'right') ? '#41c77a' : '#ffb84d'; ctx.lineWidth = 1 * dpr; ctx.setLineDash([4 * dpr, 3 * dpr]); tracePath(tp, sh.open); ctx.stroke(); ctx.setLineDash([]);
             // start point + direction
@@ -776,6 +798,27 @@
     const after = S2W({ x: px, y: py }); view.ox += (after.x - before.x) * view.scale; view.oy += (after.y - before.y) * view.scale; draw();
   }, { passive: false });
   function evPos(e) { const r = cv.getBoundingClientRect(); const p = { x: (e.clientX - r.left) * devicePixelRatio, y: (e.clientY - r.top) * devicePixelRatio }; return { s: p, w: S2W(p) }; }
+  /* The tabs on one part, as points on its toolpath, so the operator can see
+     where the bridges will be before posting rather than after cutting. */
+  function tabsOf(sh, path) {
+    const T = S.tabs || {};
+    const want = sh.tabs === true ? true : sh.tabs === false ? false : !!T.on;
+    if (!want || sh.op === 'on' || sh.op === 'none') return null;
+    // the redraw already has the toolpath in hand; building it again per frame
+    // on a sheet of parts is visible as lag
+    const tp = path || toolpathOf(sh);
+    if (!tp || !tp.length) return null;
+    const plan = PO.tabPlan(tp, T);
+    if (!plan.spans.length) return { marks: [], why: plan.why };
+    return {
+      why: null,
+      marks: plan.spans.map(sp => ({
+        a: PO.pointAlong(tp, sp.s0), b: PO.pointAlong(tp, sp.s1),
+        m: PO.pointAlong(tp, (sp.m0 + sp.m1) / 2),
+      })).filter(mk => mk.a && mk.b && mk.m),
+    };
+  }
+
   function hitShape(wp) {
     const tol = 6 / view.scale;
     for (let i = job.shapes.length - 1; i >= 0; i--) {
@@ -1221,15 +1264,36 @@
       h += `<div class="row"><label>Corner R</label>` + lab.map((l, i) => `<span class="muted">${l}</span><input type="number" step="0.0625" data-rc="${i}" value="${rc[i] != null ? fmtIn(rc[i]) : ''}" placeholder="${fmtIn(sh.r || 0)}" style="width:58px">`).join('') + `</div>`;
     }
     if (!multi && sh.kind === 'ellipse') h += numSlide('rx', 'Radius X', 0.0625) + numSlide('ry', 'Radius Y', 0.0625);
-    if (!multi && sh.textSpec) h += `<div class="row"><button class="small" id="btnEditText">Edit text…</button></div>`;
+    /* The spec lives on the FIRST shape of the text group, and clicking any
+       letter selects the whole group - so asking for a single selection meant
+       the button never appeared once the text existed, and the cap height could
+       never be changed again. Any selection that is one text group gets it. */
+    const textOwner = (() => {
+      const gids = new Set(shs.map(x => x.group).filter(Boolean));
+      if (shs.some(x => !x.group) || gids.size !== 1) return shs.length === 1 && sh.textSpec ? sh : null;
+      return job.shapes.find(x => x.group === [...gids][0] && x.textSpec) || null;
+    })();
+    if (textOwner) h += `<div class="row"><button class="small" id="btnEditText">Edit text…</button><span class="muted">font, size, spacing</span></div>`;
     if (!multi && sh.group) h += `<div class="row muted">In group ${esc(sh.group)}</div>`;
     if (!multi && sh.kind === 'circle') h += numSlide('r', 'Radius', 0.0625) + `<div class="row"><label>Diameter</label><input type="number" step="${uStep(0.125)}" data-k="dia" value="${fmtIn(sh.r * 2)}"> ${uLabel()}</div>`;
     if (!multi && sh.kind === 'poly' && !sh.open) h += `<div class="row"><label>All corners R</label><input type="number" step="0.0625" data-k="allr" value="${fmtIn(sh.pts[0].r || 0)}"></div>`;
     if (!multi && sh.kind === 'poly') h += polyTable(sh);
     if (!multi && sh.kind !== 'poly') h += `<div class="row"><label></label><button class="small" id="btnEditPts">Edit points…</button><span class="muted">turns this into a polygon so each point can be typed</span></div>`;
     h += num('rot', 'Rotation °', 15) + `<div class="row"><label></label><button class="small" data-rot="-90">↺ 90</button><button class="small" data-rot="90">↻ 90</button><button class="small" data-rot="-15">↺ 15</button><button class="small" data-rot="15">↻ 15</button></div>`;
-    const bb = shapeBBox(sh);
-    if (!multi) h += `<div class="row muted">Size ${fmtIn(bb.w)} × ${fmtIn(bb.h)}</div>`;
+    /* Size, for ANY selection - typed, not dragged.
+       A rectangle has Width and Height fields of its own, but a path does not:
+       letters from a font, a traced region, a boolean result all arrive as
+       paths, and there was nowhere to type a size for them. The size of a text
+       block was readable and not editable, which is no use to anyone who has
+       just set a 1 in cap height and wants 6 in. These fields scale the WHOLE
+       selection about its lower-left corner, so a block of letters keeps its
+       spacing and stays where it was nested. */
+    const gbb = groupBBox(shs);
+    h += `<h3>Size</h3>`
+      + `<div class="row"><label>Width</label><input type="number" step="${uStep(0.125)}" data-size="w" value="${fmtIn(gbb.w)}"> ${uLabel()}</div>`
+      + `<div class="row"><label>Height</label><input type="number" step="${uStep(0.125)}" data-size="h" value="${fmtIn(gbb.h)}"> ${uLabel()}</div>`
+      + `<div class="row"><label>Scale ×</label><input type="number" step="0.1" data-size="f" value="1"><button class="small" data-size2x="2">×2</button><button class="small" data-size2x="0.5">÷2</button></div>`
+      + `<div class="row"><label><input type="checkbox" id="szLock" checked> Keep proportions</label><span class="muted">${multi ? shs.length + ' parts together' : ''}</span></div>`;
     /* A closed outline has an inside and an outside. An open path has neither,
        so it gets a SIDE instead - and the side is what makes the line the
        finished edge rather than the centre of the cut. */
@@ -1238,6 +1302,20 @@
     if (sh.open) h += `<div class="row"><label></label><button class="small" id="btnFlipSide">Flip side</button><span class="muted">the dashed path shows which side the cutter takes</span></div>`;
     h += `<div class="row"><label>Tool</label><select data-k="toolId">${S.tools.map(t => `<option value="${t.id}" ${t.id === sh.toolId ? 'selected' : ''}>T${t.slot} ${esc(t.name)}</option>`).join('')}</select></div>`;
     h += `<div class="row"><label>Climb</label><input type="checkbox" data-k="climb" ${sh.climb ? 'checked' : ''}> <span class="muted">reverse direction</span></div>`;
+    /* Holding tabs, per part, on top of the job setting. Three states, because
+       "follow the job" has to stay distinct from "definitely not on this one" -
+       a sign face you are about to engrave must not come back with bridges. */
+    const tabState = sh.tabs === true ? 'on' : sh.tabs === false ? 'off' : 'job';
+    const jobTabs = (S.tabs || {});
+    h += `<div class="row"><label>Holding tabs</label><select data-k="tabs">`
+      + `<option value="job" ${tabState === 'job' ? 'selected' : ''}>Job setting (${jobTabs.on ? 'on' : 'off'})</option>`
+      + `<option value="on" ${tabState === 'on' ? 'selected' : ''}>On</option>`
+      + `<option value="off" ${tabState === 'off' ? 'selected' : ''}>Off</option></select></div>`;
+    if (!multi) {
+      const tb = tabsOf(sh);
+      if (tb && tb.why) h += `<div class="row muted" style="color:#ffb84d">No tabs: ${esc(tb.why)}</div>`;
+      else if (tb) h += `<div class="row muted">${tb.marks.length} tab(s), ${fmtIn(jobTabs.len)} ${uLabel()} long, leaving ${fmtIn(jobTabs.height)} ${uLabel()} of material</div>`;
+    }
     if (!multi) h += `<div class="row"><button class="small" id="btnSetStart">Set start point</button><button class="small" id="btnClearStart">Auto start</button></div>`;
     h += `<div class="row"><button class="small" id="btnMirror">Mirror</button><button class="small" id="btnToOrigin">To 0,0</button></div>`;
     h += `<p class="muted" style="font-size:11px">Keys: <span class="kbd">X</span> <span class="kbd">Y</span> <span class="kbd">A</span> jump to X / Y / angle · <span class="kbd">[</span> <span class="kbd">]</span> rotate 15° (Shift = 1°) · arrows nudge</p>`;
@@ -1246,6 +1324,37 @@
     el.querySelectorAll('[data-rc]').forEach(inp => inp.addEventListener('change', () => { snapshot(); sh.rc = sh.rc || [null, null, null, null]; sh.rc[+inp.dataset.rc] = inp.value === '' ? null : uParse(inp.value); delete sh.startPt; refresh(); }));
     el.querySelectorAll('[data-pv]').forEach(inp => inp.addEventListener('change', () => { snapshot(); polyEdit(sh, inp.dataset.pv, +inp.dataset.i, inp.dataset.pv === 'ang' ? parseFloat(inp.value) : uParse(inp.value)); delete sh.startPt; refresh(); }));
     const pb = $('#btnPolyBuild'); if (pb) pb.onclick = () => openPolyBuilder(sh);
+    /* Scale the selection by a factor worked out from whichever field was
+       typed. Everything goes through scaleShape about the selection's own
+       lower-left corner - the same path the Scale dialog takes. */
+    const scaleSel = (fx, fy, how) => {
+      if (!(isFinite(fx) && isFinite(fy) && fx > 0 && fy > 0)) { toast('Size must be a positive number'); return; }
+      if (Math.abs(fx - 1) < 1e-9 && Math.abs(fy - 1) < 1e-9) return;
+      if (Math.abs(fx - fy) > 1e-9) {
+        const curvy = shs.some(x => x.kind === 'circle' || (x.pts || []).some(p => p.r || p.arcR) || (x.loop || []).some(g => g.type === 'arc'));
+        if (curvy) {
+          toast('These parts have arcs - keep proportions on, or they turn into ellipses this app cannot cut');
+          LOG.warn('Refused a one-axis resize: the selection contains arcs');
+          refreshProps(); return;
+        }
+      }
+      snapshot();
+      for (const x of shs) scaleShape(x, fx, fy, gbb);
+      invalidateLoops();
+      LOG.action(`Scaled ${shs.length} part(s) ${how} - now ${fmtIn(groupBBox(shs).w)} × ${fmtIn(groupBBox(shs).h)} ${uLabel()}`);
+      refresh();
+    };
+    el.querySelectorAll('[data-size]').forEach(inp => inp.addEventListener('change', () => {
+      const lock = (el.querySelector('#szLock') || {}).checked;
+      const k = inp.dataset.size;
+      if (k === 'f') { const f = parseFloat(inp.value); scaleSel(f, f, `by ${f}`); return; }
+      const want = uParse(inp.value), cur = k === 'w' ? gbb.w : gbb.h;
+      if (!(cur > 1e-9)) { toast('This selection has no size on that axis'); return; }
+      const f = want / cur;
+      if (lock) scaleSel(f, f, `to ${fmtIn(want)} ${uLabel()} ${k === 'w' ? 'wide' : 'tall'}`);
+      else scaleSel(k === 'w' ? f : 1, k === 'h' ? f : 1, `to ${fmtIn(want)} ${uLabel()} ${k === 'w' ? 'wide' : 'tall'}`);
+    }));
+    el.querySelectorAll('[data-size2x]').forEach(b => b.onclick = () => { const f = parseFloat(b.dataset.size2x); scaleSel(f, f, `by ${f}`); });
     el.querySelectorAll('tr.edgeRow').forEach(tr => tr.addEventListener('click', (ev) => {
       if (ev.target.tagName === 'INPUT') return;      // let the number fields work
       makeEditable(sh);
@@ -1267,7 +1376,8 @@
       sl.addEventListener('change', () => { refreshList(); refreshProps(); });
     });
     wireEdgePanel(el, sh);
-    const et = $('#btnEditText'); if (et) et.onclick = () => openText({ ...sh.textSpec, x: (sh.textAt || sh).x, y: (sh.textAt || sh).y, group: sh.group });
+    const et = $('#btnEditText');
+    if (et && textOwner) et.onclick = () => openText({ ...textOwner.textSpec, x: (textOwner.textAt || textOwner).x, y: (textOwner.textAt || textOwner).y, group: textOwner.group });
     el.querySelectorAll('[data-k]').forEach(inp => {
       inp.addEventListener('change', () => {
         snapshot();
@@ -1278,8 +1388,13 @@
           : inp.type === 'number' ? (LEN.has(k) ? uParse(inp.value) : parseFloat(inp.value))
           : inp.value;
         if (inp.tagName === 'SELECT' && k === 'toolId') v = parseInt(v, 10);
+        // "job" means no override at all, so the key comes off the part
+        if (k === 'tabs') v = v === 'on' ? true : v === 'off' ? false : undefined;
         for (const s of shs) {
-          if (k === 'dia') s.r = v / 2; else if (k === 'allr') s.pts.forEach(p => p.r = v); else s[k] = v;
+          if (k === 'dia') s.r = v / 2;
+          else if (k === 'allr') s.pts.forEach(p => p.r = v);
+          else if (k === 'tabs') { if (v === undefined) delete s.tabs; else s.tabs = v; }
+          else s[k] = v;
           if (k === 'w' || k === 'h' || k === 'r' || k === 'dia' || k === 'rot' || k === 'allr') delete s.startPt;
         }
         refresh();
@@ -2684,8 +2799,8 @@
       <div class="row"><label>Text</label><textarea id="txT" style="flex:1;min-height:52px">${existing ? esc(existing.text) : ''}</textarea></div>
       <div class="row"><label>Font</label><select id="txFont" style="flex:1">${fontOptions()}</select>
         <button class="small" id="txLoad">Load .ttf…</button><input type="file" id="txFile" accept=".ttf,.ttc" style="display:none"></div>
-      <div class="row"><label>Cap height</label><input type="number" step="0.125" id="txH" value="${existing ? fmtIn(existing.height) : '1'}"> in</div>
-      <div class="row"><label>Letter gap</label><input type="number" step="0.01" id="txTr" value="${existing ? fmtIn(existing.tracking || 0) : '0'}"> in</div>
+      <div class="row"><label>Cap height</label><input type="number" step="${uStep(0.125)}" id="txH" value="${fmtIn(existing ? existing.height : 1)}"> ${uLabel()}</div>
+      <div class="row"><label>Letter gap</label><input type="number" step="${uStep(0.01)}" id="txTr" value="${fmtIn(existing ? (existing.tracking || 0) : 0)}"> ${uLabel()}</div>
       <div class="row"><label>Align</label><select id="txAl">
         <option value="left">Left</option><option value="center">Centre</option><option value="right">Right</option></select></div>
       <div class="row"><label>Cut as</label><select id="txOp">
@@ -2716,8 +2831,9 @@
           const spec = {
             text: ov.querySelector('#txT').value,
             font: F.value,
-            height: parseFloat(ov.querySelector('#txH').value) || 1,
-            tracking: parseFloat(ov.querySelector('#txTr').value) || 0,
+            // typed in whatever units are displayed; everything is stored in inches
+            height: uParse(ov.querySelector('#txH').value) || 1,
+            tracking: uParse(ov.querySelector('#txTr').value) || 0,
             align: ov.querySelector('#txAl').value,
             op: OP.value,
           };
@@ -2745,7 +2861,28 @@
         : FONT.strokeText(spec.text, spec);
     } catch (err) { LOG.error('Text layout failed', err); toast('Could not lay out that text'); return 0; }
 
-    if (!res.paths.length) { toast('That text produced nothing to cut'); return 0; }
+    /* Nothing came out, and the useful part is WHY. Nearly always every
+       character was outside the font: the built-in one is a single-line
+       engraving alphabet carrying ASCII only, so a character pasted from
+       Character Map produces no path at all. Naming the characters, and saying
+       a font can be loaded, is the difference between a dead end and knowing
+       what to do. This used to toast five words and log nothing whatever, so
+       the attempt left no trace at all. */
+    if (!res.paths.length) {
+      const miss = (res.missing || []).join(' ');
+      const builtIn = !(spec.font && loadedFonts[spec.font]);
+      const where = builtIn ? 'the built-in single-line font' : `font "${spec.font}"`;
+      if (miss) {
+        LOG.warn(`Text: nothing to cut - none of these characters are in ${where}: ${miss}`);
+        toast(builtIn
+          ? `Not in the built-in font: ${miss}  -  use "Load .ttf..." in the Text box and pick a font that has them`
+          : `Not in "${spec.font}": ${miss}`);
+      } else {
+        LOG.warn(`Text: nothing to cut from ${JSON.stringify(String(spec.text || '').slice(0, 60))} using ${where}`);
+        toast('That text produced nothing to cut');
+      }
+      return 0;
+    }
     if (res.missing.length) {
       const list = res.missing.join(' ');
       LOG.warn(`Text: ${res.missing.length} character(s) not in this font were skipped: ${list}`);
@@ -3666,8 +3803,8 @@
   // ---------- job stats / gcode ----------
   function buildJob() {
     return {
-      shapes: job.shapes.filter(s => s.op !== 'none').map(s => ({ loop: worldLoop(s), op: s.op, open: s.open, toolId: s.toolId, startHint: s.startPt, climb: s.climb })),
-      tools: S.tools, material: { thickness: job.material.thickness }, cutThrough: job.cutThrough, machine: machineForPost(),
+      shapes: job.shapes.filter(s => s.op !== 'none').map(s => ({ loop: worldLoop(s), op: s.op, open: s.open, toolId: s.toolId, startHint: s.startPt, climb: s.climb, name: s.name, tabs: s.tabs })),
+      tools: S.tools, material: { thickness: job.material.thickness }, cutThrough: job.cutThrough, machine: machineForPost(), tabs: S.tabs,
     };
   }
   function machineForPost() { const m = { ...S.machine }; m.lineEnding = S.machine.eol === 'lf' ? '\n' : '\r\n'; return m; }
@@ -3688,6 +3825,7 @@
       for (const msg of issues) if (!warnedIssues.has(msg)) { warnedIssues.add(msg); LOG.warn('Toolpath: ' + msg); }
       for (const msg of Array.from(warnedIssues)) if (!issues.includes(msg)) warnedIssues.delete(msg);
       el.innerHTML = `${job.shapes.length} parts · ${st.passes} passes · ${st.tools.map(esc).join(', ')}<br>Cut length ${toU(st.length).toFixed(1)} ${uLabel()} · est. ${st.timeMin.toFixed(1)} min<br>Material ${esc(job.material.name)} (${fmtIn(job.material.thickness)} ${uLabel()})`
+        + (st.tabs ? `<br>${st.tabs} holding tab(s) — parts stay in the sheet until snapped out` : '')
         + (bad.length ? `<br><span class="warnbox">⚠ ${bad.length} part(s) outside the bed</span>` : '')
         + (issues.length ? `<br><span class="warnbox">⚠ ${issues.map(esc).join('<br>⚠ ')}</span>` : '');
     } catch (e) { el.innerHTML = `<span class="warnbox">Toolpath error: ${esc(e.message)}</span>`; console.error(e); }
@@ -4161,6 +4299,8 @@
     $('#mZLift').value = m.zLift == null ? '' : fmtIn(m.zLift);
     $('#mLeadIn').value = fmtIn(m.leadIn || 0);
     $('#mHeader').value = m.header; $('#mToolChange').value = m.toolChange; $('#mFooter').value = m.footer;
+    $('#tabOn').checked = !!S.tabs.on; $('#tabCount').value = S.tabs.count;
+    $('#tabLen').value = fmtIn(S.tabs.len); $('#tabHeight').value = fmtIn(S.tabs.height);
     $('#nGap').value = fmtIn(S.nest.gap); $('#nMargin').value = fmtIn(S.nest.margin); $('#nRotate').value = S.nest.rotateMode || (S.nest.rotate ? 'quarter' : 'none');
     $('#aiKey').value = S.ai.key || ''; $('#aiModel').value = S.ai.model || '';
     renderKeys();
@@ -4228,6 +4368,10 @@
     toast('Applied preset: ' + src.name);
   };
   bindSetting('#mHeader', el => S.machine.header = el.value); bindSetting('#mToolChange', el => S.machine.toolChange = el.value); bindSetting('#mFooter', el => S.machine.footer = el.value);
+  bindSetting('#tabOn', el => { S.tabs.on = el.checked; LOG.action('Holding tabs ' + (el.checked ? 'on' : 'off') + ' for the job'); });
+  bindSetting('#tabCount', el => S.tabs.count = Math.max(1, parseInt(el.value, 10) || 1));
+  bindSetting('#tabLen', el => S.tabs.len = uParse(el.value) || 0.3);
+  bindSetting('#tabHeight', el => S.tabs.height = uParse(el.value) || 0);
   bindSetting('#nGap', el => S.nest.gap = uParse(el.value)); bindSetting('#nMargin', el => S.nest.margin = uParse(el.value)); bindSetting('#nRotate', el => { S.nest.rotateMode = el.value; S.nest.rotate = el.value !== 'none'; });
   bindSetting('#aiKey', el => S.ai.key = el.value.trim()); bindSetting('#aiModel', el => S.ai.model = el.value.trim());
   $('#keyMode').addEventListener('change', () => {
@@ -4275,7 +4419,7 @@
   }
   $('#selMaterial').addEventListener('change', e => { const m = S.materials[parseInt(e.target.value, 10)]; job.material = { name: m.name, thickness: m.thickness }; $('#inThick').value = fmtIn(m.thickness); updateStats(); });
   $('#inThick').addEventListener('change', e => { job.material.thickness = uParse(e.target.value); updateStats(); });
-  $('#inCutThrough').addEventListener('change', e => { job.cutThrough = parseFloat(e.target.value) || 0; updateStats(); });
+  $('#inCutThrough').addEventListener('change', e => { job.cutThrough = uParse(e.target.value) || 0; updateStats(); });
   $('#chkPaths').addEventListener('change', draw); $('#chkKerf').addEventListener('change', draw); $('#selSnap').addEventListener('change', draw);
 
   // ---------- simulation ----------
@@ -4378,5 +4522,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
 })();

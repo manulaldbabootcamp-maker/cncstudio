@@ -18,3 +18,9 @@ Screenshot*.png
 
 # scenario screenshots + report (npm run scenarios)
 test/shots/
+
+# Windows system fonts copied in for the text tool (Nirmala UI, 14 MB).
+# They are Microsoft's to licence, not ours to redistribute, and they are
+# already on every Windows machine this app runs on - so the folder stays
+# local. Drop a .ttf in here and the Text box can load it.
+fonts/

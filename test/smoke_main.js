@@ -1603,6 +1603,57 @@ app.whenReady().then(async () => {
     ok(r.kind === 'path', 'and it stays a path, keeping true arcs', JSON.stringify(r));
     }
 
+    console.log('a block of text can be resized after it is made');
+    {
+      const r = JSON.parse(await run(`(() => {
+        const G = CNC.G, J = CNC.job;
+        J.shapes.length = 0; J.nextId = 1;
+        CNC.buildText({ text:'AB', font:'', height:1, tracking:0, align:'left', op:'on' }, { x:10, y:6 });
+        const made = J.shapes.length;
+        CNC.doMarquee(0, 0, 60, 120); CNC.refresh();
+        const box = (() => { let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+          for (const sh of J.shapes) { const b = G.bbox(CNC.worldLoop(sh)); x0=Math.min(x0,b.x0); y0=Math.min(y0,b.y0); x1=Math.max(x1,b.x1); y1=Math.max(y1,b.y1); }
+          return { x:+x0.toFixed(3), y:+y0.toFixed(3), w:+(x1-x0).toFixed(3), h:+(y1-y0).toFixed(3) }; });
+        const before = box();
+        const edit = !!document.querySelector('#btnEditText');
+        const H = document.querySelector('[data-size="h"]');
+        const lock = (document.querySelector('#szLock') || {}).checked;
+        if (H) { H.value = '4'; H.dispatchEvent(new Event('change', { bubbles: true })); }
+        return JSON.stringify({ made, edit, hadBox: !!H, lock, before, after: box() });
+      })()`));
+      // "AB" is five strokes in the single-line font, not two letters-worth of shapes
+      ok(r.made >= 2 && r.hadBox, 'a text block gets a Size box in its panel', JSON.stringify(r));
+      ok(r.edit, 'and an Edit text button, with the whole block selected', JSON.stringify(r));
+      ok(Math.abs(r.after.h - 4) < 1e-6, 'typing a height of 4 makes it 4 in tall', JSON.stringify(r.after));
+      ok(Math.abs(r.after.w / r.before.w - 4) < 1e-6, 'and the width follows, so the letters keep their shape', JSON.stringify(r));
+      ok(Math.abs(r.after.x - r.before.x) < 1e-6 && Math.abs(r.after.y - r.before.y) < 1e-6,
+        'scaled about its lower-left corner, so it stays where it was', JSON.stringify(r));
+    }
+
+    console.log('holding tabs');
+    {
+      const r = JSON.parse(await run(`(() => {
+        const J = CNC.job;
+        J.shapes.length = 0; J.nextId = 1;
+        J.shapes.push({ id:1, name:'plate', kind:'rect', x:5, y:5, w:12, h:8, r:0, rot:0, open:false, op:'outside', toolId:CNC.S.tools[0].id, climb:false });
+        J.nextId = 2;
+        CNC.S.tabs = { on:true, count:4, len:0.3, height:0.03 };
+        const sh = J.shapes[0];
+        const on = CNC.tabsOf(sh);
+        sh.tabs = false; const partOff = CNC.tabsOf(sh);
+        delete sh.tabs; sh.op = 'on'; const online = CNC.tabsOf(sh);
+        sh.op = 'outside'; CNC.S.tabs.on = false; const jobOff = CNC.tabsOf(sh);
+        CNC.S.tabs.on = false;
+        CNC.refresh();
+        return JSON.stringify({ marks: on ? on.marks.length : -1, why: on ? on.why : 'none',
+          partOff: partOff === null, online: online === null, jobOff: jobOff === null });
+      })()`));
+      ok(r.marks === 4 && !r.why, 'four tabs are planned on a 12x8 plate', JSON.stringify(r));
+      ok(r.partOff, 'a part told not to have tabs has none');
+      ok(r.online, 'a part cut on the line never gets one');
+      ok(r.jobOff, 'and with the job setting off, nothing has them');
+    }
+
     console.log('no errors accumulated');
     const errs2 = await run(`JSON.stringify(CNC.LOG.entries().filter(e=>e.level==="error" && e.t >= ${loadedAt}).map(e=>e.msg))`);
     ok(errs2 === '[]', 'no errors logged during the whole run', errs2);
