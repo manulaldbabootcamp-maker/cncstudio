@@ -424,13 +424,39 @@ const GEOM = (() => {
     const scale = insUnits === 4 ? 1 / 25.4 : insUnits === 5 ? 1 / 2.54 : 1; // mm/cm -> inch
     const get = (e, code, def) => { const f = e.data.find(d => d[0] === code); return f ? parseFloat(f[1]) : def; };
     const loops = [], opens = [];
+    /* What the file holds that a flat cut cannot use. Reading it silently made a
+       3D lid look like a drawing: its three faces stacked on one another, its
+       vertical edges as zero-length lines, and fifty ellipses simply missing.
+       The importer reports these so the operator is told before anything is cut. */
+    const report = { flipped: 0, tilted: 0, vertical: 0, slanted: 0, zLevels: [], skipped: {} };
+    const zs = new Set();
+    const seeZ = (z) => { if (isFinite(z)) zs.add(Math.round(z * 1e4) / 1e4); };
+    /* Arcs, circles and polylines are stored in their own plane (OCS). A normal of
+       0,0,-1 - common after a mirror in CAD - is the same flat drawing seen from
+       below: x runs the other way. Ignoring it put those arcs mirrored across
+       X = 0, off the side of the part. Any other normal is a tilted plane. */
+    const normalZ = (e) => {
+      const nx = get(e, 210, 0), ny = get(e, 220, 0), nz = get(e, 230, 1);
+      if (Math.abs(nx) > 1e-6 || Math.abs(ny) > 1e-6 || Math.abs(Math.abs(nz) - 1) > 1e-6) return 0;
+      return nz < 0 ? -1 : 1;
+    };
+    const HANDLED = new Set(['LWPOLYLINE', 'CIRCLE', 'ARC', 'LINE', 'SPLINE']);
+    const QUIET = new Set(['POINT', 'VIEWPORT']);   // nothing to cut, nothing lost
     for (const e of ents) {
+      if (!HANDLED.has(e.type)) {
+        if (!QUIET.has(e.type)) report.skipped[e.type] = (report.skipped[e.type] || 0) + 1;
+        continue;
+      }
       if (e.type === 'LWPOLYLINE') {
+        const nz = normalZ(e);
+        if (!nz) { report.tilted++; continue; }
+        if (nz < 0) report.flipped++;
+        seeZ(get(e, 38, 0) * nz * scale);
         const verts = []; let closed = (get(e, 70, 0) & 1) === 1; let cur = null;
         for (const [c, v] of e.data) {
-          if (c === 10) { cur = { x: parseFloat(v) * scale, y: 0, b: 0 }; verts.push(cur); }
+          if (c === 10) { cur = { x: nz * parseFloat(v) * scale, y: 0, b: 0 }; verts.push(cur); }
           else if (c === 20 && cur) cur.y = parseFloat(v) * scale;
-          else if (c === 42 && cur) cur.b = parseFloat(v);
+          else if (c === 42 && cur) cur.b = nz * parseFloat(v);   // mirroring x turns each bulge the other way
         }
         const segs = [];
         const nseg = closed ? verts.length : verts.length - 1;
@@ -443,25 +469,82 @@ const GEOM = (() => {
         if (!segs.length) continue;
         if (closed) loops.push(segs); else opens.push(segs);
       } else if (e.type === 'CIRCLE') {
-        loops.push(circleLoop(get(e, 10, 0) * scale, get(e, 20, 0) * scale, get(e, 40, 0) * scale));
+        const nz = normalZ(e);
+        if (!nz) { report.tilted++; continue; }
+        if (nz < 0) report.flipped++;
+        seeZ(get(e, 30, 0) * nz * scale);
+        loops.push(circleLoop(nz * get(e, 10, 0) * scale, get(e, 20, 0) * scale, get(e, 40, 0) * scale));
       } else if (e.type === 'ARC') {
-        const c = P(get(e, 10, 0) * scale, get(e, 20, 0) * scale), r = get(e, 40, 0) * scale;
-        const a0 = get(e, 50, 0) * Math.PI / 180, a1 = get(e, 51, 0) * Math.PI / 180;
-        opens.push([arc(P(c.x + r * Math.cos(a0), c.y + r * Math.sin(a0)), P(c.x + r * Math.cos(a1), c.y + r * Math.sin(a1)), c, true)]);
+        const nz = normalZ(e);
+        if (!nz) { report.tilted++; continue; }
+        if (nz < 0) report.flipped++;
+        seeZ(get(e, 30, 0) * nz * scale);
+        const c = P(nz * get(e, 10, 0) * scale, get(e, 20, 0) * scale), r = get(e, 40, 0) * scale;
+        let a0 = get(e, 50, 0) * Math.PI / 180, a1 = get(e, 51, 0) * Math.PI / 180;
+        // seen from below an angle t lands at 180-t, and counter-clockwise there is clockwise here
+        if (nz < 0) { a0 = Math.PI - a0; a1 = Math.PI - a1; }
+        opens.push([arc(P(c.x + r * Math.cos(a0), c.y + r * Math.sin(a0)), P(c.x + r * Math.cos(a1), c.y + r * Math.sin(a1)), c, nz > 0)]);
       } else if (e.type === 'LINE') {
-        opens.push([line(P(get(e, 10, 0) * scale, get(e, 20, 0) * scale), P(get(e, 11, 0) * scale, get(e, 21, 0) * scale))]);
+        // LINE is stored in world coordinates, so it has no plane to correct
+        const a = P(get(e, 10, 0) * scale, get(e, 20, 0) * scale), b = P(get(e, 11, 0) * scale, get(e, 21, 0) * scale);
+        const za = get(e, 30, 0) * scale, zb = get(e, 31, 0) * scale;
+        if (dist(a, b) < 1e-9) { if (Math.abs(za - zb) > 1e-9) report.vertical++; continue; }   // an edge running straight up in Z
+        if (Math.abs(za - zb) > 1e-6) report.slanted++;
+        seeZ(za); seeZ(zb);
+        opens.push([line(a, b)]);
       } else if (e.type === 'SPLINE') {
         // approximate via fit points / control points
         const pts = []; let cur = null;
-        for (const [c, v] of e.data) { if (c === 10) { cur = P(parseFloat(v) * scale, 0); pts.push(cur); } else if (c === 20 && cur) cur.y = parseFloat(v) * scale; }
+        for (const [c, v] of e.data) { if (c === 10) { cur = P(parseFloat(v) * scale, 0); pts.push(cur); } else if (c === 20 && cur) cur.y = parseFloat(v) * scale; else if (c === 30) seeZ(parseFloat(v) * scale); }
         const segs = []; for (let k = 0; k + 1 < pts.length; k++) segs.push(line(pts[k], pts[k + 1]));
         if (segs.length) opens.push(segs);
       }
     }
     // chain open segments into loops where possible
+    /* The same edge twice is cut twice. A 3D part's top and bottom faces flatten
+       onto each other, so every hole came in three times and the outline's
+       copies were chained to each other end to end - a "closed" shape that runs
+       out along an edge and straight back. A laser cut each of them again.
+       Keep the first of each; a key that ignores direction (sorted ends) and
+       names which arc it is (its midpoint) makes A->B and B->A the same edge.
+       A file with no duplicates comes out exactly as it went in. */
+    const r4 = (n) => (Math.round(n * 1e4) / 1e4 + 0).toFixed(4);
+    const pk = (p) => r4(p.x) + ',' + r4(p.y);
+    const segKey = (s) => { const e = [pk(s.a), pk(s.b)].sort(); return e[0] + '|' + e[1] + '|' + pk(pointAt(s, 0.5)); };
+    const seen = new Set();
+    report.duplicates = 0;
+    const keptLoops = [];
+    const retrace = [];
+    for (const l of loops) {
+      const keys = l.map(segKey);
+      const whole = keys.slice().sort().join('/');
+      if (seen.has('loop ' + whole)) { report.duplicates++; continue; }
+      /* One polyline that runs along an edge and straight back is "closed" with
+         no area - what an earlier import of stacked faces wrote out. It goes to
+         the open pile, where its second copy of each edge is dropped. A loop
+         that only shares an edge with a different loop is left alone: two parts
+         drawn side by side are the operator's choice, not a duplicate. */
+      if (new Set(keys).size < keys.length) { retrace.push(l); continue; }
+      seen.add('loop ' + whole); keys.forEach(k => seen.add(k));
+      keptLoops.push(l);
+    }
+    loops.length = 0; loops.push(...keptLoops);
+    const keptOpens = [];
+    for (const o of retrace.concat(opens)) {
+      // an open polyline that loses an edge in the middle is split there
+      let run = [];
+      for (const s of o) {
+        const k = segKey(s);
+        if (seen.has(k)) { report.duplicates++; if (run.length) keptOpens.push(run); run = []; continue; }
+        seen.add(k); run.push(s);
+      }
+      if (run.length) keptOpens.push(run);
+    }
+    opens.length = 0; opens.push(...keptOpens);
     const chained = chainOpen(opens);
     for (const ch of chained) { if (ch.closed) loops.push(ch.segs); else opens2.push(ch.segs); }
-    return { loops: loops.map(l => signedArea(l) < 0 ? reverseLoop(l) : l), opens: opens2 };
+    report.zLevels = [...zs].sort((p, q) => p - q);
+    return { loops: loops.map(l => signedArea(l) < 0 ? reverseLoop(l) : l), opens: opens2, report };
   }
   const opens2 = [];
   function chainOpen(opens) {

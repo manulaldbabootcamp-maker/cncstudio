@@ -5,6 +5,254 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Typed shortcuts run without Enter
+
+### Changed
+- **No Enter after a shortcut.** A typed alias runs the moment nothing longer
+  starts with it (EL, UNI, SC), and after a 0.6 s pause when something could
+  (C waits for CO / CHA). Enter or Space still run it at once; coordinates
+  (12,5) still wait for Enter. Settings > Keyboard has a checkbox to turn it
+  off. On by default - the operator asked for it.
+
+---
+
+## Several designs open at once
+
+### Added
+- **Design tabs** under the toolbar: one tab per open design, `+` for a new
+  one, `×` to close (asks first if it has parts). Each keeps its own parts,
+  undo history and zoom. **New design** opens a tab instead of clearing the
+  job; **Open** puts a project or DXF in a new tab, or in this one if it is
+  still empty. **Import into this design** (File) adds a DXF to the design
+  showing, as Open used to.
+- **Simulate asks which design**: a Design picker beside the Simulate button.
+  Any open design can be simulated without switching to it.
+
+---
+
+## Toolbar in tabs, with names and shortcuts
+
+### Changed
+- **The top bar is grouped into tabs**: File, Draw, Modify, Combine, Measure,
+  Snap, Output. One group shows at a time, in a second row. A row of 37 bare
+  icons was hard to read; each button now says what it does, with its shortcut
+  in brackets - read from the live alias table (or the single key in direct
+  mode), so a changed alias shows on the button. The last tab used is
+  remembered. Export TAP stays on the top row. New **Merge into one part**
+  button in Combine (was only on J). Element ids unchanged.
+
+---
+
+## A big DXF lagged on every mouse move
+
+### Fixed
+- **Half a second per mouse move with a 688-part DXF** (jannelle1 export.dxf,
+  3600 lines and arcs). Profiled: every redraw ran `holeParents`, which
+  recomputed each plate's bounding box once per hole - holes x plates box
+  computations a frame. Boxes are now worked out once. The redraw also rebuilt
+  every part's toolpath each frame; `toolpathOf` now caches per part, keyed on
+  the part and its tool, so an edit rebuilds only what changed.
+  Mouse move 420 ms -> 55 ms (headless, software rendering); redraw 533 -> 149.
+
+---
+
+## Playful fonts for kids' stencils
+
+### Added
+- **Round, chunky fonts in `fonts/`**: Comic Sans Bold, Cooper Black, Kristen, Snap, Showcard Gothic, Gill Sans Ultra Bold, Berlin Sans Bold, Jokerman, Ravie, Curlz, Tempus Sans, Eras Bold, Segoe UI Black. Each loads with nothing
+  missing and, with Bridges ticked, leaves no loose middle in A-Z, a-z, 0-9.
+  Bauhaus 93 was tried and dropped - its bridges fail.
+
+---
+
+## Stencil bridges for text
+
+### Added
+- **Bridges** in the Text box (off by default, width 0.05 in). Cut a letter
+  out and the middle of an A, O or R drops. `REGION.bridgeGaps` puts a gap
+  straight up and straight down from every hole, through the stroke;
+  `fillOutline` takes the gaps out of the ink. Grid-checked exact; no hole
+  left in any shipped font except Mistral, which fails and falls back with a
+  toast. Stencil needs none - it is bridged already.
+
+---
+
+## Cursive joins are not cut through
+
+### Fixed
+- **Overlapping letters are fused into one outline** (`REGION.fillOutline`).
+  Split at every crossing, keep pieces with ink on one side only (nonzero
+  rule), chain them. Checked on a grid against the font fill: 0 mismatches.
+  Block fonts have no crossings and are left exactly as before.
+- Still open: Mistral and Script MT Bold fall back unfused (two letters share
+  an exact collinear edge; parallel edges are not split yet).
+
+---
+
+## Cursive fonts
+
+### Added
+- **Cursive fonts in `fonts/`**: Brush Script, Freestyle Script, French Script, Edwardian Script, Kunstler Script, Vivaldi, Vladimir Script, Palace Script, Mistral, Monotype Corsiva, Lucida Handwriting, Lucida Calligraphy, Bradley Hand, Segoe Script (and Bold), Segoe Print (and Bold), Script MT Bold, Pristina, Rage Italic, Matura Script, Gabriola, Ink Free. Each loads and outlines A-Z, a-z,
+  0-9 with nothing missing. In most of them joined letters overlap (Brush
+  Script: 7 overlapping pairs in "Hello world"), and the text is not unioned,
+  so an outline cut also cuts across each join. Monotype Corsiva does not
+  overlap.
+
+---
+
+## Bold English fonts
+
+### Added
+- **Bold English fonts in `fonts/`** for the Text box (Load .ttf): Arial Bold,
+  Arial Black, Calibri, Segoe UI, Verdana, Tahoma, Trebuchet, Times New Roman,
+  Georgia and Consolas Bold, Impact, and Stencil, whose bridged letters keep the
+  centres of A, O and R attached when cut out. Copied from Windows; each
+  checked to load and outline A-Z, a-z, 0-9 with nothing missing.
+
+---
+
+## Box select over a part
+
+### Added
+- **Ctrl+drag always draws a selection box**, even starting on top of a
+  part. A plain drag that starts inside a closed part grabs and moves it, so a
+  box could never begin inside a plate to pick the circles on it. Parts fully
+  inside the box are selected; plain drag and Shift behave as before.
+
+---
+
+## A plate and its holes are one part
+
+### Changed
+- **Merge makes one part that carries its holes.** Grouping a plate with its
+  circles (the previous fix) still left three parts: three lines in the list,
+  and rotating the plate turned each shape about its own centre, so the
+  circles stayed where they were. A part now has `holes` - ordinary shapes (a
+  circle stays a circle) placed in the part's own frame. Merge welds what
+  touches as before; whatever lies inside the result becomes its holes. With
+  nothing touching, the outermost closed shape takes the ones inside it. A
+  closed hole drawn as an outside cut is switched to inside. Holes a welded
+  part already carried are carried over. A shape outside every part is left
+  alone. One Undo reverts the whole merge.
+- The holes move, rotate, copy, array, scale, mirror and nest with the part;
+  they draw, snap, and go to the TAP, DXF and PDF like any other cut.
+  `worldLoop` is still the outline alone, so the edit tools are unchanged;
+  output goes through `expandShapes()`.
+- **Ungroup (Ctrl+Shift+G) on a part with holes** lets them go as parts of
+  their own, where they are, for editing one by one. The Properties panel
+  shows how many holes a part carries.
+- Replaces the grouping added in the two entries below.
+
+### Tests
+- Smoke (325): four loose sides and two circles merge into one part, one line
+  in the list, holes where drawn; a closed plate takes the circles inside it
+  and leaves one outside alone; rotating turns the holes with it; the TAP cuts
+  all three; Ungroup gives them back; welding a part with a hole keeps it, and
+  one Undo restores both.
+
+---
+
+## Merging a plate deleted its holes
+
+### Fixed
+- **"Merge into one part" removed the circles inside a plate.** Merge welds
+  the selection into one solid, and a hole sitting inside the plate is inside
+  that solid - the union swallowed it, and the plate came out with no holes.
+  A shape that touches nothing else in the selection now has nothing to weld
+  to and is left exactly as drawn (still a circle, still cut inside); the
+  shapes that do touch are merged as before, and everything comes out in one
+  group so the plate and its holes move together.
+- **A closed plate and its holes would not merge at all** ("do not touch -
+  nothing to merge"). With nothing touching there is nothing to weld, but the
+  operator still wants one part; here that is a group. Merge now groups them,
+  each shape kept as drawn, and says so.
+
+### Tests
+- Smoke (316): four loose sides and two holes merge into one closed 10 x 6
+  plate, both holes kept as inside-cut circles, all three in one group.
+
+---
+
+## The laser cut the same edge again
+
+### Fixed
+- **Duplicate edges in a DXF were imported, and cut, every time they
+  appeared.** A lid exported after importing a 3D file had each hole three
+  times and an outline built from polylines that ran along an edge and straight
+  back - the laser retraced all of it. The importer now keeps the first of
+  every identical edge (either direction; an arc is told from the other half of
+  its circle by its midpoint): an identical loop is dropped, a polyline that
+  retraces itself goes back to the open pile and is rechained without its
+  copies, and an open path that runs over an edge already drawn keeps the rest
+  of itself. That file now comes in as one closed outline and two holes, 35
+  duplicates removed. Two parts drawn sharing an edge are left as they are -
+  that is a design, not a duplicate. The count goes in the import message and
+  the Activity log. A file with no duplicates imports exactly as before.
+
+### Tests
+- `test/dxf_test.js` (27): a circle three times is one, stacked outlines in
+  either direction close as one with the right area, an arc and its copy stay
+  one open arc, two halves of a circle are both kept, a self-retracing polyline
+  becomes one open path, squares sharing an edge stay two squares.
+
+---
+
+## A 3D DXF said nothing and came in wrong
+
+### Fixed
+- **Arcs and circles drawn "from below" landed mirrored across X = 0.** CAD
+  stores an arc in its own plane; a normal of 0,0,-1 - common after a mirror -
+  is the same flat drawing seen from underneath, so x runs the other way. The
+  importer ignored it: a bypass-valve lid's hole at X 2.25 came in at X -2.25,
+  and its corner arcs sat 8 in off the part, so the outline never closed.
+  Circles, arcs and LWPOLYLINEs now take the normal into account (an arc's
+  angles become 180-t and it runs clockwise; a polyline's bulges turn over).
+  The same lid now comes in as 15 closed outlines instead of 14 plus 17 loose
+  pieces.
+- **Vertical edges came in as zero-length lines.** A 3D model's edges that
+  run straight up in Z have the same X and Y at both ends. They are left out.
+
+### Added
+- **The importer says what it could not use.** A 3D file (geometry at more
+  than one height, vertical or sloping edges, arcs on a tilted plane) or
+  entities it cannot read (ELLIPSE, INSERT, ...) now stop the import with a
+  dialog naming each one and the fix - export a flat 2D view with curves as
+  arcs. Import anyway or Cancel; Cancel changes nothing. All of it goes to the
+  Activity log. An ordinary 2D drawing imports with no question, exactly as
+  before.
+
+### Tests
+- `test/dxf_test.js` (19, in `npm test`): flat files report nothing (the
+  30-part sample included), a flipped circle, arc and bulged polyline land
+  right, a rounded rectangle with one flipped corner closes with the right
+  area, 3D content is counted, skipped entities are named, mm still converts.
+
+---
+
+## A grid the laser cuts once
+
+### Added
+- **Cut grid** (toolbar, beside Array; command `GR`). A grid drawn as
+  rectangles side by side puts two edges on every shared line, and a laser
+  cutting on the line goes over it twice and burns the film. The grid is laid
+  out instead as full-length lines - one per row boundary, one per column
+  boundary - each an open path cut **on the line**, no tool offset. Each line
+  is cut exactly once.
+  Column widths and row heights are typed as a list: `4x6` for four of 6,
+  `6, 6, 4` for sizes one by one, or both mixed. Start X/Y place the bottom-left
+  corner; the lines come in as one group. A span that is not a number is
+  refused with the reason - `parseFloat` would have read a half-typed `4x` as 4.
+  Nothing existing changes: drawings without a grid post exactly as before.
+- One pass per line also needs the tool's pass depth to be at least the
+  material thickness; otherwise the cut is split into depth passes as usual.
+
+### Tests
+- Smoke covers the grid (313): line count, one segment per line, no two lines
+  on top of each other, on-the-line open paths, one group, mixed spans sized
+  right, TAP generates, and a bad span draws nothing.
+
+---
+
 ## A size you can type, and tabs that hold the part in the sheet
 
 ### Added

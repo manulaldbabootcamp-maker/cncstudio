@@ -8,8 +8,28 @@
   :root { --bg:#1e2126; --panel:#262a31; --panel2:#2d323a; --border:#3a404a; --text:#e6e8eb; --muted:#9aa3ad; --accent:#4da3ff; --ok:#41c77a; --warn:#ffb84d; --err:#ff5c5c; }
   * { box-sizing: border-box; }
   html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font: 13px/1.4 system-ui, Segoe UI, Roboto, sans-serif; overflow:hidden; }
-  #app { display:grid; grid-template-rows: 40px 1fr 26px; grid-template-columns: 220px 1fr 340px; height:100vh; }
-  header { grid-column: 1 / -1; display:flex; align-items:center; gap:6px; padding:0 8px; background:var(--panel); border-bottom:1px solid var(--border); }
+  #app { display:grid; grid-template-rows: 104px 1fr 26px; grid-template-columns: 220px 1fr 340px; height:100vh; }
+  header { grid-column: 1 / -1; display:flex; flex-direction:column; background:var(--panel); border-bottom:1px solid var(--border); }
+  header .hrow { display:flex; align-items:center; gap:6px; padding:0 8px; height:36px; }
+  header .ribbon { background:var(--panel2); border-top:1px solid var(--border); overflow-x:auto; }
+  /* File / Draw / Modify ...: one group of buttons on show at a time */
+  header .rtabs { display:flex; gap:2px; }
+  .rtab { padding:5px 12px; border-radius:6px; cursor:pointer; color:var(--muted); font-weight:600; }
+  .rtab:hover { color:var(--text); }
+  .rtab.active { background:var(--panel2); color:var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+  .rib { display:none; gap:4px; align-items:center; white-space:nowrap; }
+  .rib.active { display:flex; }
+  .rib button { padding:4px 10px; }
+  /* open designs, one tab each */
+  #docTabs { display:flex; align-items:flex-end; gap:2px; padding:0 8px; height:30px; background:var(--bg); border-top:1px solid var(--border); overflow-x:auto; }
+  .dtab { display:flex; align-items:center; gap:6px; padding:3px 6px 3px 12px; border:1px solid var(--border); border-bottom:none; border-radius:6px 6px 0 0; background:var(--panel); color:var(--muted); cursor:pointer; white-space:nowrap; max-width:220px; }
+  .dtab span { overflow:hidden; text-overflow:ellipsis; }
+  .dtab.active { background:#15171b; color:var(--text); border-color:var(--accent); }
+  .dtab .x { width:18px; height:18px; display:inline-flex; align-items:center; justify-content:center; border-radius:4px; font-weight:400; }
+  .dtab .x:hover { background:var(--err); color:#fff; }
+  .dtab.add { padding:3px 10px; font-weight:700; }
+  header button .key { color:var(--muted); margin-left:4px; font-size:11px; }
+  header button.active .key, header button.primary .key { color:#0b1520; opacity:.75; }
   header .brand { font-weight:700; margin-right:8px; color:var(--accent); }
   header .tabs { display:flex; gap:2px; margin-left:auto; }
   .tab { padding:5px 12px; border-radius:6px; cursor:pointer; color:var(--muted); }
@@ -102,52 +122,78 @@
 <body>
 <div id="app">
   <header>
-    <span class="brand">CNC Studio</span>
-    <button id="btnNew" class="ico" data-icon="new" title="New job"></button>
-    <button id="btnOpen" class="ico" data-icon="open" title="Open project / DXF / TAP"></button>
-    <button id="btnSave" class="ico" data-icon="save" title="Save project (.cncjob) — Ctrl+S"></button>
-    <span class="sep"></span>
-    <button class="tool ico active" data-tool="select" data-icon="select" title="Select (V)"></button>
-    <button class="tool ico" data-tool="rect" data-icon="rect" title="Rectangle (R)"></button>
-    <button class="tool ico" data-tool="circle" data-icon="circle" title="Circle (C)"></button>
-    <button class="tool ico" data-tool="arc" data-icon="arc" title="Arc (A) — 3 points: start, end, then a point on the arc"></button>
-    <button class="tool ico" data-tool="poly" data-icon="poly" title="Polygon (P) — click points, Enter/double-click to close"></button>
-    <button class="tool ico" data-tool="pline" data-icon="pline" title="Open polyline for on-line cuts (L)"></button>
-    <button class="tool ico" data-tool="ellipse" data-icon="ellipse" title="Ellipse (E) — drag from centre"></button>
-    <button class="tool ico" data-tool="spline" data-icon="spline" title="Spline — click points, Enter to finish, click the first point to close"></button>
-    <button id="btnText" class="ico" data-icon="text" title="Text / engraving — single-line font built in, or load a .ttf"></button>
-    <button class="tool ico" data-tool="measure" data-icon="measure" title="Measure (M) — click two points for distance and angle"></button>
-    <button id="btnPolyDims" class="ico" data-icon="dimension" title="New polygon from side lengths and angles"></button>
-    <button id="btnOffsetTrace" class="ico" data-icon="measure" title="Trace a paper template from measured offsets (T)"></button>
-    <span class="sep"></span>
-    <button id="btnMoveBy" class="ico" data-icon="move" title="Move selection by an exact distance (G)"></button>
-    <button id="btnDist" class="ico" data-icon="dimension" title="Set the distance between two parts — centre to centre, edge gap, or centre to edge"></button>
-    <button id="btnScale" class="ico" data-icon="scale" title="Scale selection by factor or to a target size"></button>
-    <button id="btnOffset" class="ico" data-icon="offset" title="Offset — parallel outline at a distance"></button>
-    <button id="btnArray" class="ico" data-icon="array" title="Array — rows/columns or a bolt circle"></button>
-    <button id="btnChamfer" class="ico" data-icon="chamfer" title="Chamfer a corner (straight cut)"></button>
-    <button id="btnFillet" class="ico" data-icon="fillet" title="Fillet a corner (radius)"></button>
-    <span class="sep"></span>
-    <button id="btnUnion" class="ico" data-icon="union" title="Union — merge two parts into one outline"></button>
-    <button id="btnSubtract" class="ico" data-icon="subtract" title="Subtract — cut the second part out of the first"></button>
-    <button id="btnTrim" class="ico" data-icon="trim" title="Delete an edge, trim, extend or join (K)"></button>
-    <button class="tool ico" data-tool="dim" data-icon="dimension" title="Dimension (D) — click two points to place a dimension on the drawing"></button>
-    <button id="btnGroup" class="ico" data-icon="group" title="Group selection (Ctrl+G) — a plate and its holes move together"></button>
-    <button id="btnUngroup" class="ico" data-icon="join" title="Ungroup (Ctrl+Shift+G)"></button>
-    <span class="sep"></span>
-    <button id="btnSnapMenu" class="ico" data-icon="snap" title="Object snap settings"></button>
-    <button id="btnOrtho" class="ico" data-icon="ortho" title="Ortho lock — constrain to 0/90° (hold Shift for temporary lock)"></button>
-    <span class="sep"></span>
-    <button id="btnNest" class="ico" data-icon="nest" title="Auto-arrange all parts from bottom-left"></button>
-    <button id="btnDxf" class="ico" data-icon="dxf" title="Export DXF"></button>
-    <button id="btnPdf" class="ico" data-icon="new" title="Export the drawing as a PDF"></button>
-    <button id="btnTap" class="primary" data-icon="tap" title="Generate and export .TAP">TAP</button>
-    <div class="tabs">
-      <div class="tab active" data-page="design">Design</div>
-      <div class="tab" data-page="sim">Simulate</div>
-      <div class="tab" data-page="ai">AI Design</div>
-      <div class="tab" data-page="settings">Settings</div>
+    <div class="hrow">
+      <span class="brand">CNC Studio</span>
+      <div class="rtabs">
+        <div class="rtab active" data-rib="file">File</div>
+        <div class="rtab" data-rib="draw">Draw</div>
+        <div class="rtab" data-rib="modify">Modify</div>
+        <div class="rtab" data-rib="combine">Combine</div>
+        <div class="rtab" data-rib="measure">Measure</div>
+        <div class="rtab" data-rib="snap">Snap</div>
+        <div class="rtab" data-rib="output">Output</div>
+      </div>
+      <div class="tabs">
+        <div class="tab active" data-page="design">Design</div>
+        <div class="tab" data-page="sim">Simulate</div>
+        <div class="tab" data-page="ai">AI Design</div>
+        <div class="tab" data-page="settings">Settings</div>
+      </div>
+      <button id="btnTap" class="primary" data-name="Export TAP" data-cmd="tap" title="Generate and export .TAP">Export TAP</button>
     </div>
+    <div class="hrow ribbon">
+      <div class="rib active" data-rib="file">
+        <button id="btnNew" data-name="New design" title="Open a new, empty design in a tab of its own">New design</button>
+        <button id="btnOpen" data-name="Open" data-cmd="open" title="Open a project or DXF in a new tab (or this one, if it is empty)">Open</button>
+        <button id="btnImport" data-name="Import into this design" title="Add a DXF's parts to the design you have open">Import into this design</button>
+        <button id="btnSave" data-name="Save" data-key="Ctrl+S" title="Save project (.cncjob)">Save</button>
+      </div>
+      <div class="rib" data-rib="draw">
+        <button class="tool active" data-tool="select" data-name="Select" data-cmd="select" title="Select and move parts">Select</button>
+        <button class="tool" data-tool="rect" data-name="Rectangle" data-cmd="rect" title="Drag out a rectangle">Rectangle</button>
+        <button class="tool" data-tool="circle" data-name="Circle" data-cmd="circle" title="Drag from the centre">Circle</button>
+        <button class="tool" data-tool="arc" data-name="Arc" data-cmd="arc" title="3 points: start, end, then a point on the arc">Arc</button>
+        <button class="tool" data-tool="poly" data-name="Polygon" data-cmd="polygon" title="Click points, Enter/double-click to close">Polygon</button>
+        <button class="tool" data-tool="pline" data-name="Line" data-cmd="line" title="Open polyline for on-line cuts">Line</button>
+        <button class="tool" data-tool="ellipse" data-name="Ellipse" data-cmd="ellipse" title="Drag from the centre">Ellipse</button>
+        <button class="tool" data-tool="spline" data-name="Spline" data-cmd="spline" title="Click points, Enter to finish, click the first point to close">Spline</button>
+        <button id="btnText" data-name="Text" data-cmd="text" title="Single-line font built in, or load a .ttf">Text</button>
+        <button id="btnPolyDims" data-name="Polygon from sides" title="New polygon from side lengths and angles">Polygon from sides</button>
+        <button id="btnOffsetTrace" data-name="Trace template" data-cmd="trace" title="Trace a paper template from measured offsets">Trace template</button>
+      </div>
+      <div class="rib" data-rib="modify">
+        <button id="btnMoveBy" data-name="Move" data-cmd="move" title="Move selection by an exact distance">Move</button>
+        <button id="btnDist" data-name="Distance between" title="Set the distance between two parts: centre to centre, edge gap, or centre to edge">Distance between</button>
+        <button id="btnScale" data-name="Scale" data-cmd="scale" title="Scale selection by factor or to a target size">Scale</button>
+        <button id="btnOffset" data-name="Offset" data-cmd="offset" title="Parallel outline at a distance">Offset</button>
+        <button id="btnArray" data-name="Array" data-cmd="array" title="Rows/columns or a bolt circle">Array</button>
+        <button id="btnGrid" data-name="Cut grid" data-cmd="grid" title="Each line cut once, on the line, for laser work">Cut grid</button>
+        <button id="btnChamfer" data-name="Chamfer" data-cmd="chamfer" title="Chamfer a corner (straight cut)">Chamfer</button>
+        <button id="btnFillet" data-name="Fillet" data-cmd="fillet" title="Fillet a corner (radius)">Fillet</button>
+        <button id="btnTrim" data-name="Trim / delete edge" data-cmd="trim" title="Delete an edge, trim, extend or join">Trim / delete edge</button>
+      </div>
+      <div class="rib" data-rib="combine">
+        <button id="btnMerge" data-name="Merge into one part" data-cmd="join" title="Weld touching parts into one; holes inside go with it">Merge into one part</button>
+        <button id="btnUnion" data-name="Union" data-cmd="union" title="Merge two parts into one outline">Union</button>
+        <button id="btnSubtract" data-name="Subtract" data-cmd="subtract" title="Cut the second part out of the first">Subtract</button>
+        <button id="btnGroup" data-name="Group" data-key="Ctrl+G" title="A plate and its holes move together">Group</button>
+        <button id="btnUngroup" data-name="Ungroup" data-key="Ctrl+Shift+G" title="Separate a group, or a part's holes">Ungroup</button>
+      </div>
+      <div class="rib" data-rib="measure">
+        <button class="tool" data-tool="measure" data-name="Measure" data-cmd="measure" title="Click two points for distance and angle">Measure</button>
+        <button class="tool" data-tool="dim" data-name="Dimension" data-cmd="dim" title="Click two points to place a dimension on the drawing">Dimension</button>
+      </div>
+      <div class="rib" data-rib="snap">
+        <button id="btnSnapMenu" data-name="Snap settings" data-key="F3 on/off" title="Object snap settings">Snap settings</button>
+        <button id="btnOrtho" data-name="Ortho lock" data-key="F8" title="Constrain to 0/90 degrees (hold Shift for a temporary lock)">Ortho lock</button>
+      </div>
+      <div class="rib" data-rib="output">
+        <button id="btnNest" data-name="Auto-arrange" data-cmd="nest" title="Auto-arrange all parts from bottom-left">Auto-arrange</button>
+        <button id="btnDxf" data-name="Export DXF" data-cmd="dxf" title="Export DXF">Export DXF</button>
+        <button id="btnPdf" data-name="Export PDF" data-cmd="pdf" title="Export the drawing as a PDF">Export PDF</button>
+      </div>
+    </div>
+    <div id="docTabs"></div>
   </header>
 
   <div id="left">
@@ -178,7 +224,8 @@
     <div id="pageSim" class="page">
       <div id="simWrap">
         <div class="row" style="margin-bottom:6px">
-          <button id="simGen" class="primary">Simulate current job</button>
+          <label>Design <select id="simDoc"></select></label>
+          <button id="simGen" class="primary">Simulate</button>
           <button id="simLoad">Load .TAP file…</button>
           <button id="simPlay">▶ Play</button>
           <input type="range" id="simSlider" min="0" max="1000" value="1000" style="flex:1">
@@ -270,6 +317,7 @@
           <option value="command">Typed commands, like AutoCAD — L then Enter</option>
           <option value="direct">Single keys — one key, no Enter</option>
         </select><button class="small" id="keyReset">Restore defaults</button></div>
+        <div class="row"><label><input type="checkbox" id="keyAuto" checked> Run a typed shortcut without Enter</label><span class="muted">at once if nothing longer starts the same way, otherwise after a short pause</span></div>
         <p class="muted" style="font-size:11px">Type a command and press <span class="kbd">Enter</span> or
           <span class="kbd">Space</span>; <span class="kbd">Esc</span> clears it. Space still pans while nothing
           is typed, and Enter still finishes a polyline. Several aliases can share a command — separate them

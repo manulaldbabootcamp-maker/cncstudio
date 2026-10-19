@@ -33,6 +33,7 @@ const ICONS = (() => {
     'rotate': '<path d="M20 12a8 8 0 1 1-3-6"/><path d="M20 3v5h-5"/>',
     'mirror': '<path d="M12 2v20" stroke-dasharray="3 2"/><path d="M9 6L3 12l6 6z"/><path d="M15 6l6 6-6 6z"/>',
     'array': '<rect x="2" y="3" width="6" height="6"/><rect x="10" y="3" width="6" height="6"/><rect x="18" y="3" width="4" height="6"/><rect x="2" y="12" width="6" height="6"/><rect x="10" y="12" width="6" height="6"/><rect x="18" y="12" width="4" height="6"/>',
+    'grid': '<rect x="3" y="3" width="18" height="18"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>',
     'offset': '<rect x="6" y="6" width="12" height="12"/><rect x="2" y="2" width="20" height="20" stroke-dasharray="3 2"/>',
     'chamfer': '<path d="M3 21V8l5-5h13"/><path d="M3 8h5V3" stroke-dasharray="2 2"/>',
     'fillet': '<path d="M3 21V13A10 10 0 0 1 13 3h8"/><path d="M3 13h10V3" stroke-dasharray="2 2"/>',

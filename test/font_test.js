@@ -95,6 +95,60 @@ if (!candidates.length) {
   }
 }
 
+/* Cursive joins and stencil bridges, against the fonts shipped in fonts/.
+   The check is the ink itself: sampled on a grid, the result must be filled
+   exactly where the font is (minus the bridges) - a plausible-looking but
+   wrong outline shows up as mismatches. */
+{
+  const RG = require('../src/region.js');
+  const load = (n) => { const f = path.join(__dirname, '..', 'fonts', n); if (!fs.existsSync(f)) return null;
+    const b = fs.readFileSync(f); return FONT.parse(b.buffer.slice(b.byteOffset, b.byteOffset + b.length)); };
+  const loopsOf = (font, t) => FONT.outlineText(font, t, { height: 1 }).paths.map(p => FONT.toLoop(p.pts, true));
+  const wn = (L, p) => { let w = 0; for (const l of L) for (const s of l) { const a = s.a, b = s.b, c = (b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y);
+    if (a.y <= p.y) { if (b.y > p.y && c > 0) w++; } else if (b.y <= p.y && c < 0) w--; } return w; };
+  const eo = (L, p) => { let k = 0; for (const l of L) for (const s of l) { const a = s.a, b = s.b;
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y)) k ^= 1; } return k; };
+  const mismatches = (L, U, gaps) => {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const l of L) for (const s of l) { x0 = Math.min(x0, s.a.x); x1 = Math.max(x1, s.a.x); y0 = Math.min(y0, s.a.y); y1 = Math.max(y1, s.a.y); }
+    let mis = 0;
+    for (let i = 0; i < 200; i++) for (let j = 0; j < 60; j++) {
+      const p = { x: x0 + (x1 - x0) * (i + 0.37) / 200, y: y0 + (y1 - y0) * (j + 0.41) / 60 };
+      const ink = wn(L, p) !== 0 && !gaps.some(g => p.x > g.x0 && p.x < g.x1 && p.y > g.y0 && p.y < g.y1);
+      if (ink !== (eo(U, p) === 1)) mis++;
+    }
+    return mis;
+  };
+  const holes = (L) => L.filter((l, i) => { const p = G.pointAt(l[0], 0.5); return L.filter((o, j) => j !== i && G.pointInLoop(p, o)).length % 2 === 1; }).length;
+  const crossings = (L) => { let n = 0; const all = L.flatMap((l, li) => l.map(s => ({ s, li })));
+    const X = (p, q, r, s) => { const d = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); return d(p, q, r) * d(p, q, s) < 0 && d(r, s, p) * d(r, s, q) < 0; };
+    for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) if (all[i].li !== all[j].li && X(all[i].s.a, all[i].s.b, all[j].s.a, all[j].s.b)) n++; return n; };
+
+  console.log('cursive: overlapping letters fused into one outline');
+  const brush = load('Brush-Script.ttf');
+  if (!brush) { skip++; console.log('  skip (fonts/Brush-Script.ttf not found)'); }
+  else {
+    const L = loopsOf(brush, 'Hello Manav');
+    ok(crossings(L) > 0, 'the joins overlap as the font draws them');
+    const U = RG.fillOutline(L, 1e-5);
+    ok(U && crossings(U) === 0, 'fused: nothing crosses, so no line through a join');
+    ok(U && mismatches(L, U, []) === 0, 'fused outline is exactly the ink');
+  }
+  const arial = load('Arial-Bold.ttf');
+  if (arial) {
+    const L = loopsOf(arial, 'ABRO');
+    ok(RG.fillOutline(L, 1e-5) === null, 'a block font with nothing crossing is left exactly as it was');
+
+    console.log('stencil bridges hold the middle of A, B, R, O');
+    ok(holes(L) === 5, 'ABRO has 5 loose middles', holes(L));
+    const gaps = RG.bridgeGaps(L, 0.05);
+    const U = RG.fillOutline(L, 1e-5, undefined, gaps);
+    ok(U && holes(U) === 0, 'bridged: no middle is left loose', U && holes(U));
+    ok(U && mismatches(L, U, gaps) === 0, 'bridged outline is the ink less the bridges, exactly');
+    ok(gaps.every(g => Math.abs(g.x1 - g.x0 - 0.05) < 1e-9), 'each bridge is the width asked for');
+  }
+}
+
 console.log('');
 console.log(`${pass} passed, ${fail} failed${skip ? ', ' + skip + ' skipped' : ''}`);
 if (fail) process.exit(1);

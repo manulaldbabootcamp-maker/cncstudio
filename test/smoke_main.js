@@ -36,7 +36,8 @@ app.whenReady().then(async () => {
     console.log('boot');
     ok(await run('!!window.CNC'), 'app initialised and exposed window.CNC');
     ok(await run('!!window.CNC.SNAP && !!window.CNC.LOG'), 'snap + log modules reached the bundle');
-    ok((await run('document.querySelectorAll("header button svg").length')) >= 10, 'toolbar icons rendered as SVG');
+    ok((await run('document.querySelector("button.tool[data-tool=rect]").textContent')) === 'Rectangle (REC)', 'toolbar buttons are named, with the shortcut in brackets');
+    ok((await run('document.querySelectorAll("header .rib.active").length')) === 1, 'one group of buttons on show at a time');
     ok(await run('!!document.querySelector("#logBody")'), 'activity log panel exists');
 
     console.log('startup errors');
@@ -1429,6 +1430,162 @@ app.whenReady().then(async () => {
     }
 
     { // scoped
+    console.log('merging four loose sides and two holes makes ONE part carrying the holes');
+    const r = JSON.parse(await run(`(() => {
+      const G=CNC.G, P=G.P;
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      // a plate as four loose lines - an imported outline - with two holes clear of every edge
+      const c=[P(10,10),P(20,10),P(20,16),P(10,16)];
+      c.forEach((p,i)=>CNC.job.shapes.push({id:i+1,name:'side '+(i+1),kind:'path',x:0,y:0,rot:0,open:true,op:'on',toolId:2,climb:false,loop:[G.line(p,c[(i+1)%4])]}));
+      CNC.job.shapes.push({id:5,name:'hole a',kind:'circle',x:13,y:13,rot:0,r:1,op:'inside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:6,name:'hole b',kind:'circle',x:17,y:13,rot:0,r:1,op:'inside',toolId:2,climb:false,open:false});
+      CNC.job.nextId=7; CNC.refresh();
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,bubbles:true}));
+      CNC.mergeSelected(0.125);
+      const s=CNC.job.shapes[0], l=CNC.worldLoop(s);
+      const holes=CNC.holeShapes(s).map(h=>({kind:h.kind, op:h.op, x:+h.x.toFixed(6), y:+h.y.toFixed(6), r:h.r}));
+      const listed=document.querySelectorAll('#shapeList .item').length;
+      return JSON.stringify({parts:CNC.job.shapes.length, listed, open:s.open, area:+Math.abs(G.signedArea(l)).toFixed(2), holes});
+    })()`));
+    ok(r.parts === 1 && r.listed === 1, 'one part, one line in the parts list', JSON.stringify(r));
+    ok(!r.open && Math.abs(r.area - 60) < 0.01, 'a closed 10 x 6 plate', JSON.stringify(r));
+    ok(r.holes.length === 2 && r.holes.every(h => h.kind === 'circle' && h.r === 1 && h.op === 'inside'), 'carrying both holes, still circles, still cut inside', JSON.stringify(r.holes));
+    ok(r.holes.some(h => h.x === 13 && h.y === 13) && r.holes.some(h => h.x === 17 && h.y === 13), 'exactly where they were drawn', JSON.stringify(r.holes));
+    }
+
+    { // scoped
+    console.log('a closed plate and the circles inside it - nothing touches - merge into one part');
+    const r = JSON.parse(await run(`(() => {
+      const G=CNC.G;
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'plate',kind:'rect',x:10,y:10,rot:0,w:10,h:6,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:2,name:'hole a',kind:'circle',x:13,y:13,rot:0,r:1,op:'inside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:3,name:'hole b',kind:'circle',x:17,y:13,rot:0,r:1,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:4,name:'elsewhere',kind:'circle',x:40,y:40,rot:0,r:1,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.nextId=5; CNC.refresh();
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,bubbles:true}));
+      CNC.mergeSelected(0.125);
+      const plate=CNC.job.shapes.find(s=>s.kind==='rect');
+      const out={parts:CNC.job.shapes.map(s=>s.name), holes:(plate.holes||[]).map(h=>({kind:h.kind,op:h.op}))};
+      // rotate the part: the holes must turn with it about the plate's centre (15,13)
+      CNC.selectShape(plate.id); CNC.COMMANDS.rotate.run();
+      out.rot = CNC.holeShapes(plate).map(h=>[+h.x.toFixed(6), +h.y.toFixed(6)]);
+      // what gets cut: the post sees the plate and both holes
+      const shapes=CNC.expandShapes(CNC.job.shapes).filter(s=>s.op!=='none').map(s=>({loop:CNC.worldLoop(s),op:s.op,open:s.open,toolId:1}));
+      out.cuts=shapes.map(s=>s.op);
+      try { out.g = CNC.PO.generate({shapes, tools:CNC.S.tools, material:{thickness:0.25}, cutThrough:0, machine:CNC.S.machine}).gcode.length; } catch(e) { out.g='ERR '+e.message; }
+      // Ungroup lets the holes go as parts of their own, where they now are
+      CNC.selectShape(plate.id); CNC.ungroupSel();
+      out.after = CNC.job.shapes.filter(s=>s.kind==='circle').map(s=>[+s.x.toFixed(6), +s.y.toFixed(6)]);
+      out.plateHoles = (plate.holes||[]).length;
+      return JSON.stringify(out);
+    })()`));
+    ok(r.parts.length === 2 && r.parts.includes('elsewhere'), 'the plate is one part; a circle outside it is left alone', JSON.stringify(r.parts));
+    ok(r.holes.length === 2 && r.holes.every(h => h.kind === 'circle' && h.op === 'inside'), 'both circles carried, and one drawn as outside is cut inside', JSON.stringify(r.holes));
+    // rotate 90 about (15,13): (13,13) -> (15,11), (17,13) -> (15,15)
+    const has = (pts, x, y) => pts.some(p => Math.abs(p[0] - x) < 1e-6 && Math.abs(p[1] - y) < 1e-6);
+    ok(has(r.rot, 15, 11) && has(r.rot, 15, 15), 'rotating the part turns its holes with it', JSON.stringify(r.rot));
+    ok(r.cuts.filter(o => o === 'inside').length === 2 && typeof r.g === 'number' && r.g > 100, 'the TAP cuts the plate and both holes', JSON.stringify(r.cuts) + ' ' + r.g);
+    ok(r.plateHoles === 0 && has(r.after, 15, 11) && has(r.after, 15, 15), 'Ungroup separates the holes, left where they were', JSON.stringify(r.after));
+    }
+
+    { // scoped
+    console.log('welding a part that carries holes keeps them; Undo is one step');
+    const r = JSON.parse(await run(`(() => {
+      const G=CNC.G;
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'a',kind:'rect',x:10,y:10,rot:0,w:4,h:4,r:0,op:'outside',toolId:2,climb:false,open:false,
+        holes:[{kind:'circle',x:2,y:2,rot:0,r:0.5,op:'inside',toolId:2,climb:false,open:false}]});
+      CNC.job.shapes.push({id:2,name:'b',kind:'rect',x:14,y:10,rot:0,w:4,h:4,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.nextId=3; CNC.refresh();
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,bubbles:true}));
+      CNC.mergeSelected(0.125);
+      const s=CNC.job.shapes[0], b=G.bbox(CNC.worldLoop(s));
+      const out={parts:CNC.job.shapes.length, size:[+b.w.toFixed(3),+b.h.toFixed(3)], holes:CNC.holeShapes(s).map(h=>[+h.x.toFixed(6),+h.y.toFixed(6),h.r])};
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true}));
+      out.undone = CNC.job.shapes.map(x=>x.name+':'+((x.holes||[]).length));
+      return JSON.stringify(out);
+    })()`));
+    ok(r.parts === 1 && r.size[0] === 8 && r.size[1] === 4, 'two squares weld into one 8 x 4 part', JSON.stringify(r));
+    ok(r.holes.length === 1 && r.holes[0][0] === 12 && r.holes[0][1] === 12 && r.holes[0][2] === 0.5, 'and the hole the first one carried is still there', JSON.stringify(r.holes));
+    ok(JSON.stringify(r.undone) === JSON.stringify(['a:1', 'b:0']), 'one Undo brings back both squares as they were', JSON.stringify(r.undone));
+    }
+
+    { // scoped
+    console.log('typed shortcuts run without Enter');
+    const key = (k) => `window.dispatchEvent(new KeyboardEvent('keydown',{key:'${k}',bubbles:true}));`;
+    const toolOn = `document.querySelector('button.tool.active') && document.querySelector('button.tool.active').dataset.tool`;
+    await run(`(() => { CNC.S.keys.mode='command'; CNC.S.keys.auto=true; document.querySelector('button.tool[data-tool="select"]').click(); return 1; })()`);
+    const el = await run(`(() => { ${key('e')} ${key('l')} return ${toolOn}; })()`);
+    ok(el === 'ellipse', 'EL runs Ellipse the moment it is typed - nothing longer starts with EL', el);
+    await run(`(() => { ${key('Escape')} document.querySelector('button.tool[data-tool="select"]').click(); return 1; })()`);
+    const cWait = await run(`(() => { ${key('c')} return ${toolOn}; })()`);
+    await new Promise(r => setTimeout(r, 800));
+    const cAfter = await run(toolOn);
+    ok(cWait === 'select' && cAfter === 'circle', 'C waits a moment (CO, CHA could follow), then runs Circle', cWait + ' -> ' + cAfter);
+    await run(`(() => { ${key('Escape')} document.querySelector('button.tool[data-tool="select"]').click(); return 1; })()`);
+    }
+
+    { // scoped
+    console.log('design tabs: each design keeps its own parts and undo; Simulate picks the design');
+    const r = JSON.parse(await run(`(() => {
+      const out = {};
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1; CNC.job.name='first';
+      CNC.job.shapes.push({id:1,name:'plate',kind:'rect',x:2,y:2,rot:0,w:10,h:6,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.refresh();
+      const before = CNC.docs.length;
+      document.querySelector('#btnNew').click();
+      out.tabs = CNC.docs.length - before; out.newEmpty = CNC.job.shapes.length;
+      CNC.job.shapes.push({id:1,name:'disc',kind:'circle',x:5,y:5,rot:0,r:2,op:'outside',toolId:2,climb:false,open:false});
+      CNC.refresh();
+      out.tabEls = document.querySelectorAll('#docTabs .dtab:not(.add)').length;
+      const firstIdx = CNC.docs.findIndex(d => d.job.name === 'first');
+      // simulate the OTHER design while this one is showing
+      document.querySelector('.tab[data-page="sim"]').click();
+      document.querySelector('#simDoc').value = String(firstIdx);
+      document.querySelector('#simGen').click();
+      out.simInfo = document.querySelector('#simInfo').textContent;
+      out.stillShowing = CNC.job.shapes.map(s => s.name);
+      document.querySelector('.tab[data-page="design"]').click();
+      CNC.switchDoc(firstIdx);
+      out.back = CNC.job.shapes.map(s => s.name);
+      return JSON.stringify(out);
+    })()`));
+    ok(r.tabs === 1 && r.newEmpty === 0, 'New opens an empty design in a tab of its own', JSON.stringify(r));
+    ok(r.tabEls >= 2, 'a tab per open design', JSON.stringify(r));
+    ok(/first/.test(r.simInfo) && JSON.stringify(r.stillShowing) === '["disc"]', 'Simulate ran the design picked, not the one showing', JSON.stringify(r));
+    ok(JSON.stringify(r.back) === '["plate"]', 'switching back brings the first design back untouched', JSON.stringify(r));
+    }
+
+    { // scoped
+    console.log('Ctrl+drag draws a selection box even starting on top of a plate');
+    const r = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'plate',kind:'rect',x:0,y:0,rot:0,w:20,h:20,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:2,name:'a',kind:'circle',x:5,y:5,rot:0,r:1,op:'inside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:3,name:'b',kind:'circle',x:8,y:5,rot:0,r:1,op:'inside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:4,name:'c',kind:'circle',x:15,y:15,rot:0,r:1,op:'inside',toolId:2,climb:false,open:false});
+      CNC.job.nextId=5; CNC.refresh();
+      document.querySelector('button.tool[data-tool="select"]').click();
+      const cv = document.querySelector('#cv'), rc = cv.getBoundingClientRect();
+      const at = (wx, wy, type, ctrl) => { const sp = CNC.W2S({x:wx,y:wy});
+        const ev = new MouseEvent(type, { clientX: rc.left + sp.x/devicePixelRatio,
+          clientY: rc.top + sp.y/devicePixelRatio, bubbles:true, button:0, ctrlKey:!!ctrl });
+        cv.dispatchEvent(ev); if (type === 'mouseup') window.dispatchEvent(ev); };
+      const picked = () => [...document.querySelectorAll('#shapeList .item.sel .nm')].map(n=>n.textContent);
+      const out = {};
+      at(2, 2, 'mousedown', true); at(11, 8, 'mousemove', true); at(11, 8, 'mouseup', true);
+      out.ctrl = picked(); out.plateAt = CNC.job.shapes[0].x;
+      // without Ctrl the same drag still grabs and moves the plate, as before
+      at(2, 2, 'mousedown'); at(3, 2, 'mousemove'); at(3, 2, 'mouseup');
+      out.plain = picked(); out.plateMoved = CNC.job.shapes[0].x;
+      return JSON.stringify(out);
+    })()`));
+    ok(JSON.stringify(r.ctrl) === JSON.stringify(['a', 'b']) && r.plateAt === 0, 'the two circles inside the box are selected, the plate not moved', JSON.stringify(r));
+    ok(r.plateMoved !== 0, 'a plain drag on the plate still moves it', JSON.stringify(r));
+    }
+
+    { // scoped
     console.log('millimetres are a display skin over an inch drawing');
     const r = JSON.parse(await run(`(() => {
       CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
@@ -1652,6 +1809,50 @@ app.whenReady().then(async () => {
       ok(r.partOff, 'a part told not to have tabs has none');
       ok(r.online, 'a part cut on the line never gets one');
       ok(r.jobOff, 'and with the job setting off, nothing has them');
+    }
+
+    console.log('cut grid');
+    {
+      const r = JSON.parse(await run(`(() => {
+        const J = CNC.job;
+        J.shapes.length = 0; J.nextId = 1;
+        document.querySelector('#btnGrid').click();
+        const q = (id) => document.querySelector(id);
+        q('#gdC').value = '2x6, 4'; q('#gdR').value = '3x5'; q('#gdX').value = '1'; q('#gdY').value = '2';
+        q('#gdOk').click();
+        const lines = J.shapes.map(s => CNC.worldLoop(s));
+        // any two collinear lines that share more than a point would be cut twice
+        let overlaps = 0;
+        for (let i = 0; i < lines.length; i++) for (let k = i + 1; k < lines.length; k++) {
+          const a = lines[i][0], b = lines[k][0];
+          const ha = Math.abs(a.a.y - a.b.y) < 1e-9, hb = Math.abs(b.a.y - b.b.y) < 1e-9;
+          if (ha !== hb) continue;
+          if (ha && Math.abs(a.a.y - b.a.y) < 1e-9) overlaps++;
+          if (!ha && Math.abs(a.a.x - b.a.x) < 1e-9) overlaps++;
+        }
+        const bb = CNC.groupBBox(J.shapes);
+        const j = { shapes: J.shapes.map(s => ({ loop: CNC.worldLoop(s), op: s.op, toolId: 1, open: s.open })),
+          tools: CNC.S.tools, material: { thickness: 0.25 }, cutThrough: 0, machine: CNC.S.machine };
+        let g; try { g = CNC.PO.generate(j).gcode.length; } catch (e) { g = 'ERR ' + e.message; }
+        // a typo must refuse, not draw something
+        const before = J.shapes.length;
+        document.querySelector('#btnGrid').click();
+        q('#gdC').value = '4x'; q('#gdOk').click();
+        const refused = J.shapes.length === before;
+        document.querySelectorAll('.overlay').forEach(o => o.remove());
+        return JSON.stringify({ n: J.shapes.length, segs: lines.map(l => l.length), ops: [...new Set(J.shapes.map(s => s.op))],
+          open: J.shapes.every(s => s.open), groups: new Set(J.shapes.map(s => s.group)).size,
+          bb: [bb.x0, bb.y0, bb.w, bb.h], overlaps, g, refused });
+      })()`));
+      ok(r.n === 8, 'a 3 x 3 grid is 4 row lines + 4 column lines', JSON.stringify(r));
+      ok(r.segs.every(n => n === 1), 'each grid line is one straight segment');
+      ok(r.overlaps === 0, 'no two grid lines lie on top of each other - nothing is cut twice', 'overlaps=' + r.overlaps);
+      ok(r.ops.length === 1 && r.ops[0] === 'on' && r.open, 'grid lines are open paths cut on the line');
+      ok(r.groups === 1, 'the grid comes in as one group');
+      ok(Math.abs(r.bb[0] - 1) < 1e-9 && Math.abs(r.bb[1] - 2) < 1e-9 && Math.abs(r.bb[2] - 16) < 1e-9 && Math.abs(r.bb[3] - 15) < 1e-9,
+        'mixed spans 2x6, 4 by 3x5 make a 16 x 15 grid at 1,2', JSON.stringify(r.bb));
+      ok(typeof r.g === 'number' && r.g > 100, 'TAP generates for the grid', String(r.g));
+      ok(r.refused, 'a span that is not a size draws nothing');
     }
 
     console.log('no errors accumulated');

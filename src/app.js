@@ -69,6 +69,7 @@
     mirror: { label: 'Mirror', run: () => clickBtn('#btnMirror') },
     offset: { label: 'Offset', run: () => clickBtn('#btnOffset') },
     array: { label: 'Array', run: () => clickBtn('#btnArray') },
+    grid: { label: 'Cut grid - each line cut once, on the line', run: () => clickBtn('#btnGrid') },
     fillet: { label: 'Fillet a corner', run: () => clickBtn('#btnFillet') },
     chamfer: { label: 'Chamfer a corner', run: () => clickBtn('#btnChamfer') },
     union: { label: 'Union', run: () => clickBtn('#btnUnion') },
@@ -96,7 +97,7 @@
     DIM: 'dim', DI: 'measure', DIST: 'measure',
     TR: 'trim', EX: 'extend', J: 'join', E: 'erase', ERASE: 'erase',
     M: 'move', CO: 'copy', CP: 'copy', RO: 'rotate', SC: 'scale', MI: 'mirror',
-    O: 'offset', AR: 'array', F: 'fillet', CHA: 'chamfer',
+    O: 'offset', AR: 'array', GR: 'grid', GRID: 'grid', F: 'fillet', CHA: 'chamfer',
     UNI: 'union', SU: 'subtract', G: 'group', UNG: 'ungroup',
     NE: 'nest', TRACE: 'trace', Z: 'zoom', U: 'undo', RE: 'redo',
     SA: 'save', OP: 'open', TAP: 'tap', DXF: 'dxf', PDF: 'pdf',
@@ -158,6 +159,24 @@
     const el = $('#stCmd');
     if (el) el.textContent = cmdBuf ? 'Command: ' + cmdBuf : '';
   }
+  /* No Enter needed. A typed shortcut runs the moment nothing longer could
+     follow it (UNI is only Union); when something could (C, then CO or CHA),
+     it runs after a short pause instead. Enter or Space still run it at once.
+     Pressing Enter after every letter was too many keys for the operator. */
+  let cmdTimer = null;
+  const CMD_PAUSE_MS = 600;
+  function stopCmdTimer() { if (cmdTimer) { clearTimeout(cmdTimer); cmdTimer = null; } }
+  function runTyped() { stopCmdTimer(); const c = cmdBuf; cmdBuf = ''; showCmd(); runCommand(c); draw(); }
+  function autoRunCmd() {
+    stopCmdTimer();
+    if (S.keys.auto === false || !/^[A-Z]+$/.test(cmdBuf)) return;   // a coordinate always waits for Enter
+    const map = aliasMap();
+    if (!map[cmdBuf]) return;
+    const longer = Object.keys(map).some(k => k.length > cmdBuf.length && k.startsWith(cmdBuf));
+    if (!longer) { runTyped(); return; }
+    const typed = cmdBuf;
+    cmdTimer = setTimeout(() => { cmdTimer = null; if (cmdBuf === typed) runTyped(); }, CMD_PAUSE_MS);
+  }
   function runCommand(raw) {
     const name = String(raw || '').trim().toUpperCase();
     if (!name) return;
@@ -182,6 +201,65 @@
   function snapshot() { undoStack.push(JSON.stringify(job)); if (undoStack.length > 60) undoStack.shift(); redoStack = []; }
   function undo() { if (!undoStack.length) return; redoStack.push(JSON.stringify(job)); job = JSON.parse(undoStack.pop()); sel.clear(); refresh(); }
   function redo() { if (!redoStack.length) return; undoStack.push(JSON.stringify(job)); job = JSON.parse(redoStack.pop()); sel.clear(); refresh(); }
+
+  /* ---------- design tabs ----------
+     Several designs open at once, one tab each. Each keeps its own parts, undo
+     history and zoom; switching parks the current one and brings the other
+     back. While a design is showing, `job` IS that design - the rest of the
+     app never needs to know there are others. */
+  const docs = [{ job, undo: undoStack, redo: redoStack, view: null, name: 'Untitled 1' }];
+  let activeDoc = 0, untitledN = 1, importHere = false;
+  function docName(d) { return String(d.job.name || d.name || 'Untitled').replace(/\.(dxf|cncjob|json)$/i, ''); }
+  // write what is showing back into its tab
+  function stashDoc() { const d = docs[activeDoc]; d.job = job; d.undo = undoStack; d.redo = redoStack; d.view = { scale: view.scale, ox: view.ox, oy: view.oy }; }
+  function showDoc(i) {
+    activeDoc = i; const d = docs[i];
+    job = d.job; undoStack = d.undo; redoStack = d.redo;
+    sel.clear(); clearEdge(); drawing = null; drag = null; measure = null; dimDraft = null; clearDynTarget(); showDyn(false);
+    if (d.view) Object.assign(view, d.view); else fitBed();
+    syncMaterialUI(); refresh();
+  }
+  function switchDoc(i) {
+    if (i === activeDoc || !docs[i]) return;
+    stashDoc(); showDoc(i);
+    LOG.action('Switched to design ' + docName(docs[i]));
+  }
+  function newDoc(name) {
+    stashDoc();
+    const j = newJob(); if (name) j.name = name;
+    docs.push({ job: j, undo: [], redo: [], view: null, name: name || 'Untitled ' + (++untitledN) });
+    showDoc(docs.length - 1);
+    LOG.action('New design tab: ' + docName(docs[activeDoc]));
+  }
+  async function closeDoc(i) {
+    stashDoc();
+    const d = docs[i]; if (!d) return;
+    if (d.job.shapes.length && !(await askConfirm('Close design', `Close "${docName(d)}"? Its ${d.job.shapes.length} part(s) are lost unless saved.`, 'Close'))) return;
+    docs.splice(i, 1);
+    LOG.action('Closed design ' + docName(d));
+    if (!docs.length) docs.push({ job: newJob(), undo: [], redo: [], view: null, name: 'Untitled ' + (++untitledN) });
+    showDoc(i < activeDoc ? activeDoc - 1 : Math.min(i === activeDoc ? i : activeDoc, docs.length - 1));
+  }
+  function renderDocTabs() {
+    const el = $('#docTabs'); if (!el) return;
+    stashDoc();
+    el.innerHTML = docs.map((d, i) => `<div class="dtab${i === activeDoc ? ' active' : ''}" data-i="${i}" title="${esc(docName(d))} - ${d.job.shapes.length} part(s)"><span>${esc(docName(d))}</span><b class="x" data-x="${i}" title="Close">×</b></div>`).join('')
+      + `<div class="dtab add" title="New design">+</div>`;
+    const sd = $('#simDoc');
+    if (sd) { const keep = sd.value; sd.innerHTML = docs.map((d, i) => `<option value="${i}">${esc(docName(d))}</option>`).join(''); sd.value = docs[+keep] && keep !== '' ? keep : String(activeDoc); }
+  }
+  $('#docTabs').addEventListener('click', (e) => {
+    const x = e.target.closest('[data-x]'); if (x) { closeDoc(+x.dataset.x); return; }
+    const t = e.target.closest('.dtab'); if (!t) return;
+    if (t.classList.contains('add')) newDoc(); else switchDoc(+t.dataset.i);
+  });
+  // the G-code of any open design, not only the one showing
+  function gcodeFor(j) {
+    if (!j.shapes.length) return null;
+    const keep = job; job = j;
+    try { return PO.generate(buildJob()).gcode; } finally { job = keep; }
+  }
+
 
   // shape: {id,name,kind:'rect'|'circle'|'poly'|'path', x,y,rot, w,h,r, pts, loop(local), open, op, toolId, climb}
   function makeShape(kind, props) {
@@ -226,11 +304,60 @@
     return G.translateLoop(l, sh.x, sh.y);
   }
   function shapeBBox(sh) { return G.bbox(worldLoop(sh)); }
+
+  /* ---------- holes carried by a part ----------
+     A plate and its holes are one part: one line in the parts list, and they
+     move, rotate, copy and nest as one. Kept as separate shapes they did not -
+     rotating the plate left its circles where they were, and merging welded the
+     circles into the plate's material and they vanished. So a part may carry
+     sh.holes: ordinary shapes (a circle stays a circle) placed in the part's
+     own frame. worldLoop(sh) is still the outline alone, so every edit tool is
+     unchanged; whatever draws, cuts or exports the job goes through
+     expandShapes(), which turns each hole into a shape in world coordinates. */
+  function holeShapes(sh) {
+    if (!sh.holes || !sh.holes.length) return [];
+    const a = (sh.rot || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    return sh.holes.map((h, i) => ({
+      ...h, id: `${sh.id}.h${i + 1}`, owner: sh.id, name: `${sh.name} - ${h.name || 'hole ' + (i + 1)}`,
+      x: sh.x + h.x * c - h.y * s, y: sh.y + h.x * s + h.y * c, rot: ((sh.rot || 0) + (h.rot || 0)) % 360,
+    }));
+  }
+  const expandShapes = (list) => list.flatMap(sh => [sh].concat(holeShapes(sh)));
+  // place a shape that is in world coordinates into a part's frame, as one of its holes
+  function toPartFrame(h, part) {
+    const a = -(part.rot || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    const dx = h.x - part.x, dy = h.y - part.y;
+    const out = JSON.parse(JSON.stringify(h));
+    delete out.id; delete out.group; delete out.holes; delete out.owner; delete out.startPt;
+    out.x = dx * c - dy * s; out.y = dx * s + dy * c; out.rot = ((h.rot || 0) - (part.rot || 0)) % 360;
+    // a closed shape inside the plate is cut inside, or the cutter widens the hole by its own width
+    if (!out.open && out.op === 'outside') out.op = 'inside';
+    return out;
+  }
+  // a part's holes back out as parts of their own, for editing one by one
+  function releaseHoles(sh) {
+    const out = holeShapes(sh).map(({ id, owner, ...v }) => makeShape(v.kind, v));
+    delete sh.holes;
+    return out;
+  }
   function toolOf(sh) { return S.tools.find(t => t.id === sh.toolId) || S.tools[0]; }
+  /* The redraw asks for every part's toolpath on every frame - every mouse
+     move. Offsetting 688 parts of an imported DXF each time was most of the
+     lag left once holeParents was fixed. Keyed on the part and its tool as
+     they are now, so any edit rebuilds that part and nothing else. Callers
+     only read the result. */
+  const tpCache = new Map();
   function toolpathOf(sh) {
     if (sh.op === 'none') return null;
     const t = toolOf(sh); if (!t) return null;
-    try { return PO.buildToolpathLoop({ loop: worldLoop(sh), op: sh.op, open: sh.open, startHint: sh.startPt, climb: sh.climb }, t, { climb: sh.climb }); } catch (e) { console.warn(e); return null; }
+    const key = JSON.stringify(sh) + '|' + JSON.stringify(t);
+    const hit = tpCache.get(sh.id);
+    if (hit && hit.key === key) return hit.tp;
+    let tp;
+    try { tp = PO.buildToolpathLoop({ loop: worldLoop(sh), op: sh.op, open: sh.open, startHint: sh.startPt, climb: sh.climb }, t, { climb: sh.climb }); } catch (e) { console.warn(e); return null; }
+    if (tpCache.size > 5000) tpCache.clear();
+    tpCache.set(sh.id, { key, tp });
+    return tp;
   }
 
   // ---------- canvas / view ----------
@@ -297,8 +424,9 @@
   function snapLoops(excludeIds) {
     if (!loopCache) {
       loopCache = [];
-      for (const sh of job.shapes) {
-        try { loopCache.push({ id: sh.id, loop: worldLoop(sh), centres: centresOf(sh).map(c => c.p) }); }
+      // a part's holes snap too - their centres are what a dimension is taken from - under the part's own id
+      for (const sh of expandShapes(job.shapes)) {
+        try { loopCache.push({ id: sh.owner != null ? sh.owner : sh.id, loop: worldLoop(sh), centres: centresOf(sh).map(c => c.p) }); }
         catch (e) { LOG.warn(`Snap: could not build geometry for "${sh.name}"`, e); }
       }
     }
@@ -374,13 +502,14 @@
     const showPaths = $('#chkPaths').checked, showKerf = $('#chkKerf').checked;
     // world loops once per frame; the hole pairing needs them all up front
     const loops = new Map();
-    for (const sh of job.shapes) { try { loops.set(sh.id, worldLoop(sh)); } catch (e) { LOG.warn(`Could not draw "${sh.name}"`, e); } }
-    const parentOf = holeParents(loops);
+    const drawn = expandShapes(job.shapes);   // a part's own holes draw, fill and cut like any other
+    for (const sh of drawn) { try { loops.set(sh.id, worldLoop(sh)); } catch (e) { LOG.warn(`Could not draw "${sh.name}"`, e); } }
+    const parentOf = holeParents(loops, drawn);
     const holesOf = new Map();
     for (const [hid, pid] of parentOf) { if (!holesOf.has(pid)) holesOf.set(pid, []); holesOf.get(pid).push(hid); }
-    for (const sh of job.shapes) {
+    for (const sh of drawn) {
       const loop = loops.get(sh.id); if (!loop) continue;
-      const isSel = sel.has(sh.id);
+      const isSel = sel.has(sh.owner != null ? sh.owner : sh.id);
       const bb = G.bbox(loop);
       const outside = bb.x0 < -1e-6 || bb.y0 < -1e-6 || bb.x1 > m.bedW + 1e-6 || bb.y1 > m.bedH + 1e-6;
       /* Fill. A plate is filled together with the holes cut inside it, using
@@ -422,8 +551,8 @@
           }
         }
       }
-      // handles for selection
-      if (isSel) {
+      // handles for selection - the part's box already takes in its holes
+      if (isSel && sh.owner == null) {
         ctx.strokeStyle = '#4da3ff'; ctx.setLineDash([3 * dpr, 3 * dpr]); ctx.lineWidth = 1 * dpr;
         const a = W2S({ x: bb.x0, y: bb.y0 }), b = W2S({ x: bb.x1, y: bb.y1 }); ctx.strokeRect(a.x, b.y, b.x - a.x, a.y - b.y); ctx.setLineDash([]);
       }
@@ -732,20 +861,24 @@
   /* Which plate does each inside-cut belong to? A hole is paired with the
      smallest closed, non-inside part that contains it, so nested plates and
      islands still resolve sensibly. */
-  function holeParents(loops) {
+  function holeParents(loops, list = job.shapes) {
     const parent = new Map();
-    const plates = job.shapes.filter(sh => !sh.open && sh.op !== 'inside' && loops.get(sh.id));
-    for (const h of job.shapes) {
+    /* Each plate's box is worked out once, not once per hole. This runs on
+       every redraw - every mouse move - and a 688-part DXF made it holes x
+       plates box computations a frame: half a second of lag per move. */
+    const plates = list.filter(sh => !sh.open && sh.op !== 'inside' && loops.get(sh.id))
+      .map(sh => { const l = loops.get(sh.id); return { sh, l, b: G.bbox(l), area: null }; });
+    for (const h of list) {
       if (h.open || h.op !== 'inside') continue;
       const hl = loops.get(h.id); if (!hl || !hl.length) continue;
       const hb = G.bbox(hl), probe = hl[0].a;
       let best = null, bestArea = Infinity;
-      for (const pl of plates) {
-        const pll = loops.get(pl.id), pb = G.bbox(pll);
+      for (const P of plates) {
+        const pb = P.b;
         if (hb.x0 < pb.x0 - 1e-6 || hb.x1 > pb.x1 + 1e-6 || hb.y0 < pb.y0 - 1e-6 || hb.y1 > pb.y1 + 1e-6) continue;
-        if (!G.pointInLoop(probe, pll)) continue;
-        const a = Math.abs(G.signedArea(pll));
-        if (a < bestArea) { bestArea = a; best = pl; }
+        if (!G.pointInLoop(probe, P.l)) continue;
+        if (P.area === null) P.area = Math.abs(G.signedArea(P.l));
+        if (P.area < bestArea) { bestArea = P.area; best = P.sh; }
       }
       if (best) parent.set(h.id, best.id);
     }
@@ -862,7 +995,9 @@
         drag = { kind: 'grip', grip: g, sh: g.sh, moved: false };
         draw(); return;
       }
-      const hit = hitShape(w);
+      /* Ctrl+drag always draws a selection box, even starting over a part -
+         otherwise a box can never begin inside a plate, it grabs the plate. */
+      const hit = e.ctrlKey ? null : hitShape(w);
       if (hit) {
         /* Clicking a LINE picks that line. Clicking the filled inside of a
            closed part, or double-clicking anywhere on it, picks the whole
@@ -1138,13 +1273,13 @@
        still pans while nothing is being typed, and Enter still finishes a
        polyline, so neither is taken away. */
     if (S.keys.mode !== 'direct' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      if (/^[a-zA-Z]$/.test(e.key)) { cmdBuf += e.key.toUpperCase(); showCmd(); e.preventDefault(); return; }
+      if (/^[a-zA-Z]$/.test(e.key)) { cmdBuf += e.key.toUpperCase(); showCmd(); autoRunCmd(); e.preventDefault(); return; }
       // digits, comma, @ and # build a coordinate rather than a command name
-      if (/^[0-9.,@#<-]$/.test(e.key)) { cmdBuf += e.key; showCmd(); e.preventDefault(); return; }
+      if (/^[0-9.,@#<-]$/.test(e.key)) { cmdBuf += e.key; stopCmdTimer(); showCmd(); e.preventDefault(); return; }
       if (cmdBuf) {
-        if (e.key === 'Enter' || e.code === 'Space') { const c = cmdBuf; cmdBuf = ''; showCmd(); runCommand(c); e.preventDefault(); return; }
-        if (e.key === 'Backspace') { cmdBuf = cmdBuf.slice(0, -1); showCmd(); e.preventDefault(); return; }
-        if (e.key === 'Escape') { cmdBuf = ''; showCmd(); e.preventDefault(); return; }
+        if (e.key === 'Enter' || e.code === 'Space') { runTyped(); e.preventDefault(); return; }
+        if (e.key === 'Backspace') { cmdBuf = cmdBuf.slice(0, -1); showCmd(); autoRunCmd(); e.preventDefault(); return; }
+        if (e.key === 'Escape') { stopCmdTimer(); cmdBuf = ''; showCmd(); e.preventDefault(); return; }
       }
     }
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
@@ -1208,7 +1343,7 @@
   $('#btnDel').onclick = deleteSel; $('#btnDup').onclick = duplicateSel; $('#btnUndo').onclick = undo;
 
   // ---------- panels ----------
-  function refresh() { invalidateLoops(); refreshList(); refreshProps(); updateStats(); draw(); }
+  function refresh() { invalidateLoops(); refreshList(); refreshProps(); updateStats(); renderDocTabs(); draw(); }
   function refreshList() {
     const el = $('#shapeList'); el.innerHTML = '';
     $('#partCount').textContent = job.shapes.length ? `(${job.shapes.length})` : '';
@@ -1275,6 +1410,7 @@
     })();
     if (textOwner) h += `<div class="row"><button class="small" id="btnEditText">Edit text…</button><span class="muted">font, size, spacing</span></div>`;
     if (!multi && sh.group) h += `<div class="row muted">In group ${esc(sh.group)}</div>`;
+    if (!multi && sh.holes && sh.holes.length) h += `<div class="row muted">${sh.holes.length} hole${sh.holes.length > 1 ? 's' : ''} in this part - Ungroup (Ctrl+Shift+G) separates them</div>`;
     if (!multi && sh.kind === 'circle') h += numSlide('r', 'Radius', 0.0625) + `<div class="row"><label>Diameter</label><input type="number" step="${uStep(0.125)}" data-k="dia" value="${fmtIn(sh.r * 2)}"> ${uLabel()}</div>`;
     if (!multi && sh.kind === 'poly' && !sh.open) h += `<div class="row"><label>All corners R</label><input type="number" step="0.0625" data-k="allr" value="${fmtIn(sh.pts[0].r || 0)}"></div>`;
     if (!multi && sh.kind === 'poly') h += polyTable(sh);
@@ -1418,7 +1554,22 @@
       LOG.action(`Cut side flipped to "${sh.op}" on ${shs.length} path(s)`);
       refresh();
     };
-    $('#btnMirror').onclick = () => { snapshot(); for (const s of shs) { const bb = shapeBBox(s); const cx = (bb.x0 + bb.x1) / 2; if (s.kind === 'rect' || s.kind === 'circle') { /* symmetric */ } else if (s.kind === 'poly') { const w = Math.max(...s.pts.map(p => p.x)); s.pts = s.pts.map(p => ({ ...p, x: w - p.x })); } else if (s.kind === 'path') { const l = G.mirrorLoopX(s.loop, 0); const b2 = G.bbox(l); s.loop = G.translateLoop(l, -b2.x0, 0); } delete s.startPt; } refresh(); };
+    const mirrorOwn = (s) => { if (s.kind === 'rect' || s.kind === 'circle') { /* symmetric */ } else if (s.kind === 'poly') { const w = Math.max(...s.pts.map(p => p.x)); s.pts = s.pts.map(p => ({ ...p, x: w - p.x })); } else if (s.kind === 'path') { const l = G.mirrorLoopX(s.loop, 0); const b2 = G.bbox(l); s.loop = G.translateLoop(l, -b2.x0, 0); } delete s.startPt; };
+    $('#btnMirror').onclick = () => { snapshot(); for (const s of shs) {
+      const before = G.bbox(localLoop(s));
+      mirrorOwn(s);
+      if (!s.holes) continue;
+      /* The outline flips within its own frame, so the holes must flip with it:
+         the frame's right edge lands where its left edge now is. A circle that
+         stayed put here would end up on the wrong side of the plate. */
+      const after = G.bbox(localLoop(s)), M = (x) => after.x0 + (before.x1 - x);
+      for (const h of s.holes) {
+        const hb = G.bbox(worldLoop(h)), cx = (hb.x0 + hb.x1) / 2;
+        mirrorOwn(h);
+        const nb = G.bbox(worldLoop(h));
+        h.x += M(cx) - (nb.x0 + nb.x1) / 2;
+      }
+    } refresh(); };
     $('#btnToOrigin').onclick = () => { snapshot(); for (const s of shs) { const bb = shapeBBox(s); s.x -= bb.x0 - S.nest.margin; s.y -= bb.y0 - S.nest.margin; } refresh(); };
   }
 
@@ -1724,6 +1875,8 @@
     else if (sh.kind === 'circle') sh.r *= uni;
     else if (sh.kind === 'poly' && sh.pts) sh.pts = sh.pts.map(p => ({ ...p, x: p.x * sx, y: p.y * sy, r: (p.r || 0) * uni, arcR: (p.arcR || 0) * uni }));
     else if (sh.kind === 'path' && sh.loop) sh.loop = G.transformLoop(sh.loop, p => G.P(p.x * sx, p.y * sy));
+    // holes live in the part's frame, whose origin is the part's x,y - they scale about it
+    if (sh.holes) sh.holes.forEach(h => scaleShape(h, sx, sy, { x0: 0, y0: 0 }));
     delete sh.startPt;
   }
   $('#btnMoveBy').onclick = openMoveBy;
@@ -1901,6 +2054,86 @@
   }
   let arrayCounter = 0;
   $('#btnArray').onclick = openArray;
+
+  // ---------- cut grid ----------
+  /* A grid drawn as rectangles side by side puts two edges on every shared
+     line, and a laser cutting on the line goes over it twice and burns the
+     film. Here every grid line is one open path cut on the line, end to end
+     across the whole grid, so each line is cut exactly once.
+     Spans are typed as a list: "6, 6, 4", or "5x6.5" for five of 6.5, or both
+     mixed - so unequal rows and columns need no second tool. */
+  function parseSpans(text) {
+    const out = [];
+    for (const tok of String(text).replace(/\s*[x×*]\s*/gi, 'x').split(/[,;\s]+/).filter(Boolean)) {
+      const m = tok.match(/^(\d+)\s*[x×*]\s*(.+)$/i);
+      const num = m ? m[2] : tok;
+      // parseFloat reads "4x" as 4 - a half-typed span must refuse, not draw a 4
+      if (!/^(\d+\.?\d*|\.\d+)$/.test(num)) return { err: `"${tok}" is not a size` };
+      const n = m ? parseInt(m[1], 10) : 1, w = uParse(num);
+      if (!(n >= 1) || !(w > 0)) return { err: `"${tok}" is not a size` };
+      for (let i = 0; i < n; i++) out.push(w);
+    }
+    if (!out.length) return { err: 'nothing entered' };
+    return { spans: out };
+  }
+  function buildGrid(x0, y0, cols, rows, toolId) {
+    const xs = [0], ys = [0];
+    cols.forEach(w => xs.push(xs[xs.length - 1] + w));
+    rows.forEach(h => ys.push(ys[ys.length - 1] + h));
+    const W = xs[xs.length - 1], H = ys[ys.length - 1];
+    const used = new Set(job.shapes.map(s => s.group).filter(Boolean));
+    let k = 1; while (used.has('grid' + k)) k++;
+    const gid = 'grid' + k, made = [];
+    // local loop starts at 0,0 and the shape sits at x,y - the same layout a DXF line imports with
+    const line = (name, x, y, dx, dy) => made.push(makeShape('path', {
+      name, x: x0 + x, y: y0 + y, loop: [G.line(G.P(0, 0), G.P(dx, dy))],
+      open: true, op: 'on', toolId, group: gid,
+    }));
+    ys.forEach((y, i) => line(`grid row line ${i + 1}`, 0, y, W, 0));
+    xs.forEach((x, i) => line(`grid column line ${i + 1}`, x, 0, 0, H));
+    return { shapes: made, W, H, gid };
+  }
+  function openGrid() {
+    modal(`<h3>Cut grid</h3>
+      <p class="muted" style="font-size:11px">Each line is cut once, on the line - no tool offset. For laser work.</p>
+      <div class="row"><label>Column widths</label><input type="text" id="gdC" value="${isMM() ? '4x100' : '4x6'}"> ${uLabel()}</div>
+      <div class="row"><label>Row heights</label><input type="text" id="gdR" value="${isMM() ? '3x100' : '3x6'}"> ${uLabel()}</div>
+      <p class="muted" style="font-size:11px">e.g. <b>4x6</b> = four of 6 &nbsp;·&nbsp; <b>6, 6, 4</b> = three, sized one by one &nbsp;·&nbsp; <b>2x6, 4</b> mixed</p>
+      <div class="row"><label>Start X</label><input type="number" step="0.125" id="gdX" value="0"> ${uLabel()} <span class="muted">bottom-left corner</span></div>
+      <div class="row"><label>Start Y</label><input type="number" step="0.125" id="gdY" value="0"> ${uLabel()}</div>
+      <div class="row"><label>Tool</label><select id="gdT">${S.tools.map(t => `<option value="${t.id}">T${t.slot} ${esc(t.name)}</option>`).join('')}</select></div>
+      <div class="row muted" id="gdInfo"></div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="gdOk">Create</button><button id="gdCancel">Cancel</button></div>`,
+      (ov, close) => {
+        const q = (id) => ov.querySelector(id);
+        const read = () => {
+          const c = parseSpans(q('#gdC').value), r = parseSpans(q('#gdR').value);
+          if (c.err) return { err: 'Column widths: ' + c.err };
+          if (r.err) return { err: 'Row heights: ' + r.err };
+          if (c.spans.length > 200 || r.spans.length > 200) return { err: 'Over 200 rows or columns' };
+          return { c: c.spans, r: r.spans };
+        };
+        const info = () => {
+          const v = read();
+          q('#gdInfo').textContent = v.err ? v.err : `${v.c.length} × ${v.r.length} cells, ${fmtIn(v.c.reduce((a, b) => a + b, 0))} × ${fmtIn(v.r.reduce((a, b) => a + b, 0))} ${uLabel()}, ${v.c.length + v.r.length + 2} cut lines`;
+        };
+        q('#gdC').oninput = info; q('#gdR').oninput = info; info();
+        q('#gdCancel').onclick = close;
+        q('#gdOk').onclick = () => {
+          const v = read();
+          if (v.err) return toast(v.err);
+          const x0 = uParse(q('#gdX').value) || 0, y0 = uParse(q('#gdY').value) || 0;
+          snapshot();
+          // pushed directly, not through addShape: autoSplitAround would cut every line at every crossing
+          const g = buildGrid(x0, y0, v.c, v.r, +q('#gdT').value);
+          job.shapes.push(...g.shapes);
+          sel = new Set(g.shapes.map(s => s.id));
+          LOG.action(`Grid: ${v.c.length} × ${v.r.length} cells, ${fmtIn(g.W)} × ${fmtIn(g.H)} ${uLabel()}, ${g.shapes.length} lines cut on the line`);
+          close(); refresh();
+        };
+      });
+  }
+  $('#btnGrid').onclick = openGrid;
 
   // ---------- chamfer / fillet ----------
   function openCorner(kind) {
@@ -2745,6 +2978,17 @@
     refresh();
   }
   function ungroupSel() {
+    // a part carrying holes lets them go first - they come back as parts to edit one by one
+    const withHoles = selInOrder().filter(s => s.holes && s.holes.length);
+    if (withHoles.length) {
+      snapshot();
+      let n = 0;
+      for (const sh of withHoles) { const out = releaseHoles(sh); n += out.length; job.shapes.push(...out); out.forEach(o => sel.add(o.id)); }
+      LOG.action(`Separated ${n} hole(s) from ${withHoles.length} part(s)`);
+      toast(`Separated ${n} hole${n > 1 ? 's' : ''} into parts of their own`);
+      refresh();
+      return;
+    }
     const shs = selInOrder().filter(s => s.group);
     if (!shs.length) return toast('Nothing grouped in the selection');
     snapshot();
@@ -2807,6 +3051,9 @@
         <option value="on">Engrave along the line (V-bit / small endmill)</option>
         <option value="inside">Pocket the letters out</option>
         <option value="outside">Cut the letters free</option></select></div>
+      <div class="row"><label>Bridges</label><input type="checkbox" id="txBr" ${existing && existing.bridge > 0 ? 'checked' : ''}>
+        <span class="muted">keep the middle of A, O, R attached</span>
+        <input type="number" step="${uStep(0.01)}" id="txBrW" value="${fmtIn(existing && existing.bridge > 0 ? existing.bridge : 0.05)}" style="width:70px"> ${uLabel()}</div>
       <p class="muted" id="txNote" style="font-size:11px"></p>
       <div class="row" style="margin-top:10px"><button class="primary" id="txOk">${existing ? 'Update' : 'Add text'}</button><button id="txCancel">Cancel</button></div>`,
       (ov, close) => {
@@ -2819,6 +3066,7 @@
             : 'A normal font gives <b>closed outlines</b>. Engraving along the line traces around each letter rather than drawing it — pick "pocket" or "cut free" unless you actually want the outline traced.';
           for (const o of OP.options) o.disabled = single && o.value !== 'on';
           if (single) OP.value = 'on';
+          ov.querySelector('#txBr').disabled = single;     // a single-line font has no holes to bridge
         };
         F.onchange = syncNote; syncNote();
         ov.querySelector('#txLoad').onclick = () => ov.querySelector('#txFile').click();
@@ -2836,6 +3084,7 @@
             tracking: uParse(ov.querySelector('#txTr').value) || 0,
             align: ov.querySelector('#txAl').value,
             op: OP.value,
+            bridge: !F.value || !ov.querySelector('#txBr').checked ? 0 : (uParse(ov.querySelector('#txBrW').value) || 0),
           };
           if (!spec.text.trim()) { toast('Type some text first'); return; }
           if (spec.height <= 0) { toast('Cap height must be positive'); return; }
@@ -2890,7 +3139,26 @@
     }
     snapshot();
     const gid = 'g' + (nextGroup++);
-    const loops = res.paths.map(p => ({ loop: FONT.toLoop(p.pts, p.closed), closed: p.closed }));
+    let loops = res.paths.map(p => ({ loop: FONT.toLoop(p.pts, p.closed), closed: p.closed }));
+    /* Cursive letters overlap where they join; cut as drawn, the laser runs a
+       line through every join. Fuse the outline font's contours into the
+       outline of the ink. Nothing crossing (block fonts) leaves them as is. */
+    if (!res.single && loops.length > 1 && loops.every(L => L.closed)) {
+      const raw = loops.map(L => L.loop), tol = 1e-5 * (spec.height || 1);
+      let fused = RG.fillOutline(raw, tol);
+      if (fused) LOG.info(`Text: joined overlapping letters - ${loops.length} outlines became ${fused.length}`);
+      // stencil bridges, so the middle of an A, O or R stays attached
+      if (spec.bridge > 0) {
+        const gaps = RG.bridgeGaps(fused || raw, spec.bridge);
+        const bridged = gaps.length ? RG.fillOutline(raw, tol, undefined, gaps) : null;
+        if (bridged) { fused = bridged; LOG.info(`Text: ${gaps.length} bridge(s) of ${fmtIn(spec.bridge)} in`); }
+        else if (gaps.length) {
+          LOG.warn(`Text: could not bridge "${spec.font}" - cut without bridges`);
+          toast(`Could not add bridges with ${spec.font} - pick another font`);
+        }
+      }
+      if (fused) loops = fused.map(loop => ({ loop, closed: true }));
+    }
     // for outline fonts, a contour inside an odd number of others is a counter
     const depth = loops.map((L, i) => {
       if (!L.closed) return 0;
@@ -3242,7 +3510,27 @@
     toast(`${made.length} region(s) made - the circle and lines that defined them are gone`);
   }
 
-  function mergeSelected(tol) {
+  // do two shapes meet - cross, or an end land on the other within tol
+  function shapesTouch(a, b, tol) {
+    const ba = G.bbox(a), bb = G.bbox(b);
+    if (ba.x0 > bb.x0 + bb.w + tol || bb.x0 > ba.x0 + ba.w + tol || ba.y0 > bb.y0 + bb.h + tol || bb.y0 > ba.y0 + ba.h + tol) return false;
+    const endOn = (P0, segs) => segs.some(s => G.dist(SNAP.nearestOnSeg(s, P0), P0) <= tol);
+    for (const s of a) {
+      if (endOn(s.a, b) || endOn(s.b, b)) return true;
+      for (const t of b) if (SNAP.segSegPoints(s, t).length) return true;
+    }
+    return b.some(t => endOn(t.a, a) || endOn(t.b, a));
+  }
+  // does shape h lie inside closed shape p - its box within p's, and a point of it within p's outline
+  function insideOf(h, p) {
+    if (h === p || p.open) return false;
+    let hl, pl; try { hl = worldLoop(h); pl = worldLoop(p); } catch (e) { return false; }
+    if (!hl.length || !pl.length) return false;
+    const hb = G.bbox(hl), pb = G.bbox(pl);
+    if (hb.x0 < pb.x0 - 1e-6 || hb.x1 > pb.x1 + 1e-6 || hb.y0 < pb.y0 - 1e-6 || hb.y1 > pb.y1 + 1e-6) return false;
+    return G.pointInLoop(G.pointAt(hl[0], 0.5), pl);
+  }
+  function mergeSelected(tol, inner) {
     /* Any shapes, open or closed. Restricting this to open paths meant a
        leftover closed outline sitting next to an open piece could never be
        welded into one part - which is the usual state after trimming. A closed
@@ -3250,9 +3538,68 @@
        a vertex wherever the other path meets it. */
     const shs = selInOrder();
     if (shs.length < 2) return toast('Select two or more parts to merge');
-    const entries = shs.map(sh => { let segs = []; try { segs = worldLoop(sh); } catch (e) { } return { id: sh.id, segs }; })
+    let entries = shs.map(sh => { let segs = []; try { segs = worldLoop(sh); } catch (e) { } return { id: sh.id, segs }; })
       .filter(e => e.segs.length);
     if (entries.length < 2) return toast('Those paths have no geometry to merge');
+    /* A shape that touches nothing else in the selection has nothing to weld
+       to. The holes inside a plate are the usual case: merged in, the union
+       of material swallowed them and the plate came out with its holes gone.
+       Instead the shapes that touch are welded, and whatever lies inside the
+       result is carried by it as a hole - kept exactly as drawn (a circle stays
+       a circle), so the part is one part: one line in the list, and it moves,
+       rotates and cuts with its holes. Holes a welded part already carried are
+       carried over the same way, or the weld would drop them. */
+    const loose = entries.filter(e => !entries.some(o => o !== e && shapesTouch(e.segs, o.segs, tol)));
+    const looseIds = new Set(loose.map(e => e.id));
+    const weld = entries.filter(e => !looseIds.has(e.id));
+    const carried = shs.filter(x => !looseIds.has(x.id)).flatMap(holeShapes);
+    if (!inner && (loose.length || (weld.length >= 2 && carried.length))) {
+      snapshot();
+      let parents;
+      if (weld.length >= 2) {
+        const weldIds = new Set(weld.map(e => e.id));
+        sel = new Set(weldIds);
+        mergeSelected(tol, true);
+        const made = job.shapes.filter(x => sel.has(x.id));
+        if (!made.length || made.some(x => weldIds.has(x.id))) { undoStack.pop(); sel = new Set(shs.map(x => x.id)); return; }   // the weld refused, and said why
+        parents = made.filter(x => !x.open);
+      } else {
+        // nothing welds: the outermost closed shapes are the parts, the rest go inside them
+        const closed = shs.filter(x => !x.open);
+        parents = closed.filter(p => !closed.some(q => q !== p && insideOf(p, q)));
+      }
+      const candidates = shs.filter(x => looseIds.has(x.id) && !parents.includes(x)).concat(carried);
+      const taken = new Set(), gained = new Map();
+      for (const h of candidates) {
+        let best = null, bestArea = Infinity;
+        for (const p of parents) {
+          if (!insideOf(h, p)) continue;
+          const a = Math.abs(G.signedArea(worldLoop(p)));
+          if (a < bestArea) { bestArea = a; best = p; }
+        }
+        if (!best) {
+          // a hole of a welded part that the new outline no longer surrounds is not thrown away
+          if (h.owner != null) { const { id, owner, ...v } = h; job.shapes.push(makeShape(v.kind, v)); }
+          continue;
+        }
+        (best.holes = best.holes || []).push(toPartFrame(h, best));
+        gained.set(best.id, (gained.get(best.id) || 0) + 1);
+        if (h.owner == null) taken.add(h.id);
+      }
+      if (!gained.size && weld.length < 2) {
+        undoStack.pop();
+        return toast('Those parts do not touch and none lies inside another - nothing to merge');
+      }
+      job.shapes = job.shapes.filter(x => !taken.has(x.id));
+      sel = new Set(parents.map(x => x.id));
+      const nHoles = [...gained.values()].reduce((a, b) => a + b, 0);
+      const left = shs.filter(x => looseIds.has(x.id) && !taken.has(x.id) && !parents.includes(x)).length;
+      LOG.action(`Merged into ${parents.length} part(s) carrying ${nHoles} hole(s)` + (weld.length >= 2 ? `, welded from ${weld.length} pieces` : '') + (left ? `; ${left} part(s) outside it left as they were` : ''));
+      toast(`Merged into one part with ${nHoles} hole${nHoles === 1 ? '' : 's'}` + (left ? ` - ${left} outside it left as ${left > 1 ? 'they were' : 'it was'}` : ''));
+      refresh();
+      return;
+    }
+    entries = weld.length ? weld : entries;
     const splits = splitAtTouches(entries, tol);
     const all = entries.flatMap(e => e.segs);
     // are they actually connected? every segment must share a point with the rest
@@ -3264,7 +3611,7 @@
       return pts.filter(k => k === ka).length > 1 || pts.filter(k => k === kb).length > 1;
     }).length;
     if (!touching) return toast('Those paths do not touch — nothing to merge');
-    snapshot();
+    if (!inner) snapshot();   // the outer merge took one already, so Undo is one step
     const ids = new Set(shs.map(x => x.id));
     const first = shs[0];
     job.shapes = job.shapes.filter(x => !ids.has(x.id));
@@ -3803,7 +4150,7 @@
   // ---------- job stats / gcode ----------
   function buildJob() {
     return {
-      shapes: job.shapes.filter(s => s.op !== 'none').map(s => ({ loop: worldLoop(s), op: s.op, open: s.open, toolId: s.toolId, startHint: s.startPt, climb: s.climb, name: s.name, tabs: s.tabs })),
+      shapes: expandShapes(job.shapes).filter(s => s.op !== 'none').map(s => ({ loop: worldLoop(s), op: s.op, open: s.open, toolId: s.toolId, startHint: s.startPt, climb: s.climb, name: s.name, tabs: s.tabs })),
       tools: S.tools, material: { thickness: job.material.thickness }, cutThrough: job.cutThrough, machine: machineForPost(), tabs: S.tabs,
     };
   }
@@ -3895,7 +4242,7 @@
   $('#btnDxf').onclick = () => {
     if (!job.shapes.length) return toast('Nothing to export');
     const loops = [], opens = [];
-    for (const s of job.shapes) (s.open ? opens : loops).push(worldLoop(s));
+    for (const s of expandShapes(job.shapes)) (s.open ? opens : loops).push(worldLoop(s));
     download(jobName() + '.dxf', G.writeDXF(loops, opens), 'application/dxf'); toast('DXF exported');
   };
   $('#btnSave').onclick = saveProject;
@@ -3910,22 +4257,61 @@
       toast('Project saved: ' + file);
     } catch (err) { LOG.error('Project save failed', err); toast('Could not save: ' + err.message); }
   }
-  $('#btnNew').onclick = async () => {
-    if (job.shapes.length && !(await askConfirm('New job', `Clear the current job? ${job.shapes.length} part(s) will be discarded.`, 'Clear'))) return;
-    job = newJob(); sel.clear(); clearEdge(); undoStack = []; syncMaterialUI(); refresh();
-    LOG.action('New job started');
-  };
-  $('#btnOpen').onclick = () => $('#fileIn').click();
+  $('#btnNew').onclick = () => newDoc();
+  $('#btnOpen').onclick = () => { importHere = false; $('#fileIn').click(); };
+  $('#btnImport').onclick = () => { importHere = true; $('#fileIn').click(); };
   $('#fileIn').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return; e.target.value = '';
     const text = await f.text(); const ext = f.name.split('.').pop().toLowerCase();
+    /* A project or DXF opens in a tab of its own, so several can be worked on
+       side by side - unless this tab is still empty, or Import asked to add
+       the parts to the design showing. */
+    const here = importHere || (!job.shapes.length && !undoStack.length);
+    importHere = false;
+    const base = f.name.replace(/\.[^.]+$/, '');
+    if (!here && ext !== 'tap' && ext !== 'nc') newDoc(base);
+    else if (!job.name && ext === 'dxf' && !job.shapes.length) job.name = base;
     if (ext === 'cncjob' || ext === 'json') { try { const j = JSON.parse(text); snapshot(); job = j.job || j; sel.clear(); syncMaterialUI(); refresh(); toast('Project loaded'); } catch (err) { toast('Bad project file'); } }
     else if (ext === 'dxf') importDXF(text, f.name);
     else importTAP(text, f.name);
   });
+  /* Plain words for what parseDXF found that a flat cut cannot use. Empty when
+     the file is an ordinary 2D drawing, which then imports with no question. */
+  function dxfProblems(rep) {
+    const out = [];
+    const threeD = rep.zLevels.length > 1 || rep.vertical || rep.slanted || rep.tilted;
+    if (threeD) {
+      const why = [];
+      if (rep.zLevels.length > 1) why.push(`geometry at ${rep.zLevels.length} heights (Z ${rep.zLevels.map(z => fmtIn(z)).join(', ')} ${uLabel()}) - flattened, they land on top of each other and get cut more than once`);
+      if (rep.vertical) why.push(`${rep.vertical} edge${rep.vertical > 1 ? 's' : ''} running straight up in Z - left out`);
+      if (rep.slanted) why.push(`${rep.slanted} line${rep.slanted > 1 ? 's' : ''} sloping in Z - flattened`);
+      if (rep.tilted) why.push(`${rep.tilted} arc${rep.tilted > 1 ? 's' : ''} or polyline${rep.tilted > 1 ? 's' : ''} on a tilted plane - left out`);
+      out.push('This is a 3D file:\n• ' + why.join('\n• '));
+    }
+    if (threeD && rep.duplicates) out.push(`${rep.duplicates} duplicate edge${rep.duplicates > 1 ? 's' : ''} removed - stacked copies that would each have been cut again.`);
+    const sk = Object.entries(rep.skipped);
+    if (sk.length) out.push('Not read, so missing from the drawing:\n• ' + sk.map(([t, n]) => `${n} ${t}`).join('\n• '));
+    if (out.length) out.push(threeD
+      ? 'A laser cuts one flat face. Export a flat 2D view of that face from your CAD program, with curves as arcs.'
+      : 'Export again from your CAD program with curves as arcs or polylines.');
+    return out.join('\n\n');
+  }
   function importDXF(text, name) {
     let res; try { res = G.parseDXF(text); } catch (err) { console.error(err); return toast('Could not read DXF'); }
-    if (!res.loops.length && !res.opens.length) return toast('No usable geometry in DXF');
+    const rep = res.report;
+    if (rep.flipped) LOG.info(`DXF ${name}: ${rep.flipped} arc/circle/polyline drawn from below (normal 0,0,-1) - turned the right way up`);
+    if (rep.duplicates) LOG.info(`DXF ${name}: ${rep.duplicates} duplicate edge(s) removed - each would have been cut twice`);
+    const problems = dxfProblems(rep);
+    if (problems) LOG.warn(`DXF ${name}: ${problems.replace(/\n+/g, ' ')}`);
+    if (!res.loops.length && !res.opens.length) {
+      if (problems) askConfirm('Nothing could be imported', problems, 'OK');
+      return toast('No usable geometry in DXF');
+    }
+    // asked before anything changes, so Cancel leaves the job exactly as it was
+    if (problems) return askConfirm(`${name} needs attention`, problems, 'Import anyway').then(go => go ? addDXF(res, name) : toast('Import cancelled'));
+    addDXF(res, name);
+  }
+  function addDXF(res, name) {
     snapshot();
     const all = res.loops.concat(res.opens); let gx0 = Infinity, gy0 = Infinity; for (const l of all) { const b = G.bbox(l); gx0 = Math.min(gx0, b.x0); gy0 = Math.min(gy0, b.y0); }
     const shift = (gx0 < 0 || gy0 < 0) ? { x: S.nest.margin - gx0, y: S.nest.margin - gy0 } : { x: 0, y: 0 };
@@ -3938,7 +4324,8 @@
       const sh = makeShape('path', { name: `${name.replace(/\.dxf$/i, '')} ${i + 1}`, x: bb.x0 + shift.x, y: bb.y0 + shift.y, loop: local, op: inner ? 'inside' : 'outside' }); added.push(sh);
     });
     res.opens.forEach((l, i) => { const bb = G.bbox(l); const sh = makeShape('path', { name: `line ${i + 1}`, x: bb.x0 + shift.x, y: bb.y0 + shift.y, loop: G.translateLoop(l, -bb.x0, -bb.y0), open: true, op: 'on' }); added.push(sh); });
-    job.shapes.push(...added); sel = new Set(added.map(a => a.id)); refresh(); toast(`Imported ${added.length} objects from DXF`);
+    job.shapes.push(...added); sel = new Set(added.map(a => a.id)); refresh();
+    toast(`Imported ${added.length} objects from DXF` + (res.report && res.report.duplicates ? ` - ${res.report.duplicates} duplicate edge${res.report.duplicates > 1 ? "s" : ""} removed` : ""));
   }
   function importTAP(text, name) {
     // show existing TAP in simulator
@@ -4048,7 +4435,7 @@
         d.rect(0, S.machine.bedH, S.machine.bedW, S.machine.bedH); d.stroke();
       }
 
-      for (const sh of job.shapes) {
+      for (const sh of expandShapes(job.shapes)) {
         let loop;
         try { loop = worldLoop(sh); } catch (e) { continue; }
         if (!loop.length) continue;
@@ -4288,7 +4675,7 @@
   function showPage(p) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.page === p));
     $('#pageSim').classList.toggle('active', p === 'sim'); $('#pageAi').classList.toggle('active', p === 'ai'); $('#pageSettings').classList.toggle('active', p === 'settings');
-    if (p === 'settings') { renderSettings(); renderLog(); } if (p === 'sim') simResize();
+    if (p === 'settings') { renderSettings(); renderLog(); } if (p === 'sim') { renderDocTabs(); $('#simDoc').value = String(activeDoc); simResize(); }
   }
 
   // ---------- settings UI ----------
@@ -4327,9 +4714,11 @@
     });
   }
   function renderKeys() {
+    labelButtons();
     const tb = $('#keyTable tbody');
     if (!tb) return;
     $('#keyMode').value = S.keys.mode === 'direct' ? 'direct' : 'command';
+    $('#keyAuto').checked = S.keys.auto !== false;
     const map = aliasMap();
     const byId = {};
     for (const [alias, id] of Object.entries(map)) { (byId[id] = byId[id] || []).push(alias); }
@@ -4376,8 +4765,12 @@
   bindSetting('#aiKey', el => S.ai.key = el.value.trim()); bindSetting('#aiModel', el => S.ai.model = el.value.trim());
   $('#keyMode').addEventListener('change', () => {
     S.keys.mode = $('#keyMode').value === 'direct' ? 'direct' : 'command';
-    cmdBuf = ''; showCmd(); saveSettings();
+    cmdBuf = ''; showCmd(); saveSettings(); labelButtons();
     LOG.action('Keyboard set to ' + (S.keys.mode === 'direct' ? 'single keys' : 'typed commands'));
+  });
+  $('#keyAuto').addEventListener('change', () => {
+    S.keys.auto = $('#keyAuto').checked; stopCmdTimer(); saveSettings();
+    LOG.action('Typed shortcuts ' + (S.keys.auto ? 'run without Enter' : 'wait for Enter'));
   });
   $('#keyReset').onclick = () => { S.keys.aliases = null; saveSettings(); renderKeys(); toast('Shortcuts back to the AutoCAD set'); };
   $('#toolAdd').onclick = () => { const id = Math.max(0, ...S.tools.map(t => t.id)) + 1; S.tools.push({ id, slot: id, name: 'New tool', type: 'endmill', dia: 0.25, rpm: 18000, feed: 120, plunge: 20, passDepth: 0.125 }); saveSettings(); renderSettings(); };
@@ -4427,7 +4820,13 @@
   let sim = { moves: [], total: 0, t: 1, playing: false, name: '' };
   function simResize() { const r = sc.getBoundingClientRect(); sc.width = Math.floor(r.width * devicePixelRatio); sc.height = Math.floor(r.height * devicePixelRatio); simDraw(); }
   window.addEventListener('resize', simResize);
-  $('#simGen').onclick = () => { updateStats(); if (!lastGcode) return toast('Nothing to simulate'); simLoadText(lastGcode, 'current job'); };
+  $('#simGen').onclick = () => {
+    stashDoc();
+    const i = +($('#simDoc').value || activeDoc), d = docs[i] || docs[activeDoc];
+    let g; try { g = gcodeFor(d.job); } catch (e) { LOG.error('Simulate failed', e); return toast('Could not build the toolpath: ' + e.message); }
+    if (!g) return toast(`"${docName(d)}" has nothing to cut`);
+    simLoadText(g, docName(d));
+  };
   $('#simLoad').onclick = () => $('#fileSim').click();
   $('#fileSim').addEventListener('change', async e => { const f = e.target.files[0]; if (!f) return; simLoadText(await f.text(), f.name); e.target.value = ''; });
   function simLoadText(text, name) {
@@ -4447,7 +4846,7 @@
     const a = T({ x: 0, y: 0 }), b = T({ x: m.bedW, y: m.bedH }); sctx.fillStyle = '#e8e2d0'; sctx.fillRect(a.x, b.y, b.x - a.x, a.y - b.y);
     sctx.strokeStyle = '#5a6473'; sctx.strokeRect(a.x, b.y, b.x - a.x, a.y - b.y);
     // part outlines (current job) faint
-    for (const sh of job.shapes) { const l = worldLoop(sh); sctx.strokeStyle = 'rgba(0,0,0,.15)'; sctx.lineWidth = 1; sctx.beginPath(); l.forEach((s, i) => { const pts = G.samplePts(s, 0.1); pts.forEach((p, k) => { const q = T(p); (i === 0 && k === 0) ? sctx.moveTo(q.x, q.y) : sctx.lineTo(q.x, q.y); }); }); if (!sh.open) sctx.closePath(); sctx.stroke(); }
+    for (const sh of expandShapes(job.shapes)) { const l = worldLoop(sh); sctx.strokeStyle = 'rgba(0,0,0,.15)'; sctx.lineWidth = 1; sctx.beginPath(); l.forEach((s, i) => { const pts = G.samplePts(s, 0.1); pts.forEach((p, k) => { const q = T(p); (i === 0 && k === 0) ? sctx.moveTo(q.x, q.y) : sctx.lineTo(q.x, q.y); }); }); if (!sh.open) sctx.closePath(); sctx.stroke(); }
     const tcut = sim.t * sim.total; let cur = null;
     sctx.lineCap = 'round'; sctx.lineJoin = 'round';
     for (const mv of sim.moves) {
@@ -4517,10 +4916,40 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
     } catch (err) { st.textContent = 'Error: ' + err.message; console.error(err); }
   };
 
+  /* ---------- ribbon ----------
+     A row of 37 bare icons was hard to read. The buttons are grouped under
+     File / Draw / Modify / ... with one group on show, and each says what it
+     does with its shortcut in brackets. The shortcut is read from the live
+     alias table, so a changed alias shows up on the button. */
+  // a function, not a const: renderKeys can run before this point in startup
+  const directKeys = () => ({ select: 'V', rect: 'R', circle: 'C', polygon: 'P', line: 'L', arc: 'A', ellipse: 'E', measure: 'M', trace: 'T', trim: 'K', join: 'J', dim: 'D', move: 'G' });
+  function shortcutOf(b) {
+    if (b.dataset.key) return b.dataset.key;
+    const c = b.dataset.cmd; if (!c) return '';
+    if (S.keys.mode === 'direct') return directKeys()[c] || '';
+    return Object.entries(aliasMap()).filter(([, v]) => v === c).map(([k]) => k).sort((a, b) => a.length - b.length)[0] || '';
+  }
+  function labelButtons() {
+    document.querySelectorAll('header button[data-name]').forEach(b => {
+      const k = shortcutOf(b);
+      b.innerHTML = esc(b.dataset.name) + (k ? ` <span class="key">(${esc(k)})</span>` : '');
+    });
+  }
+  function showRibbon(name) {
+    document.querySelectorAll('header .rtab').forEach(t => t.classList.toggle('active', t.dataset.rib === name));
+    document.querySelectorAll('header .rib').forEach(r => r.classList.toggle('active', r.dataset.rib === name));
+    try { localStorage.setItem('cnc.ribbon', name); } catch (e) { /* private window: just not remembered */ }
+  }
+  document.querySelectorAll('header .rtab').forEach(t => t.onclick = () => showRibbon(t.dataset.rib));
+  $('#btnMerge').onclick = () => COMMANDS.join.run();
+  labelButtons();
+  { let r = 'draw'; try { r = localStorage.getItem('cnc.ribbon') || 'draw'; } catch (e) { /* default */ }
+    showRibbon(document.querySelector(`header .rib[data-rib="${r}"]`) ? r : 'draw'); }
+
   // ---------- init ----------
   ICONS.apply(document);
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
 })();
