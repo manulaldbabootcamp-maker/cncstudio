@@ -419,8 +419,8 @@
      Cached: this runs on every mousemove, and rebuilding polyLoop for 30+ parts
      at cursor rate is enough to make dragging feel sticky. Invalidated by
      invalidateLoops() wherever geometry changes. */
-  let loopCache = null;
-  function invalidateLoops() { loopCache = null; }
+  let loopCache = null, bbCache = new WeakMap();
+  function invalidateLoops() { loopCache = null; bbCache = new WeakMap(); }
   function snapLoops(excludeIds) {
     if (!loopCache) {
       loopCache = [];
@@ -590,6 +590,7 @@
     drawCentreMarks();
     drawDims();
     drawSizeLabels();
+    drawGroupBox();
     // selected side + point numbers
     drawEdgeSelection();
     // grips on a single selected shape
@@ -1025,6 +1026,10 @@
         else clearEdge();
         expandGroups();
         drag = { kind: 'move', start: w, base: moveBase(w, new Set(sel)), orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false };
+      } else if (!e.ctrlKey && !e.shiftKey && inGroupBox(w)) {
+        // the gaps between selected parts are part of the box: grabbing there moves them all
+        clearEdge(); expandGroups();
+        drag = { kind: 'move', start: w, base: moveBase(w, new Set(sel)), orig: job.shapes.filter(x => sel.has(x.id)).map(x => ({ id: x.id, x: x.x, y: x.y })), moved: false };
       } else { if (!e.shiftKey) sel.clear(); clearEdge(); drag = { kind: 'marquee', a: w, cur: w }; }
       refreshList(); refreshProps(); draw();
     } else if (tool === 'rect' || tool === 'circle' || tool === 'ellipse') {
@@ -1376,6 +1381,7 @@
     }
   }
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  let sizeEach = false;   // Size fields act on each selected part, not the whole selection
   function refreshProps() {
     const el = $('#props');
     const shs = job.shapes.filter(s => sel.has(s.id));
@@ -1393,6 +1399,20 @@
     if (!multi) h = edgePanel(sh) + h;
     if (!multi) h += `<div class="row"><label>Name</label><input type="text" data-k="name" value="${esc(sh.name)}" style="flex:1"></div>`;
     h += num('x', 'X') + num('y', 'Y');
+    /* Several parts of one kind: their own sizes, typed once for all of them -
+       ten identical plates get a new width or corner radius in one go. A field
+       the parts disagree on is left empty ("mixed") rather than showing the
+       first part's value as if it were everyone's. */
+    const kind1 = shs.every(x => x.kind === sh.kind && !!x.open === !!sh.open) ? sh.kind : null;
+    const numAll = (k, label, step = 0.125, get = (x) => x[k]) => {
+      const vals = shs.map(x => +(get(x) ?? 0)), v = vals.every(a => Math.abs(a - vals[0]) < 1e-6) ? vals[0] : null;
+      return `<div class="row"><label>${label}</label><input type="number" step="${uStep(step)}" data-k="${k}" ${v == null ? 'value="" placeholder="mixed"' : `value="${fmtIn(v)}"`}> ${uLabel()}</div>`;
+    };
+    if (multi && kind1 === 'rect') h += numAll('w', 'Width') + numAll('h', 'Height') + numAll('r', 'All corners R', 0.0625);
+    if (multi && kind1 === 'circle') h += numAll('r', 'Radius', 0.0625) + numAll('dia', 'Diameter', 0.125, x => x.r * 2);
+    if (multi && kind1 === 'ellipse') h += numAll('rx', 'Radius X', 0.0625) + numAll('ry', 'Radius Y', 0.0625);
+    if (multi && kind1 === 'poly' && !sh.open) h += numAll('allr', 'All corners R', 0.0625, x => x.pts[0].r || 0);
+    if (multi && kind1) h += `<div class="row muted">Sizes above change each of the ${shs.length} parts</div>`;
     if (!multi && sh.kind === 'rect') {
       h += numSlide('w', 'Width') + numSlide('h', 'Height') + num('r', 'All corners R', 0.0625);
       const rc = sh.rc || [null, null, null, null]; const lab = ['BL', 'BR', 'TR', 'TL'];
@@ -1425,11 +1445,20 @@
        selection about its lower-left corner, so a block of letters keeps its
        spacing and stays where it was nested. */
     const gbb = groupBBox(shs);
+    /* "Each part on its own" sizes every selected part about its own corner,
+       so they stay where they are - the way to give a sheet of DXF paths one
+       new size, where the fields above (rectangles, circles only) do not reach. */
+    const each = multi && sizeEach;
+    const ownBB = each ? shs.map(x => groupBBox([x])) : null;
+    const same = (vals) => vals.every(a => Math.abs(a - vals[0]) < 1e-6) ? vals[0] : null;
+    const showW = each ? same(ownBB.map(b => b.w)) : gbb.w, showH = each ? same(ownBB.map(b => b.h)) : gbb.h;
+    const sizeVal = (v) => v == null ? 'value="" placeholder="mixed"' : `value="${fmtIn(v)}"`;
     h += `<h3>Size</h3>`
-      + `<div class="row"><label>Width</label><input type="number" step="${uStep(0.125)}" data-size="w" value="${fmtIn(gbb.w)}"> ${uLabel()}</div>`
-      + `<div class="row"><label>Height</label><input type="number" step="${uStep(0.125)}" data-size="h" value="${fmtIn(gbb.h)}"> ${uLabel()}</div>`
+      + `<div class="row"><label>Width</label><input type="number" step="${uStep(0.125)}" data-size="w" ${sizeVal(showW)}> ${uLabel()}</div>`
+      + `<div class="row"><label>Height</label><input type="number" step="${uStep(0.125)}" data-size="h" ${sizeVal(showH)}> ${uLabel()}</div>`
       + `<div class="row"><label>Scale ×</label><input type="number" step="0.1" data-size="f" value="1"><button class="small" data-size2x="2">×2</button><button class="small" data-size2x="0.5">÷2</button></div>`
-      + `<div class="row"><label><input type="checkbox" id="szLock" checked> Keep proportions</label><span class="muted">${multi ? shs.length + ' parts together' : ''}</span></div>`;
+      + `<div class="row"><label><input type="checkbox" id="szLock" checked> Keep proportions</label><span class="muted">${multi && !each ? shs.length + ' parts together' : ''}</span></div>`
+      + (multi ? `<div class="row"><label><input type="checkbox" id="szEach" ${each ? 'checked' : ''}> Each part on its own</label><span class="muted">${each ? 'each keeps its place' : ''}</span></div>` : '');
     /* A closed outline has an inside and an outside. An open path has neither,
        so it gets a SIDE instead - and the side is what makes the line the
        finished edge rather than the centre of the cut. */
@@ -1463,10 +1492,13 @@
     /* Scale the selection by a factor worked out from whichever field was
        typed. Everything goes through scaleShape about the selection's own
        lower-left corner - the same path the Scale dialog takes. */
-    const scaleSel = (fx, fy, how) => {
-      if (!(isFinite(fx) && isFinite(fy) && fx > 0 && fy > 0)) { toast('Size must be a positive number'); return; }
-      if (Math.abs(fx - 1) < 1e-9 && Math.abs(fy - 1) < 1e-9) return;
-      if (Math.abs(fx - fy) > 1e-9) {
+    const scaleSel = (fac, how) => {
+      // fac(box) -> [fx, fy]: one box for the whole selection, or each part's own
+      const jobs = each ? shs.map((x, i) => [x, ownBB[i]]) : shs.map(x => [x, gbb]);
+      const fs = jobs.map(([, b]) => fac(b));
+      if (fs.some(([fx, fy]) => !(isFinite(fx) && isFinite(fy) && fx > 0 && fy > 0))) { toast('Size must be a positive number'); refreshProps(); return; }
+      if (fs.every(([fx, fy]) => Math.abs(fx - 1) < 1e-9 && Math.abs(fy - 1) < 1e-9)) return;
+      if (fs.some(([fx, fy]) => Math.abs(fx - fy) > 1e-9)) {
         const curvy = shs.some(x => x.kind === 'circle' || (x.pts || []).some(p => p.r || p.arcR) || (x.loop || []).some(g => g.type === 'arc'));
         if (curvy) {
           toast('These parts have arcs - keep proportions on, or they turn into ellipses this app cannot cut');
@@ -1475,22 +1507,26 @@
         }
       }
       snapshot();
-      for (const x of shs) scaleShape(x, fx, fy, gbb);
+      jobs.forEach(([x, b], i) => scaleShape(x, fs[i][0], fs[i][1], b));
       invalidateLoops();
-      LOG.action(`Scaled ${shs.length} part(s) ${how} - now ${fmtIn(groupBBox(shs).w)} × ${fmtIn(groupBBox(shs).h)} ${uLabel()}`);
+      LOG.action(each ? `Scaled each of ${shs.length} part(s) ${how}`
+        : `Scaled ${shs.length} part(s) ${how} - now ${fmtIn(groupBBox(shs).w)} × ${fmtIn(groupBBox(shs).h)} ${uLabel()}`);
       refresh();
     };
+    const se = el.querySelector('#szEach');
+    if (se) se.onchange = () => { sizeEach = se.checked; refreshProps(); };
     el.querySelectorAll('[data-size]').forEach(inp => inp.addEventListener('change', () => {
       const lock = (el.querySelector('#szLock') || {}).checked;
       const k = inp.dataset.size;
-      if (k === 'f') { const f = parseFloat(inp.value); scaleSel(f, f, `by ${f}`); return; }
-      const want = uParse(inp.value), cur = k === 'w' ? gbb.w : gbb.h;
-      if (!(cur > 1e-9)) { toast('This selection has no size on that axis'); return; }
-      const f = want / cur;
-      if (lock) scaleSel(f, f, `to ${fmtIn(want)} ${uLabel()} ${k === 'w' ? 'wide' : 'tall'}`);
-      else scaleSel(k === 'w' ? f : 1, k === 'h' ? f : 1, `to ${fmtIn(want)} ${uLabel()} ${k === 'w' ? 'wide' : 'tall'}`);
+      if (k === 'f') { const f = parseFloat(inp.value); scaleSel(() => [f, f], `by ${f}`); return; }
+      const want = uParse(inp.value);
+      if ((each ? ownBB : [gbb]).some(b => !((k === 'w' ? b.w : b.h) > 1e-9))) { toast(`${each ? 'A part' : 'This selection'} has no size on that axis`); refreshProps(); return; }
+      scaleSel((b) => {
+        const f = want / (k === 'w' ? b.w : b.h);
+        return lock ? [f, f] : [k === 'w' ? f : 1, k === 'h' ? f : 1];
+      }, `to ${fmtIn(want)} ${uLabel()} ${k === 'w' ? 'wide' : 'tall'}`);
     }));
-    el.querySelectorAll('[data-size2x]').forEach(b => b.onclick = () => { const f = parseFloat(b.dataset.size2x); scaleSel(f, f, `by ${f}`); });
+    el.querySelectorAll('[data-size2x]').forEach(b => b.onclick = () => { const f = parseFloat(b.dataset.size2x); scaleSel(() => [f, f], `by ${f}`); });
     el.querySelectorAll('tr.edgeRow').forEach(tr => tr.addEventListener('click', (ev) => {
       if (ev.target.tagName === 'INPUT') return;      // let the number fields work
       makeEditable(sh);
@@ -1516,13 +1552,15 @@
     if (et && textOwner) et.onclick = () => openText({ ...textOwner.textSpec, x: (textOwner.textAt || textOwner).x, y: (textOwner.textAt || textOwner).y, group: textOwner.group });
     el.querySelectorAll('[data-k]').forEach(inp => {
       inp.addEventListener('change', () => {
-        snapshot();
         const k = inp.dataset.k;
         // x, y, sizes and radii are lengths; rotation is degrees and tool ids are ids
         const LEN = new Set(['x', 'y', 'w', 'h', 'r', 'dia', 'allr', 'rx', 'ry']);
         let v = inp.type === 'checkbox' ? inp.checked
           : inp.type === 'number' ? (LEN.has(k) ? uParse(inp.value) : parseFloat(inp.value))
           : inp.value;
+        // a "mixed" field cleared again, or typed nonsense: change nothing
+        if (inp.type === 'number' && !isFinite(v)) { refreshProps(); return; }
+        snapshot();
         if (inp.tagName === 'SELECT' && k === 'toolId') v = parseInt(v, 10);
         // "job" means no override at all, so the key comes off the part
         if (k === 'tabs') v = v === 'on' ? true : v === 'off' ? false : undefined;
@@ -4061,6 +4099,43 @@
     }
     ctx.restore();
   }
+  /* Two or more parts selected: one dashed box round all of them with its
+     overall width and height, so the footprint of the group reads off the
+     drawing - how much sheet it takes - before it is moved as one. */
+  /* Each part's box is kept, and shifted rather than rebuilt while a drag only
+     moves it: rebuilding 688 outlines every frame put 100 ms on each redraw of
+     a big DXF with everything selected. Cleared on every refresh (bbCache sits
+     beside loopCache, which is cleared at the same time). */
+  function cachedBBox(sh) {
+    let c = bbCache.get(sh);
+    if (!c || c.rot !== sh.rot) { c = { x: sh.x, y: sh.y, rot: sh.rot, b: shapeBBox(sh) }; bbCache.set(sh, c); }
+    const dx = sh.x - c.x, dy = sh.y - c.y;
+    return { x0: c.b.x0 + dx, y0: c.b.y0 + dy, x1: c.b.x1 + dx, y1: c.b.y1 + dy };
+  }
+  function groupBox() {
+    if (sel.size < 2) return null;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const sh of job.shapes) {
+      if (!sel.has(sh.id)) continue;
+      let b; try { b = cachedBBox(sh); } catch (e) { continue; }
+      x0 = Math.min(x0, b.x0); y0 = Math.min(y0, b.y0); x1 = Math.max(x1, b.x1); y1 = Math.max(y1, b.y1);
+    }
+    return x1 >= x0 ? { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 } : null;
+  }
+  function inGroupBox(w) { const b = groupBox(); return !!b && w.x >= b.x0 && w.x <= b.x1 && w.y >= b.y0 && w.y <= b.y1; }
+  function drawGroupBox() {
+    const b = groupBox(); if (!b) return;
+    const dpr = devicePixelRatio, gap = 14 * dpr / view.scale;
+    const p = W2S({ x: b.x0, y: b.y1 }), q = W2S({ x: b.x1, y: b.y0 });
+    ctx.save();
+    ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 1.2 * dpr; ctx.setLineDash([6 * dpr, 4 * dpr]);
+    ctx.strokeRect(p.x, p.y, q.x - p.x, q.y - p.y); ctx.setLineDash([]);
+    ctx.font = `${12 * dpr}px ui-monospace, monospace`;
+    // top and right, so they stay clear of the per-part sizes drawn bottom and left
+    drawDimLine({ x: b.x1, y: b.y1 }, { x: b.x0, y: b.y1 }, -gap, fmtLen(b.w), '#4da3ff');
+    drawDimLine({ x: b.x1, y: b.y0 }, { x: b.x1, y: b.y1 }, -gap, fmtLen(b.h), '#4da3ff');
+    ctx.restore();
+  }
   let dimDraft = null;   // {a, b, off} while placing
   function dimClick(ws) {
     if (!dimDraft) { dimDraft = { a: ws, b: null, off: 0 }; return; }
@@ -4951,5 +5026,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, selectShapes: (ids) => { sel.clear(); ids.forEach(i => sel.add(i)); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
 })();

@@ -1586,6 +1586,64 @@ app.whenReady().then(async () => {
     }
 
     { // scoped
+    console.log('two or more selected parts get one box round them, and dragging inside it moves them all');
+    const r = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'a',kind:'rect',x:2,y:2,rot:0,w:2,h:2,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push({id:2,name:'b',kind:'rect',x:10,y:6,rot:0,w:2,h:2,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.nextId=3; CNC.refresh();
+      document.querySelector('button.tool[data-tool="select"]').click();
+      const cv = document.querySelector('#cv'), rc = cv.getBoundingClientRect();
+      const at = (wx, wy, type) => { const sp = CNC.W2S({x:wx,y:wy});
+        const ev = new MouseEvent(type, { clientX: rc.left + sp.x/devicePixelRatio,
+          clientY: rc.top + sp.y/devicePixelRatio, bubbles:true, button:0 });
+        cv.dispatchEvent(ev); if (type === 'mouseup') window.dispatchEvent(ev); };
+      const picked = () => [...document.querySelectorAll('#shapeList .item.sel .nm')].map(n=>n.textContent);
+      const out = {};
+      at(0, 0, 'mousedown'); at(14, 10, 'mousemove'); at(14, 10, 'mouseup');
+      out.sel = picked();
+      // (7, 5) is empty sheet between the two parts, but inside their box
+      at(7, 5, 'mousedown'); at(8, 6, 'mousemove'); at(8, 6, 'mouseup');
+      out.a = [CNC.job.shapes[0].x, CNC.job.shapes[0].y]; out.b = [CNC.job.shapes[1].x, CNC.job.shapes[1].y];
+      out.after = picked();
+      // outside the box it is a fresh selection box again
+      at(20, 20, 'mousedown'); at(21, 21, 'mousemove'); at(21, 21, 'mouseup');
+      out.cleared = picked();
+      return JSON.stringify(out);
+    })()`));
+    ok(JSON.stringify(r.sel) === JSON.stringify(['a', 'b']), 'both parts selected', JSON.stringify(r));
+    ok(r.a[0] - 2 === r.b[0] - 10 && r.a[1] - 2 === r.b[1] - 6 && r.a[0] !== 2, 'a drag from the gap inside the box moved both by the same amount', JSON.stringify(r));
+    ok(r.after.length === 2 && r.cleared.length === 0, 'still both selected after the move; a drag outside the box clears it', JSON.stringify(r));
+    }
+
+    { // scoped
+    console.log('several parts sized at once: same-kind fields, and Size "each part on its own"');
+    const r = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      const R = (id, x, w) => ({id,name:'p'+id,kind:'rect',x,y:1,rot:0,w,h:2,r:0,op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.shapes.push(R(1, 0, 3), R(2, 10, 4), R(3, 20, 3));
+      CNC.job.nextId=4; CNC.refresh();
+      CNC.selectShapes([1,2,3]);
+      const set = (sel, v) => { const i = document.querySelector('#props ' + sel); i.value = v; i.dispatchEvent(new Event('change')); };
+      const out = {};
+      out.mixed = document.querySelector('#props [data-k="w"]').placeholder;
+      set('[data-k="w"]', '5'); set('[data-k="r"]', '0.5');
+      out.w = CNC.job.shapes.map(s => s.w); out.r = CNC.job.shapes.map(s => s.r); out.x = CNC.job.shapes.map(s => s.x);
+      // a path has no width field of its own - Size, each part on its own
+      CNC.job.shapes.push({id:4,name:'q',kind:'path',x:30,y:1,rot:0,loop:[{type:'line',a:{x:0,y:0},b:{x:2,y:0}},{type:'line',a:{x:2,y:0},b:{x:2,y:1}},{type:'line',a:{x:2,y:1},b:{x:0,y:0}}],op:'outside',toolId:2,climb:false,open:false});
+      CNC.job.nextId=5; CNC.refresh(); CNC.selectShapes([1,4]);
+      const e = document.querySelector('#props #szEach'); e.checked = true; e.dispatchEvent(new Event('change'));
+      set('[data-size="w"]', '4');
+      out.each = [1,4].map(id => { const b = CNC.groupBBox([CNC.job.shapes.find(s => s.id === id)]); return [+b.x0.toFixed(6), +(b.x1 - b.x0).toFixed(6)]; });
+      e.checked = false; e.dispatchEvent(new Event('change'));   // leave it off for whatever runs next
+      return JSON.stringify(out);
+    })()`));
+    ok(r.mixed === 'mixed', 'widths that differ show as mixed, not as the first part value', JSON.stringify(r));
+    ok(JSON.stringify(r.w) === '[5,5,5]' && JSON.stringify(r.r) === '[0.5,0.5,0.5]' && JSON.stringify(r.x) === '[0,10,20]', 'width and corner radius set on all three, each left where it was', JSON.stringify(r));
+    ok(JSON.stringify(r.each) === '[[0,4],[30,4]]', 'each part scaled to 4 wide about its own corner', JSON.stringify(r));
+    }
+
+    { // scoped
     console.log('millimetres are a display skin over an inch drawing');
     const r = JSON.parse(await run(`(() => {
       CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;

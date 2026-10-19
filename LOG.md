@@ -5,6 +5,31 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Size several parts at once
+
+### Added
+- **Same-kind fields for a multi-selection.** Select several rectangles and
+  Width, Height and All corners R set every one of them; circles get Radius
+  and Diameter, ellipses Radius X/Y, closed polygons All corners R. Values the
+  parts disagree on show as "mixed". Each part keeps its own position.
+- **Size: Each part on its own.** With the box ticked, Width / Height / Scale
+  resize every selected part about its own corner instead of the selection as
+  one block - the way to resize a sheet of DXF paths. Off by default.
+- Fillet and Chamfer already applied to every selected rectangle and polygon.
+
+---
+
+## A box round a multi-part selection
+
+### Added
+- **Selection box.** With two or more parts selected, a dashed blue box is
+  drawn round all of them, with its overall width (top) and height (right).
+  Dragging from anywhere inside it - the gaps between parts included - moves
+  them all together. Ctrl+drag still starts a new selection box. Display only;
+  nothing posted changes.
+
+---
+
 ## Typed shortcuts run without Enter
 
 ### Changed
