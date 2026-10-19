@@ -287,6 +287,12 @@
             <p class="muted" style="font-size:11px">A part cut all the way through comes loose, lifts on the cutter and usually breaks. A tab is a short bridge left joining it to the sheet, snapped or sanded off afterwards. Tabs show on the toolpath in blue, and any part can override this in its own Cut panel. A part cut <i>on</i> the line never gets them.</p>
           </div>
           <div class="card">
+            <h3>Laser estimate</h3>
+            <div class="row"><label>Cut speed</label><input type="number" id="lzSpeed" step="1" min="1"> <span>mm/s</span></div>
+            <div class="row"><label>Travel speed</label><input type="number" id="lzTravel" step="5" min="1"> <span>mm/s</span> <span class="muted">controller idle speed</span></div>
+            <p class="muted" style="font-size:11px">For the laser time shown under Output: every outline cut once, on the line. Use the speed from your cut tests for the material on the bed (1/8" acrylic: 28 mm/s at 60 %).</p>
+          </div>
+          <div class="card">
             <h3>Nesting</h3>
             <div class="row"><label>Part gap</label><input type="number" id="nGap" step="0.125"> <span class="u-len">in</span></div>
             <div class="row"><label>Bed margin</label><input type="number" id="nMargin" step="0.125"> <span class="u-len">in</span></div>

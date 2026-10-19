@@ -18,7 +18,11 @@
        none. 4 tabs of 0.3 in leaving 0.03 in of material is the usual starting
        point for acrylic - enough to hold a part, thin enough to snap. */
     tabs: { on: false, count: 4, len: 0.3, height: 0.03 },
-    snap: { on: true, ortho: false, autoSplit: true, trimTol: 0.125, radius: 0.125, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
+    snap: { on: true, ortho: false, autoSplit: true, trimTol: 0.125, radius: 0.125, guides: true, types: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, on: true, grid: true } },
+    /* The laser estimate. mm/s because that is what RDWorks shows. 28 mm/s is
+       the best clean cut found for 1/8" acrylic at 60 %; 50 mm/s is the
+       controller's idle (travel) speed after the Y-axis grinding fix. */
+    laser: { speed: 28, travel: 50 },
   };
   let S = loadSettings();
   function loadSettings() {
@@ -28,6 +32,7 @@
         ...DEFAULT_SETTINGS, ...j,
         machine: { ...DEFAULT_SETTINGS.machine, ...(j.machine || {}) },
         tabs: { ...DEFAULT_SETTINGS.tabs, ...(j.tabs || {}) },
+        laser: { ...DEFAULT_SETTINGS.laser, ...(j.laser || {}) },
         snap: { ...DEFAULT_SETTINGS.snap, ...(j.snap || {}), types: { ...DEFAULT_SETTINGS.snap.types, ...((j.snap || {}).types || {}) } },
       };
     } catch (e) { LOG.warn('Could not read saved settings, using defaults', e); }
@@ -591,6 +596,7 @@
     drawDims();
     drawSizeLabels();
     drawGroupBox();
+    drawGuides();
     // selected side + point numbers
     drawEdgeSelection();
     // grips on a single selected shape
@@ -1111,7 +1117,12 @@
     if (drag) {
       if (drag.kind === 'pan') { view.ox = drag.ox + (s.x - drag.sx); view.oy = drag.oy - (s.y - drag.sy); }
       else if (drag.kind === 'move') {
-        if (!drag.moved) { snapshot(); drag.moved = true; }
+        if (!drag.moved) {
+          snapshot(); drag.moved = true;
+          // the boxes the guides measure against do not move during the drag, so take them once
+          const moving = new Set(drag.orig.map(o => o.id));
+          drag.box0 = selBoxOf(moving); drag.others = otherBoxes(moving);
+        }
         let dx = w.x - drag.start.x, dy = w.y - drag.start.y;
         if (S.snap.ortho || orthoTemp) { const o = SNAP.ortho({ x: 0, y: 0 }, { x: dx, y: dy }, e.altKey); dx = o.p.x; dy = o.p.y; }
         const sv = snapV(); if (sv) { dx = Math.round(dx / sv) * sv; dy = Math.round(dy / sv) * sv; }
@@ -1126,6 +1137,16 @@
           });
           if (hit) { dx += hit.p.x - held.x; dy += hit.p.y - held.y; lastSnap = hit; }
           else lastSnap = null;
+        }
+        /* Smart guides. An object snap is the more exact intent, so the guides
+           only pull when none has hold of the part, and never against ortho -
+           pulling sideways would break the lock. They are still drawn either way. */
+        drag.guides = null;
+        if (S.snap.guides !== false && drag.box0) {
+          const m = { x0: drag.box0.x0 + dx, y0: drag.box0.y0 + dy, x1: drag.box0.x1 + dx, y1: drag.box0.y1 + dy };
+          const pull = S.snap.on && !lastSnap && !(S.snap.ortho || orthoTemp) ? GUIDE_PX * devicePixelRatio / view.scale : 0;
+          drag.guides = ALIGN.guides(m, drag.others, pull);
+          dx += drag.guides.dx; dy += drag.guides.dy;
         }
         for (const o of drag.orig) { const sh = job.shapes.find(x => x.id === o.id); sh.x = o.x + dx; sh.y = o.y + dy; }
         refreshProps();
@@ -4123,6 +4144,64 @@
     return x1 >= x0 ? { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 } : null;
   }
   function inGroupBox(w) { const b = groupBox(); return !!b && w.x >= b.x0 && w.x <= b.x1 && w.y >= b.y0 && w.y <= b.y1; }
+
+  /* ---------- smart guides ----------
+     How far a drag is pulled onto a guide, in screen px. Smaller than the
+     object-snap reach on purpose: guides are everywhere in a full sheet, and a
+     wide pull would make every drag feel sticky. */
+  const GUIDE_PX = 7;
+  const GUIDE_COLOUR = '#ff4fa3';
+  function selBoxOf(ids) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const sh of job.shapes) {
+      if (!ids.has(sh.id)) continue;
+      let b; try { b = cachedBBox(sh); } catch (e) { continue; }
+      x0 = Math.min(x0, b.x0); y0 = Math.min(y0, b.y0); x1 = Math.max(x1, b.x1); y1 = Math.max(y1, b.y1);
+    }
+    return x1 >= x0 ? { x0, y0, x1, y1 } : null;
+  }
+  function otherBoxes(ids) {
+    const out = [];
+    for (const sh of job.shapes) { if (ids.has(sh.id)) continue; try { out.push(cachedBBox(sh)); } catch (e) { } }
+    return out;
+  }
+  /* While dragging: what the drag computed. With a part only selected: the
+     same check without any pull, so "are these holes really in line" can be
+     answered by clicking one, without nudging it. */
+  function currentGuides() {
+    if (S.snap.guides === false) return null;
+    if (drag && drag.kind === 'move' && drag.moved) return drag.guides;
+    if (drag && drag.kind !== 'move') return null;
+    if (tool !== 'select' || !sel.size) return null;
+    const m = selBoxOf(sel); if (!m) return null;
+    return ALIGN.guides(m, otherBoxes(sel), 0);
+  }
+  function drawGuides() {
+    const gd = currentGuides(); if (!gd || (!gd.lines.length && !gd.gaps.length)) return;
+    const dpr = devicePixelRatio, over = 10 * dpr / view.scale;
+    ctx.save();
+    ctx.strokeStyle = GUIDE_COLOUR; ctx.lineWidth = 1 * dpr;
+    for (const l of gd.lines) {
+      // edges dashed, centres dotted, so a centre line can be told from an edge on sight
+      ctx.setLineDash(l.kind === 'centre' ? [2 * dpr, 3 * dpr] : [6 * dpr, 4 * dpr]);
+      const a = W2S(l.axis === 'x' ? { x: l.at, y: l.from - over } : { x: l.from - over, y: l.at });
+      const b = W2S(l.axis === 'x' ? { x: l.at, y: l.to + over } : { x: l.to + over, y: l.at });
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.font = `${11 * dpr}px ui-monospace, monospace`;
+    for (const g of gd.gaps) {
+      // across the stretch the two parts share, so the marker sits between them and not off in space
+      if (g.axis === 'x') {
+        const y = (Math.max(g.a.y0, g.b.y0) + Math.min(g.a.y1, g.b.y1)) / 2;
+        drawDimLine({ x: g.a.x1, y }, { x: g.b.x0, y }, 0, fmtLen(g.g), GUIDE_COLOUR);
+      } else {
+        const x = (Math.max(g.a.x0, g.b.x0) + Math.min(g.a.x1, g.b.x1)) / 2;
+        drawDimLine({ x, y: g.a.y1 }, { x, y: g.b.y0 }, 0, fmtLen(g.g), GUIDE_COLOUR);
+      }
+    }
+    ctx.restore();
+  }
   function drawGroupBox() {
     const b = groupBox(); if (!b) return;
     const dpr = devicePixelRatio, gap = 14 * dpr / view.scale;
@@ -4181,6 +4260,8 @@
         .map(([k, l]) => `<label><input type="checkbox" data-t="${k}" ${T[k] ? 'checked' : ''}> ${l}</label>`).join('')}
       <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
       <label><input type="checkbox" data-s="ortho" ${S.snap.ortho ? 'checked' : ''}> Ortho lock <span class="muted">(F8)</span></label>
+      <label><input type="checkbox" data-s="guides" ${S.snap.guides !== false ? 'checked' : ''}> Smart guides</label>
+      <p class="muted" style="font-size:11px;margin:2px 0 6px">Pink lines when edges or centres line up, and gap markers when spacing is equal. Shown on a selected part too, without moving it.</p>
       <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
       <label><input type="checkbox" data-s="autoSplit" ${S.snap.autoSplit !== false ? 'checked' : ''}> Split at crossings when drawing</label>
       <p class="muted" style="font-size:11px;margin:2px 0 6px">Puts a point in wherever a new line meets existing geometry, so each piece can be picked separately.</p>
@@ -4222,6 +4303,43 @@
   // live-update the panel, but only while it is actually visible
   LOG.subscribe(() => { if ($('#pageSettings').classList.contains('active')) renderLog(); });
 
+  /* ---------- laser estimate ----------
+     The same drawing cut on the laser instead of the router: every outline
+     once, on the line - no tool offset, no depth passes, which is how this
+     shop runs acrylic. Nothing here feeds the posted program.
+     Travel follows nearest-next from the bed origin, close to what RDWorks'
+     path optimisation does. Each outline also gets a fixed allowance for the
+     head slowing into corners and the tube switching, which a plain
+     length ÷ speed misses badly on a sheet of small holes. */
+  const LASER_PER_OUTLINE_S = 0.3;
+  function laserEstimate() {
+    const L = S.laser || DEFAULT_SETTINGS.laser;
+    const outs = [];
+    for (const s of expandShapes(job.shapes)) {
+      if (s.op === 'none') continue;
+      let loop; try { loop = worldLoop(s); } catch (e) { continue; }
+      if (!loop.length) continue;
+      outs.push({ len: loop.reduce((n, sg) => n + G.segLen(sg), 0), a: loop[0].a, b: loop[loop.length - 1].b });
+    }
+    if (!outs.length) return null;
+    let cut = 0, travel = 0, at = { x: 0, y: 0 };
+    const left = outs.slice();
+    while (left.length) {
+      let bi = 0, bd = Infinity;
+      for (let i = 0; i < left.length; i++) { const d = G.dist(at, left[i].a); if (d < bd) { bd = d; bi = i; } }
+      const o = left.splice(bi, 1)[0];
+      travel += bd; cut += o.len; at = o.b;
+    }
+    const MM = 25.4;
+    const sec = (cut * MM) / L.speed + (travel * MM) / L.travel + outs.length * LASER_PER_OUTLINE_S;
+    return { cut, travel, outlines: outs.length, sec, speed: L.speed };
+  }
+  const fmtDur = (sec) => { const m = Math.floor(sec / 60), s = Math.round(sec - m * 60); return m ? `${m} min ${String(s).padStart(2, '0')} s` : `${s} s`; };
+  function laserLine() {
+    const e = laserEstimate(); if (!e) return '';
+    return `<br><b>Laser</b> · 1 pass on the line · ${toU(e.cut).toFixed(1)} ${uLabel()} at ${e.speed} mm/s<br>est. <b>${fmtDur(e.sec)}</b> (${e.outlines} outlines, ${toU(e.travel).toFixed(1)} ${uLabel()} travel)`;
+  }
+
   // ---------- job stats / gcode ----------
   function buildJob() {
     return {
@@ -4247,6 +4365,7 @@
       for (const msg of issues) if (!warnedIssues.has(msg)) { warnedIssues.add(msg); LOG.warn('Toolpath: ' + msg); }
       for (const msg of Array.from(warnedIssues)) if (!issues.includes(msg)) warnedIssues.delete(msg);
       el.innerHTML = `${job.shapes.length} parts · ${st.passes} passes · ${st.tools.map(esc).join(', ')}<br>Cut length ${toU(st.length).toFixed(1)} ${uLabel()} · est. ${st.timeMin.toFixed(1)} min<br>Material ${esc(job.material.name)} (${fmtIn(job.material.thickness)} ${uLabel()})`
+        + laserLine()
         + (st.tabs ? `<br>${st.tabs} holding tab(s) — parts stay in the sheet until snapped out` : '')
         + (bad.length ? `<br><span class="warnbox">⚠ ${bad.length} part(s) outside the bed</span>` : '')
         + (issues.length ? `<br><span class="warnbox">⚠ ${issues.map(esc).join('<br>⚠ ')}</span>` : '');
@@ -4763,6 +4882,7 @@
     $('#mHeader').value = m.header; $('#mToolChange').value = m.toolChange; $('#mFooter').value = m.footer;
     $('#tabOn').checked = !!S.tabs.on; $('#tabCount').value = S.tabs.count;
     $('#tabLen').value = fmtIn(S.tabs.len); $('#tabHeight').value = fmtIn(S.tabs.height);
+    $('#lzSpeed').value = S.laser.speed; $('#lzTravel').value = S.laser.travel;
     $('#nGap').value = fmtIn(S.nest.gap); $('#nMargin').value = fmtIn(S.nest.margin); $('#nRotate').value = S.nest.rotateMode || (S.nest.rotate ? 'quarter' : 'none');
     $('#aiKey').value = S.ai.key || ''; $('#aiModel').value = S.ai.model || '';
     renderKeys();
@@ -4836,6 +4956,9 @@
   bindSetting('#tabCount', el => S.tabs.count = Math.max(1, parseInt(el.value, 10) || 1));
   bindSetting('#tabLen', el => S.tabs.len = uParse(el.value) || 0.3);
   bindSetting('#tabHeight', el => S.tabs.height = uParse(el.value) || 0);
+  // speeds are mm/s whatever the display units, because RDWorks shows them that way
+  bindSetting('#lzSpeed', el => { const v = parseFloat(el.value); if (v > 0) S.laser.speed = v; });
+  bindSetting('#lzTravel', el => { const v = parseFloat(el.value); if (v > 0) S.laser.travel = v; });
   bindSetting('#nGap', el => S.nest.gap = uParse(el.value)); bindSetting('#nMargin', el => S.nest.margin = uParse(el.value)); bindSetting('#nRotate', el => { S.nest.rotateMode = el.value; S.nest.rotate = el.value !== 'none'; });
   bindSetting('#aiKey', el => S.ai.key = el.value.trim()); bindSetting('#aiModel', el => S.ai.model = el.value.trim());
   $('#keyMode').addEventListener('change', () => {

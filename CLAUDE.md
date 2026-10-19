@@ -32,7 +32,7 @@ this reason — holding tabs, for instance.
   305 assertions), `npm run scenarios` (ten designs, screenshots in
   `test/shots/`). Run them. `npm start` rebuilds and launches.
 - `src/*.js` are plain IIFE modules concatenated by `build.js` in a fixed order
-  (`log, geom, post, nest, snap, bool, region, font, pdf, icons, app`). A module
+  (`log, geom, post, nest, snap, align, bool, region, font, pdf, icons, app`). A module
   may only call a later one lazily, at call time — `post.js` reaches `snap.js`
   through `snapMod()` for exactly that reason.
 - `electron/app/CNCStudio.html` is generated. Never edit it; editing it is how

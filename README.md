@@ -61,6 +61,7 @@ to the TAP.
 - `src/log.js` — activity log (loaded first so it captures startup failures)
 - `src/geom.js` — geometry: lines/arcs, offsetting, ellipse/spline, DXF read/write
 - `src/snap.js` — object snaps + ortho/polar constraint
+- `src/align.js` — smart guides: edge/centre alignment lines and equal-spacing markers (`test/align_test.js`)
 - `src/bool.js` — boolean union/subtract/intersect, with arc refitting
 - `src/font.js` — single-line stroke font + TrueType parser
 - `src/post.js` — toolpaths + WinCNC TAP post-processor
