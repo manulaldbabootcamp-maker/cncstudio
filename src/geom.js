@@ -403,6 +403,46 @@ const GEOM = (() => {
     return out;
   }
 
+  /* A DXF SPLINE is a NURBS curve: degree, knot vector, control points and
+     optional weights. Joining the control points with straight lines - what the
+     importer used to do - cuts the frame the curve is pulled towards, not the
+     curve. Evaluated here with de Boor, then split until each chord sits within
+     `tol` of the true curve, so a gentle bend is a few lines and a tight one more. */
+  function nurbsPoint(deg, U, C, W, u) {
+    const n = C.length - 1;
+    let k = deg;
+    while (k < n && u >= U[k + 1]) k++;
+    const d = [];
+    for (let j = 0; j <= deg; j++) { const c = C[k - deg + j], w = W[k - deg + j]; d.push({ x: c.x * w, y: c.y * w, w }); }
+    for (let r = 1; r <= deg; r++) {
+      for (let j = deg; j >= r; j--) {
+        const i = k - deg + j, den = U[i + deg - r + 1] - U[i];
+        const a = den > 0 ? (u - U[i]) / den : 0;
+        d[j] = { x: (1 - a) * d[j - 1].x + a * d[j].x, y: (1 - a) * d[j - 1].y + a * d[j].y, w: (1 - a) * d[j - 1].w + a * d[j].w };
+      }
+    }
+    return P(d[deg].x / d[deg].w, d[deg].y / d[deg].w);
+  }
+  function nurbsPolyline(deg, U, C, W, tol) {
+    W = W && W.length === C.length ? W : C.map(() => 1);
+    const lo = U[deg], hi = U[C.length];
+    const out = [nurbsPoint(deg, U, C, W, lo)];
+    // each knot span on its own, so a corner at a repeated knot is hit exactly
+    const brk = [...new Set(U.filter(u => u >= lo && u <= hi))].sort((p, q) => p - q);
+    const split = (u0, p0, u1, p1, depth) => {
+      const um = (u0 + u1) / 2, pm = nurbsPoint(deg, U, C, W, um);
+      const q1 = nurbsPoint(deg, U, C, W, u0 + (u1 - u0) / 4), q3 = nurbsPoint(deg, U, C, W, u0 + 3 * (u1 - u0) / 4);
+      const off = (q) => { const L = dist(p0, p1); return L < 1e-12 ? dist(q, p0) : Math.abs((p1.x - p0.x) * (p0.y - q.y) - (p0.x - q.x) * (p1.y - p0.y)) / L; };
+      if (depth < 14 && (depth < 2 || Math.max(off(pm), off(q1), off(q3)) > tol)) { split(u0, p0, um, pm, depth + 1); split(um, pm, u1, p1, depth + 1); }
+      else out.push(p1);
+    };
+    for (let s = 0; s + 1 < brk.length; s++) {
+      const u0 = brk[s], u1 = brk[s + 1];
+      split(u0, out[out.length - 1], u1, nurbsPoint(deg, U, C, W, u1), 0);
+    }
+    return out;
+  }
+
   // ---- DXF import/export
   function parseDXF(text) {
     const lines = text.split(/\r?\n/); const pairs = [];
@@ -420,6 +460,18 @@ const GEOM = (() => {
         ents.push(ent); continue;
       }
       i++;
+    }
+    /* The older POLYLINE is not one entity but a run: POLYLINE, a VERTEX per
+       point, then SEQEND. Gather each run back into its POLYLINE, so the loop
+       below sees one outline - files from older CAD (and many converters)
+       draw every outline this way, and none of them used to come in at all. */
+    for (let k = 0; k < ents.length; k++) {
+      if (ents[k].type !== 'POLYLINE') continue;
+      const pl = ents[k]; pl.verts = [];
+      let j = k + 1;
+      while (j < ents.length && ents[j].type === 'VERTEX') pl.verts.push(ents[j++]);
+      if (j < ents.length && ents[j].type === 'SEQEND') j++;
+      ents.splice(k + 1, j - k - 1);
     }
     const scale = insUnits === 4 ? 1 / 25.4 : insUnits === 5 ? 1 / 2.54 : 1; // mm/cm -> inch
     const get = (e, code, def) => { const f = e.data.find(d => d[0] === code); return f ? parseFloat(f[1]) : def; };
@@ -440,11 +492,31 @@ const GEOM = (() => {
       if (Math.abs(nx) > 1e-6 || Math.abs(ny) > 1e-6 || Math.abs(Math.abs(nz) - 1) > 1e-6) return 0;
       return nz < 0 ? -1 : 1;
     };
-    const HANDLED = new Set(['LWPOLYLINE', 'CIRCLE', 'ARC', 'LINE', 'SPLINE']);
+    // vertices {x, y, b} (b = bulge on the side leaving the vertex) -> one outline
+    const polySegs = (verts, closed) => {
+      const segs = [];
+      const nseg = closed ? verts.length : verts.length - 1;
+      for (let k = 0; k < nseg; k++) {
+        const a = verts[k], b = verts[(k + 1) % verts.length];
+        if (same(a, b)) continue;
+        if (Math.abs(a.b) < 1e-9) segs.push(line(P(a.x, a.y), P(b.x, b.y)));
+        else segs.push(bulgeArc(P(a.x, a.y), P(b.x, b.y), a.b));
+      }
+      if (!segs.length) return;
+      if (closed) loops.push(segs); else opens.push(segs);
+    };
+    const HANDLED = new Set(['LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'LINE', 'SPLINE', 'ELLIPSE']);
     const QUIET = new Set(['POINT', 'VIEWPORT']);   // nothing to cut, nothing lost
+    /* Writing, dimensions and fills are the drawing's notes, not its outline.
+       Counted apart from real losses: listing 18 TEXT beside the missing
+       outlines told the operator to go back to whoever sent the file, for
+       something that was never going to be cut. */
+    const NOTES = new Set(['TEXT', 'MTEXT', 'DIMENSION', 'LEADER', 'MLEADER', 'MULTILEADER', 'ATTDEF', 'ATTRIB', 'HATCH', 'SOLID', 'TOLERANCE']);
+    report.notes = {};
     for (const e of ents) {
       if (!HANDLED.has(e.type)) {
-        if (!QUIET.has(e.type)) report.skipped[e.type] = (report.skipped[e.type] || 0) + 1;
+        if (NOTES.has(e.type)) report.notes[e.type] = (report.notes[e.type] || 0) + 1;
+        else if (!QUIET.has(e.type)) report.skipped[e.type] = (report.skipped[e.type] || 0) + 1;
         continue;
       }
       if (e.type === 'LWPOLYLINE') {
@@ -458,16 +530,26 @@ const GEOM = (() => {
           else if (c === 20 && cur) cur.y = parseFloat(v) * scale;
           else if (c === 42 && cur) cur.b = nz * parseFloat(v);   // mirroring x turns each bulge the other way
         }
-        const segs = [];
-        const nseg = closed ? verts.length : verts.length - 1;
-        for (let k = 0; k < nseg; k++) {
-          const a = verts[k], b = verts[(k + 1) % verts.length];
-          if (same(a, b)) continue;
-          if (Math.abs(a.b) < 1e-9) segs.push(line(P(a.x, a.y), P(b.x, b.y)));
-          else segs.push(bulgeArc(P(a.x, a.y), P(b.x, b.y), a.b));
+        polySegs(verts, closed);
+      } else if (e.type === 'POLYLINE') {
+        const fl = get(e, 70, 0), closed = (fl & 1) === 1;
+        // a 3D mesh or polyface is a surface, not an outline
+        if (fl & (16 | 64)) { report.skipped['3D mesh'] = (report.skipped['3D mesh'] || 0) + 1; continue; }
+        // a 3D polyline is in world coordinates, like LINE; a 2D one sits in its own plane
+        const is3d = (fl & 8) === 8, nz = is3d ? 1 : normalZ(e);
+        if (!nz) { report.tilted++; continue; }
+        if (nz < 0) report.flipped++;
+        if (!is3d) seeZ(get(e, 30, 0) * nz * scale);
+        const verts = [];
+        for (const vx of e.verts || []) {
+          // spline frame control points are the frame, not the curve (the fitted vertices follow)
+          if (get(vx, 70, 0) & 16) continue;
+          const z = get(vx, 30, 0) * scale;
+          if (is3d) seeZ(z);
+          verts.push({ x: nz * get(vx, 10, 0) * scale, y: get(vx, 20, 0) * scale, b: is3d ? 0 : nz * get(vx, 42, 0), z });
         }
-        if (!segs.length) continue;
-        if (closed) loops.push(segs); else opens.push(segs);
+        if (is3d && verts.some(p => Math.abs(p.z - verts[0].z) > 1e-6)) report.slanted++;
+        polySegs(verts, closed);
       } else if (e.type === 'CIRCLE') {
         const nz = normalZ(e);
         if (!nz) { report.tilted++; continue; }
@@ -492,11 +574,44 @@ const GEOM = (() => {
         if (Math.abs(za - zb) > 1e-6) report.slanted++;
         seeZ(za); seeZ(zb);
         opens.push([line(a, b)]);
+      } else if (e.type === 'ELLIPSE') {
+        // centre and major axis are in world coordinates; the normal only says which way the minor axis points
+        const nz = normalZ(e);
+        if (!nz) { report.tilted++; continue; }
+        seeZ(get(e, 30, 0) * scale);
+        const c = P(get(e, 10, 0) * scale, get(e, 20, 0) * scale), mx = get(e, 11, 1) * scale, my = get(e, 21, 0) * scale;
+        const ratio = get(e, 40, 1), R = Math.hypot(mx, my);
+        if (!(R > 1e-9) || !(ratio > 0)) continue;
+        const nx = -my * ratio * nz, ny = mx * ratio * nz;
+        let t0 = get(e, 41, 0), t1 = get(e, 42, Math.PI * 2);
+        while (t1 <= t0 + 1e-12) t1 += Math.PI * 2;
+        const whole = Math.abs(t1 - t0 - Math.PI * 2) < 1e-6;
+        // steps small enough that no chord strays more than 0.0005 in from the curve
+        const n = Math.max(8, Math.ceil((t1 - t0) / (2 * Math.acos(Math.max(-1, 1 - 0.0005 / R)))));
+        const pts = [];
+        for (let k = 0; k <= n; k++) { const t = t0 + (t1 - t0) * k / n; pts.push(P(c.x + mx * Math.cos(t) + nx * Math.sin(t), c.y + my * Math.cos(t) + ny * Math.sin(t))); }
+        const segs = []; for (let k = 0; k < n; k++) segs.push(line(pts[k], whole && k === n - 1 ? pts[0] : pts[k + 1]));
+        if (whole) loops.push(segs); else opens.push(segs);
       } else if (e.type === 'SPLINE') {
-        // approximate via fit points / control points
-        const pts = []; let cur = null;
-        for (const [c, v] of e.data) { if (c === 10) { cur = P(parseFloat(v) * scale, 0); pts.push(cur); } else if (c === 20 && cur) cur.y = parseFloat(v) * scale; else if (c === 30) seeZ(parseFloat(v) * scale); }
-        const segs = []; for (let k = 0; k + 1 < pts.length; k++) segs.push(line(pts[k], pts[k + 1]));
+        // SPLINE is in world coordinates. Control points (10) and knots (40) give
+        // the true curve; a spline saved with fit points (11) only passes through those.
+        const ctrl = [], fit = [], U = [], W = []; let cur = null, fcur = null;
+        for (const [c, v] of e.data) {
+          const n = parseFloat(v);
+          if (c === 10) { cur = P(n * scale, 0); ctrl.push(cur); }
+          else if (c === 20 && cur) cur.y = n * scale;
+          else if (c === 30) seeZ(n * scale);
+          else if (c === 11) { fcur = P(n * scale, 0); fit.push(fcur); }
+          else if (c === 21 && fcur) fcur.y = n * scale;
+          else if (c === 40) U.push(n);
+          else if (c === 41) W.push(n);
+        }
+        const deg = get(e, 71, 3);
+        let pts = [];
+        if (ctrl.length > deg && U.length === ctrl.length + deg + 1) pts = nurbsPolyline(deg, U, ctrl, W, 0.0005);
+        else if (fit.length > 1) pts = splineLoop(fit, false, 12).map(s => s.a).concat([fit[fit.length - 1]]);
+        else pts = ctrl;
+        const segs = []; for (let k = 0; k + 1 < pts.length; k++) if (!same(pts[k], pts[k + 1])) segs.push(line(pts[k], pts[k + 1]));
         if (segs.length) opens.push(segs);
       }
     }

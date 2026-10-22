@@ -108,12 +108,12 @@ using font: arial.ttf
 == 09-segmentation ==
    Auto-split at crossings, delete a side, merge, box-select
    parts 5, segments 18, arcs 0
-   TAP 103 lines, 10 passes, cut 239.4 in, G2 0 / G3 8
-     square         poly segs   6 area       100 10x10 outside
-     cut            poly segs   3 area         0 14x0 on
-     C              poly segs   5 area        50 10x10 on
-     h              poly segs   2 area         0 10x0 on
-     v              poly segs   2 area         0 0x10 on
+   TAP 103 lines, 10 passes, cut 231.1 in, G2 0 / G3 8
+     square         path segs   6 area       100 10x10 outside
+     cut            path segs   3 area         0 14x0 on
+     C              path segs   5 area        10 10x10 on
+     h              path segs   2 area         0 10x0 on
+     v              path segs   2 area         0 0x10 on
    ok
 
 == 10-full-job ==

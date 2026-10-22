@@ -382,6 +382,6 @@ const BOOL = (() => {
     return orient(fitted);
   }
 
-  return { operate, flatten, refit, area, inside, clipPolys: clipRobust };
+  return { operate, flatten, refit, refitLoop, area, inside, clipPolys: clipRobust };
 })();
 if (typeof module !== 'undefined') module.exports = BOOL;

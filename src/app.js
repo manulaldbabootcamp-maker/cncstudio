@@ -83,6 +83,7 @@
     ungroup: { label: 'Ungroup', run: () => ungroupSel() },
     nest: { label: 'Auto-arrange on the bed', run: () => clickBtn('#btnNest') },
     trace: { label: 'Trace a paper template', run: () => openOffsetTrace() },
+    picture: { label: 'Picture - size, fade, trace or remove it', run: () => openPicture() },
     zoom: { label: 'Zoom to the bed', run: () => { fitBed(); draw(); } },
     undo: { label: 'Undo', run: () => undo() },
     redo: { label: 'Redo', run: () => redo() },
@@ -104,7 +105,7 @@
     M: 'move', CO: 'copy', CP: 'copy', RO: 'rotate', SC: 'scale', MI: 'mirror',
     O: 'offset', AR: 'array', GR: 'grid', GRID: 'grid', F: 'fillet', CHA: 'chamfer',
     UNI: 'union', SU: 'subtract', G: 'group', UNG: 'ungroup',
-    NE: 'nest', TRACE: 'trace', Z: 'zoom', U: 'undo', RE: 'redo',
+    NE: 'nest', TRACE: 'trace', PIC: 'picture', IMG: 'picture', Z: 'zoom', U: 'undo', RE: 'redo',
     SA: 'save', OP: 'open', TAP: 'tap', DXF: 'dxf', PDF: 'pdf',
     OR: 'ortho', OS: 'osnap', S: 'select', SEL: 'select',
     X: 'setx', Y: 'sety',
@@ -503,6 +504,7 @@
     for (let i = 0; i * major <= m.bedH + 1e-9; i++) { const y = i * major; const p = W2S({ x: 0, y }); ctx.fillText(tick(y), bl.x - 30 * dpr, p.y - 2); }
     // origin marker
     ctx.fillStyle = '#ff5c5c'; ctx.beginPath(); ctx.arc(bl.x, bl.y, 4 * dpr, 0, Math.PI * 2); ctx.fill();
+    drawPicture();
     // shapes
     const showPaths = $('#chkPaths').checked, showKerf = $('#chkKerf').checked;
     // world loops once per frame; the hole pairing needs them all up front
@@ -4446,7 +4448,9 @@
     job.name = name.trim() || jobName();
     const file = job.name.replace(/\.cncjob$/i, '') + '.cncjob';
     try {
-      download(file, JSON.stringify({ version: 1, job, settingsSnapshot: { material: job.material, machine: S.machine, tools: S.tools } }, null, 1), 'application/json');
+      // the picture travels inside the project, or it opens on another machine as a blank
+      const pictures = picOf(job.pic) ? { [job.pic.id]: picOf(job.pic).url } : undefined;
+      download(file, JSON.stringify({ version: 1, job, settingsSnapshot: { material: job.material, machine: S.machine, tools: S.tools }, pictures }, null, 1), 'application/json');
       LOG.action(`Saved project ${file} — ${job.shapes.length} part(s)`);
       toast('Project saved: ' + file);
     } catch (err) { LOG.error('Project save failed', err); toast('Could not save: ' + err.message); }
@@ -4456,7 +4460,8 @@
   $('#btnImport').onclick = () => { importHere = true; $('#fileIn').click(); };
   $('#fileIn').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return; e.target.value = '';
-    const text = await f.text(); const ext = f.name.split('.').pop().toLowerCase();
+    const ext = f.name.split('.').pop().toLowerCase(), isPic = /^(png|jpe?g)$/.test(ext);
+    const text = isPic ? '' : await f.text();
     /* A project or DXF opens in a tab of its own, so several can be worked on
        side by side - unless this tab is still empty, or Import asked to add
        the parts to the design showing. */
@@ -4464,9 +4469,11 @@
     importHere = false;
     const base = f.name.replace(/\.[^.]+$/, '');
     if (!here && ext !== 'tap' && ext !== 'nc') newDoc(base);
-    else if (!job.name && ext === 'dxf' && !job.shapes.length) job.name = base;
-    if (ext === 'cncjob' || ext === 'json') { try { const j = JSON.parse(text); snapshot(); job = j.job || j; sel.clear(); syncMaterialUI(); refresh(); toast('Project loaded'); } catch (err) { toast('Bad project file'); } }
+    else if (!job.name && (ext === 'dxf' || ext === 'svg' || isPic) && !job.shapes.length) job.name = base;
+    if (ext === 'cncjob' || ext === 'json') { try { const j = JSON.parse(text); await restorePictures(j.pictures); snapshot(); job = j.job || j; sel.clear(); syncMaterialUI(); refresh(); toast('Project loaded'); } catch (err) { toast('Bad project file'); } }
     else if (ext === 'dxf') importDXF(text, f.name);
+    else if (ext === 'svg') importSVG(text, f.name);
+    else if (isPic) importPicture(await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); }), f.name);
     else importTAP(text, f.name);
   });
   /* Plain words for what parseDXF found that a flat cut cannot use. Empty when
@@ -4484,12 +4491,15 @@
     }
     if (threeD && rep.duplicates) out.push(`${rep.duplicates} duplicate edge${rep.duplicates > 1 ? 's' : ''} removed - stacked copies that would each have been cut again.`);
     const sk = Object.entries(rep.skipped);
-    if (sk.length) out.push('Not read, so missing from the drawing:\n• ' + sk.map(([t, n]) => `${n} ${t}`).join('\n• '));
+    const what = { INSERT: 'block reference (title border, symbol or part drawn as a block)', '3D mesh': '3D surface' };
+    if (sk.length) out.push('Not read, so missing from the drawing:\n• ' + sk.map(([t, n]) => `${n} ${what[t] ? what[t] + (n > 1 ? 's' : '') : t}`).join('\n• '));
     if (out.length) out.push(threeD
       ? 'A laser cuts one flat face. Export a flat 2D view of that face from your CAD program, with curves as arcs.'
-      : 'Export again from your CAD program with curves as arcs or polylines.');
+      : 'Import anyway brings in everything else. Check nothing you need to cut is missing.');
     return out.join('\n\n');
   }
+  // text, dimensions and fills - never cut, so said in passing rather than asked about
+  const dxfNotes = (rep) => Object.entries(rep.notes || {}).map(([t, n]) => `${n} ${t}`).join(', ');
   function importDXF(text, name) {
     let res; try { res = G.parseDXF(text); } catch (err) { console.error(err); return toast('Could not read DXF'); }
     const rep = res.report;
@@ -4497,6 +4507,7 @@
     if (rep.duplicates) LOG.info(`DXF ${name}: ${rep.duplicates} duplicate edge(s) removed - each would have been cut twice`);
     const problems = dxfProblems(rep);
     if (problems) LOG.warn(`DXF ${name}: ${problems.replace(/\n+/g, ' ')}`);
+    if (dxfNotes(rep)) LOG.info(`DXF ${name}: notes left out (not cut): ${dxfNotes(rep)}`);
     if (!res.loops.length && !res.opens.length) {
       if (problems) askConfirm('Nothing could be imported', problems, 'OK');
       return toast('No usable geometry in DXF');
@@ -4519,11 +4530,298 @@
     });
     res.opens.forEach((l, i) => { const bb = G.bbox(l); const sh = makeShape('path', { name: `line ${i + 1}`, x: bb.x0 + shift.x, y: bb.y0 + shift.y, loop: G.translateLoop(l, -bb.x0, -bb.y0), open: true, op: 'on' }); added.push(sh); });
     job.shapes.push(...added); sel = new Set(added.map(a => a.id)); refresh();
-    toast(`Imported ${added.length} objects from DXF` + (res.report && res.report.duplicates ? ` - ${res.report.duplicates} duplicate edge${res.report.duplicates > 1 ? "s" : ""} removed` : ""));
+    toast(`Imported ${added.length} objects from DXF` + (res.report && res.report.duplicates ? ` - ${res.report.duplicates} duplicate edge${res.report.duplicates > 1 ? "s" : ""} removed` : "")
+      + (res.report && dxfNotes(res.report) ? ' - text and dimensions left out' : ''));
   }
   function importTAP(text, name) {
     // show existing TAP in simulator
     showPage('sim'); simLoadText(text, name);
+  }
+
+  /* ---------- pictures (PNG / JPG) ----------
+     A picture is either something to draw over by hand, sized to real inches
+     and never cut, or a source of outlines (trace.js). The design keeps only
+     where it sits - job.pic {id, name, x, y, w, h, fade, hide} - and the pixels
+     live here, keyed by id: undo copies the whole job sixty times over, and a
+     few megabytes of picture in each copy is what that would cost. */
+  const picData = new Map();   // id -> { url, img }
+  function loadPicImage(url) {
+    return new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = () => rej(new Error('not a picture this app can read')); img.src = url; });
+  }
+  async function importPicture(url, name) {
+    let img; try { img = await loadPicImage(url); } catch (err) { LOG.error('Picture import failed', err); return toast('Could not read ' + name); }
+    const id = 'p' + Date.now().toString(36);
+    picData.set(id, { url, img });
+    // 96 per inch is what a screen picture assumes; the dialog asks for the real size anyway
+    const w = Math.min(img.naturalWidth / 96, 48), h = w * img.naturalHeight / img.naturalWidth;
+    LOG.action(`Picture ${name} opened - ${img.naturalWidth} × ${img.naturalHeight} px`);
+    openPicture({ id, name, x: S.nest.margin, y: S.nest.margin, w, h, fade: 0.5, hide: false }, true);
+  }
+  const picOf = (pic) => pic && picData.get(pic.id);
+  async function restorePictures(pics) {
+    for (const [id, url] of Object.entries(pics || {})) {
+      try { picData.set(id, { url, img: await loadPicImage(url) }); } catch (err) { LOG.warn('A picture saved in the project could not be read', err); }
+    }
+  }
+  function drawPicture() {
+    const pic = job.pic, d = picOf(pic); if (!pic || pic.hide || !d) return;
+    const tl = W2S({ x: pic.x, y: pic.y + pic.h });
+    ctx.save(); ctx.globalAlpha = pic.fade;
+    ctx.drawImage(d.img, tl.x, tl.y, pic.w * view.scale, pic.h * view.scale);
+    ctx.restore();
+  }
+  // the picture's pixels, no bigger than `max` on the long side - a phone photo
+  // traced at full size takes seconds and gives nothing a router can follow
+  function picPixels(img, max) {
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * k)), h = Math.max(1, Math.round(img.naturalHeight * k));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); g.drawImage(img, 0, 0, w, h);
+    return { data: g.getImageData(0, 0, w, h).data, w, h };
+  }
+  /* An SVG is outlines already: read, put on the bed, arcs fitted back where
+     the curves were round. Its own page size decides the parts' size. */
+  function importSVG(text, name) {
+    let res; try { res = SVG.parse(text); } catch (err) { LOG.error('SVG import failed', err); return toast('Could not read SVG'); }
+    const notes = Object.entries(res.notes).map(([t, n]) => `${n} ${t}`).join(', ');
+    if (notes) LOG.info(`SVG ${name}: left out (not outlines): ${notes}`);
+    const all = res.loops.concat(res.opens);
+    if (!all.length) return toast('No outlines in this SVG' + (res.notes.text ? ' - its text needs converting to outlines/paths first' : ''));
+    // a drawing off the bed's lower-left comes in at the margin, as a DXF does
+    let x0 = Infinity, y0 = Infinity; for (const r of all) for (const p of r.pts) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); }
+    const dx = x0 < 0 ? S.nest.margin - x0 : 0, dy = y0 < 0 ? S.nest.margin - y0 : 0;
+    const mv = (pts) => pts.map(p => ({ x: p.x + dx, y: p.y + dy }));
+    const items = res.loops.map(r => ({ loop: r.circle ? G.circleLoop(r.circle.x + dx, r.circle.y + dy, r.circle.r) : fitClosed(mv(r.pts), 0.001, r.curved) }))
+      .concat(res.opens.map(r => ({ loop: fitOpen(mv(r.pts), 0.001, r.curved), open: true })))
+      .filter(it => it.loop.length);
+    const { added, dropped } = addOutlines(items, name.replace(/.svg$/i, ''));
+    const g = groupBBox(added);
+    LOG.action(`Imported SVG ${name}: ${added.length} part(s), ${fmtIn(g.x1 - g.x0)} × ${fmtIn(g.y1 - g.y0)} ${uLabel()}` + (dropped ? `, ${dropped} duplicate(s) dropped` : ''));
+    toast(`Imported ${added.length} objects from SVG - ${fmtIn(g.x1 - g.x0)} × ${fmtIn(g.y1 - g.y0)} ${uLabel()}`
+      + (dropped ? ` - ${dropped} duplicate${dropped > 1 ? 's' : ''} dropped` : '') + (res.notes.text ? ' - text left out' : ''));
+    refresh();
+    return added.length;
+  }
+
+  /* ---------- traced or imported outlines -> parts ----------
+     Shared by picture tracing and SVG import: both hand over point runs in
+     inches, closed or open, and both want arcs where the run is round. */
+
+  /* Arcs for a closed run of points that lie ON a curve. Not refitLoop's own
+     area check: that one guards boolean results, whose points are exact. Here
+     the chords cut inside the curve, so the right arc adds about a sagitta all
+     the way round - up to the fit tolerance times the perimeter is the arc
+     being right, not wrong. Arc fitting grows with the cube of the points, and
+     a run that long is mostly fine detail anyway, so long runs stay lines. */
+  function fitClosed(pts, tol, arcs) {
+    let loop = BOOL.refitLoop(pts, { noRefit: true });
+    if (!arcs || pts.length > 800 || pts.length < 6) return loop;
+    try {
+      const fit = BOOL.refit(pts, tol), want = Math.abs(BOOL.area(pts)), got = Math.abs(G.signedArea(fit));
+      const per = loop.reduce((s, e) => s + G.dist(e.a, e.b), 0);
+      if (isFinite(got) && Math.abs(got - want) <= per * tol) loop = G.signedArea(fit) < 0 ? G.reverseLoop(fit) : fit;
+    } catch (e) { LOG.warn('Arc fitting failed on an outline, keeping lines', e); }
+    return loop;
+  }
+  // the same for an open run: refit treats it as a ring, so keep only the run up to its last point
+  function fitOpen(pts, tol, arcs) {
+    const lines = []; for (let i = 1; i < pts.length; i++) if (G.dist(pts[i - 1], pts[i]) > 1e-9) lines.push(G.line(G.P(pts[i - 1].x, pts[i - 1].y), G.P(pts[i].x, pts[i].y)));
+    if (!arcs || pts.length > 800 || pts.length < 6) return lines;
+    try {
+      const last = pts[pts.length - 1], fit = BOOL.refit(pts, tol), out = [];
+      for (const sg of fit) { out.push(sg); if (G.same(sg.b, last, 1e-6)) break; }
+      if (out.length && G.same(out[out.length - 1].b, last, 1e-6) && G.same(out[0].a, pts[0], 1e-6)) return out;
+    } catch (e) { LOG.warn('Arc fitting failed on a line, keeping segments', e); }
+    return lines;
+  }
+  /* The same outline twice - an SVG with a fill and a stroke drawn over it,
+     a logo pasted twice - would be cut twice. Same size, place and area within
+     a hair is the same outline. */
+  function dropDuplicates(items) {
+    const out = [], tol = 0.003;
+    for (const it of items) {
+      const bb = G.bbox(it.loop), a = Math.abs(G.signedArea(it.loop)), L = it.loop.reduce((s, e) => s + G.segLen(e), 0);
+      const dup = out.some(o => o.open === it.open && Math.abs(o.bb.x0 - bb.x0) < tol && Math.abs(o.bb.y0 - bb.y0) < tol && Math.abs(o.bb.x1 - bb.x1) < tol && Math.abs(o.bb.y1 - bb.y1) < tol
+        && Math.abs(o.a - a) <= Math.max(1e-4, a * 0.01) && Math.abs(o.L - L) <= Math.max(tol, L * 0.01));
+      if (!dup) out.push(Object.assign({ bb, a, L }, it));
+    }
+    return { items: out, dropped: items.length - out.length };
+  }
+  /* Parts from loops in inches. Closed ones cut outside or, nested inside
+     another, inside - an island in a hole is outside again. `on` forces cutting
+     down the line (centre lines). Selected afterwards so they can be moved as one. */
+  function addOutlines(items, base) {
+    const { items: kept, dropped } = dropDuplicates(items);
+    const closed = kept.filter(it => !it.open && !it.on);
+    for (const it of closed) {
+      if (it.depth != null) continue;
+      const p = it.loop[0].a; let depth = 0;
+      for (const o of closed) if (o !== it && o.a > it.a && p.x >= o.bb.x0 && p.x <= o.bb.x1 && p.y >= o.bb.y0 && p.y <= o.bb.y1 && G.pointInLoop(p, o.loop)) depth++;
+      it.depth = depth;
+    }
+    snapshot();
+    const added = kept.map((it, i) => {
+      const bb = it.bb;
+      return makeShape('path', { name: `${base} ${i + 1}`, x: bb.x0, y: bb.y0, loop: G.translateLoop(it.loop, -bb.x0, -bb.y0), open: !!it.open,
+        op: it.open || it.on ? 'on' : (it.depth % 2 ? 'inside' : 'outside') });
+    });
+    job.shapes.push(...added); sel = new Set(added.map(a => a.id));
+    return { added, dropped };
+  }
+
+  /* Outlines from the picture as it sits on the bed. Rings and lines come back
+     in pixels, y down; each is placed by the picture's corner and size. */
+  function tracePicture(pic, o) {
+    const d = picOf(pic); if (!d) return 0;
+    const px = picPixels(d.img, 2000);
+    const ppi = px.w / pic.w;   // pixels per inch at the size the picture was given
+    const res = RASTER.trace(px.data, px.w, px.h, {
+      level: o.level, invert: o.invert, smooth: o.smooth, adaptive: o.adaptive, centre: o.centre,
+      minArea: o.speck > 0 ? Math.pow(o.speck * ppi, 2) : 4, gap: o.gap > 0 ? o.gap * ppi : 0,
+    });
+    /* Edge points are found between pixels and sit within a fraction of one;
+       a thinned line's points wobble by half a pixel either way, so its arcs
+       are allowed that much, which is still inside what the picture shows. */
+    const sx = pic.w / px.w, sy = pic.h / px.h, tol = Math.max(0.002, sx * (o.centre ? 0.9 : 0.4));
+    const W = (p) => ({ x: pic.x + (p.x + 0.5) * sx, y: pic.y + pic.h - (p.y + 0.5) * sy });
+    const items = o.centre
+      ? res.paths.map(p => p.closed ? { loop: fitClosed(p.pts.map(W), tol, o.arcs), on: true } : { loop: fitOpen(p.pts.map(W), tol, o.arcs), open: true })
+      : res.rings.map(r => ({ loop: fitClosed(r.pts.map(W), tol, o.arcs), depth: r.depth }));
+    const good = items.filter(it => it.loop.length);
+    if (!good.length) { toast('Nothing to trace - try the threshold, "light shapes" or the other trace mode'); return 0; }
+    const { added, dropped } = addOutlines(good, pic.name.replace(/\.[^.]+$/, ''));
+    const arcs = added.reduce((n, s) => n + s.loop.filter(e => e.type === 'arc').length, 0);
+    const holes = added.filter(s => s.op === 'inside').length;
+    LOG.action(`Traced ${pic.name} (${o.centre ? 'centre lines' : 'outlines'}): ${added.length} part(s)`
+      + (holes ? `, ${holes} holes` : '') + (arcs ? `, ${arcs} arcs` : '') + (dropped ? `, ${dropped} duplicates dropped` : ''));
+    toast(`Traced ${added.length} ${o.centre ? 'line' : 'outline'}${added.length > 1 ? 's' : ''} from the picture` + (dropped ? ` - ${dropped} duplicate${dropped > 1 ? 's' : ''} dropped` : ''));
+    refresh();
+    return added.length;
+  }
+
+  /* Picture size from two points the operator knows the distance between -
+     the length of a table edge in a photo, a dimension on a scanned drawing.
+     Scaled about the first point, so that point stays where it was clicked. */
+  function scalePictureByPoints(after) {
+    const pic = job.pic; if (!pic) return;
+    const pts = [];
+    toast('Click the first of two points a known distance apart (Esc cancels)');
+    const stop = () => { cv.removeEventListener('mousedown', grab, true); window.removeEventListener('keydown', esc, true); };
+    const esc = (e) => { if (e.key === 'Escape') { stop(); toast('Cancelled'); after && after(); } };
+    const grab = async (e) => {
+      if (e.button !== 0) return;
+      e.stopPropagation(); e.preventDefault();
+      pts.push(evPos(e).w);
+      if (pts.length < 2) return toast('Now click the second point');
+      stop();
+      const now = G.dist(pts[0], pts[1]);
+      if (now < 1e-6) { toast('The two points are the same'); return after && after(); }
+      const t = await askText('Real distance', `Real distance between the two points (${uLabel()})`, fmtIn(now));
+      const want = t == null ? NaN : uParse(t);
+      if (!(want > 0)) { after && after(); return; }
+      const k = want / now, a = pts[0];
+      snapshot();
+      Object.assign(pic, { x: a.x + (pic.x - a.x) * k, y: a.y + (pic.y - a.y) * k, w: pic.w * k, h: pic.h * k });
+      LOG.action(`Picture scaled by two points: ${fmtIn(now)} -> ${fmtIn(want)} ${uLabel()} (x${k.toFixed(4)})`);
+      refresh(); after && after();
+    };
+    cv.addEventListener('mousedown', grab, true);
+    window.addEventListener('keydown', esc, true);
+  }
+
+  function openPicture(pic, fresh) {
+    if (!pic) pic = job.pic;
+    const d = picOf(pic);
+    if (!pic || !d) return toast('No picture in this design - Open or Import a PNG or JPG');
+    const p = Object.assign({}, pic), ar = d.img.naturalHeight / d.img.naturalWidth;
+    const prev = picPixels(d.img, 360);
+    const L = (v) => `${fmtIn(v)}`;
+    const t = Object.assign({ centre: false, smooth: false, adaptive: false, invert: false, arcs: true, speck: 0.03, gap: 0 }, S.picTrace || {});
+    modal(`<h3>Picture: ${esc(pic.name)}</h3>
+      <canvas id="pcPrev" width="${prev.w}" height="${prev.h}" style="display:block;max-width:100%;max-height:220px;margin:0 auto 4px;background:#fff;border:1px solid var(--border)"></canvas>
+      <p class="muted" style="text-align:center;margin-top:0" id="pcCap"></p>
+      <div class="row"><label>Width</label><input type="number" step="${uStep(0.125)}" id="pcW" value="${L(p.w)}"> ${uLabel()}
+        <label style="min-width:0;margin-left:8px">Height</label><input type="number" step="${uStep(0.125)}" id="pcH" value="${L(p.h)}"> ${uLabel()}</div>
+      <div class="row"><label>X</label><input type="number" step="${uStep(0.125)}" id="pcX" value="${L(p.x)}"> ${uLabel()}
+        <label style="min-width:0;margin-left:8px">Y</label><input type="number" step="${uStep(0.125)}" id="pcY" value="${L(p.y)}"> ${uLabel()}</div>
+      <div class="row"><button class="small" id="pcTwo">Set size from two points…</button><span class="muted" style="font-size:11px">click two points on the picture, type the real distance</span></div>
+      <div class="row"><label>Show</label><input type="range" id="pcFade" min="10" max="100" value="${Math.round(p.fade * 100)}" style="flex:1"><label style="min-width:0"><input type="checkbox" id="pcHide" ${p.hide ? 'checked' : ''}> Hide</label></div>
+      <h4 style="margin:12px 0 4px">Trace</h4>
+      <div class="row"><label>Trace as</label><select id="pcMode" style="flex:1">
+        <option value="out"${t.centre ? '' : ' selected'}>Filled shapes - cut round each shape (logos, letters, stencils)</option>
+        <option value="mid"${t.centre ? ' selected' : ''}>Lines - one cut down the middle of each line (drawings, sketches)</option></select></div>
+      <div class="row"><label>Threshold</label><input type="range" id="pcLv" min="1" max="98" style="flex:1"><span id="pcLvT" style="min-width:44px"></span><button class="small" id="pcAuto">Auto</button></div>
+      <div class="row"><label style="min-width:0"><input type="checkbox" id="pcInv" ${t.invert ? 'checked' : ''}> Light shapes on a dark background</label></div>
+      <div class="row"><label style="min-width:0"><input type="checkbox" id="pcSmooth" ${t.smooth ? 'checked' : ''}> Smooth out noise (scans, photos)</label>
+        <label style="min-width:0;margin-left:10px"><input type="checkbox" id="pcAdapt" ${t.adaptive ? 'checked' : ''}> Uneven lighting / shadows</label></div>
+      <div class="row"><label>Ignore specks under</label><input type="number" step="${uStep(0.01)}" id="pcSp" value="${L(t.speck)}"> ${uLabel()}</div>
+      <div class="row" id="pcGapRow"><label>Close gaps up to</label><input type="number" step="${uStep(0.01)}" id="pcGap" value="${L(t.gap)}"> ${uLabel()}</div>
+      <div class="row"><label style="min-width:0"><input type="checkbox" id="pcArc" ${t.arcs ? 'checked' : ''}> Turn curves into arcs</label></div>
+      <p class="muted" style="font-size:11px;margin-top:0" id="pcNote"></p>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="pcTrace">Trace</button>
+        <button id="pcPlace">${fresh ? 'Place picture only' : 'Apply'}</button>
+        ${fresh ? '' : '<button id="pcDel">Remove picture</button>'}
+        <button id="pcCancel">Cancel</button></div>`,
+      (ov, close) => {
+        const $o = (s) => ov.querySelector(s);
+        const cv2 = $o('#pcPrev'), g = cv2.getContext('2d'), out = g.createImageData(prev.w, prev.h);
+        let level = null;
+        const opts = () => ({ centre: $o('#pcMode').value === 'mid', invert: $o('#pcInv').checked, smooth: $o('#pcSmooth').checked, adaptive: $o('#pcAdapt').checked });
+        // what the trace will see, drawn from the same code the trace runs; centre lines in red over it
+        const paint = () => {
+          const o = opts(), fl = RASTER.field(prev.data, prev.w, prev.h, Object.assign({}, o, { level: level != null ? level : undefined }));
+          $o('#pcLv').value = Math.round(fl.level * 100); $o('#pcLvT').textContent = Math.round(fl.level * 100) + (level == null ? ' auto' : '');
+          const mask = new Uint8Array(fl.f.length); for (let i = 0; i < mask.length; i++) mask[i] = fl.f[i] > fl.level ? 1 : 0;
+          const sk = o.centre ? RASTER.skeleton(mask.slice(), prev.w, prev.h) : null;
+          for (let i = 0; i < mask.length; i++) {
+            const k = i * 4;
+            if (sk && sk[i]) { out.data[k] = 230; out.data[k + 1] = 40; out.data[k + 2] = 40; }
+            else { const v = mask[i] ? (o.centre ? 150 : 0) : 255; out.data[k] = out.data[k + 1] = out.data[k + 2] = v; }
+            out.data[k + 3] = 255;
+          }
+          g.putImageData(out, 0, 0);
+          $o('#pcCap').textContent = o.centre ? 'What the trace sees - the red line is what gets cut' : 'What the trace sees - black is cut round';
+          $o('#pcGapRow').style.display = o.centre ? '' : 'none';
+          $o('#pcNote').textContent = o.centre
+            ? 'Each line is cut once, down its middle, on the line. Use this when filled shapes gives two lines per line.'
+            : 'Shapes are cut outside, holes inside. The picture itself is never cut.';
+        };
+        paint();
+        $o('#pcLv').oninput = () => { level = $o('#pcLv').value / 100; paint(); };
+        $o('#pcAuto').onclick = () => { level = null; paint(); };
+        for (const id of ['#pcInv', '#pcSmooth', '#pcAdapt']) $o(id).onchange = () => { level = null; paint(); };
+        $o('#pcMode').onchange = paint;
+        // width and height stay in proportion: a stretched picture traces stretched parts
+        $o('#pcW').oninput = () => { const v = uParse($o('#pcW').value); if (v > 0) $o('#pcH').value = L(v * ar); };
+        $o('#pcH').oninput = () => { const v = uParse($o('#pcH').value); if (v > 0) $o('#pcW').value = L(v / ar); };
+        const read = () => {
+          const w = uParse($o('#pcW').value), x = uParse($o('#pcX').value), y = uParse($o('#pcY').value);
+          if (!(w > 0) || !isFinite(x) || !isFinite(y)) { toast('Width, X and Y need numbers'); return null; }
+          return Object.assign(p, { w, h: w * ar, x, y, fade: $o('#pcFade').value / 100, hide: $o('#pcHide').checked });
+        };
+        const keep = (np) => {
+          snapshot(); job.pic = np;
+          LOG.action(`Picture ${np.name} at ${fmtIn(np.x)}, ${fmtIn(np.y)} - ${fmtIn(np.w)} × ${fmtIn(np.h)} ${uLabel()}`);
+        };
+        $o('#pcCancel').onclick = () => { if (fresh) picData.delete(p.id); close(); };
+        $o('#pcPlace').onclick = () => { const np = read(); if (!np) return; keep(np); close(); refresh(); };
+        if ($o('#pcDel')) $o('#pcDel').onclick = () => { snapshot(); job.pic = null; LOG.action('Picture removed'); close(); refresh(); };
+        $o('#pcTwo').onclick = () => {
+          const np = read(); if (!np) return;
+          keep(np); np.hide = false; close(); refresh();
+          scalePictureByPoints(() => openPicture());
+        };
+        $o('#pcTrace').onclick = () => {
+          const np = read(); if (!np) return;
+          const sp = uParse($o('#pcSp').value), gp = uParse($o('#pcGap').value);
+          const o = Object.assign(opts(), { level: level != null ? level : undefined, speck: isFinite(sp) ? sp : 0, gap: isFinite(gp) ? gp : 0, arcs: $o('#pcArc').checked });
+          // remembered for the next picture, which is usually the same kind
+          S.picTrace = { centre: o.centre, invert: o.invert, smooth: o.smooth, adaptive: o.adaptive, arcs: o.arcs, speck: o.speck, gap: o.gap }; saveSettings();
+          keep(np); close();
+          tracePicture(np, o);
+        };
+      });
   }
   function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 2200); }
 
@@ -5149,5 +5447,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, selectShapes: (ids) => { sel.clear(); ids.forEach(i => sel.add(i)); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
+  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, importSVG, importPicture, openPicture, tracePicture, picData, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, selectShapes: (ids) => { sel.clear(); ids.forEach(i => sel.add(i)); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
 })();

@@ -1644,6 +1644,90 @@ app.whenReady().then(async () => {
     }
 
     { // scoped
+    console.log('a picture is placed to size and traced into parts');
+    const r = JSON.parse(await run(`(async () => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1; CNC.job.pic=null; CNC.refresh();
+      // 200×100 px: a plate with a round hole, and a disc beside it
+      const c = document.createElement('canvas'); c.width = 200; c.height = 100; const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, 200, 100);
+      g.fillStyle = '#000'; g.fillRect(20, 20, 100, 60);
+      g.fillStyle = '#fff'; g.beginPath(); g.arc(70, 50, 15, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#000'; g.beginPath(); g.arc(160, 50, 20, 0, Math.PI * 2); g.fill();
+      await CNC.importPicture(c.toDataURL('image/png'), 'logo.png');
+      const ov = document.querySelector('.overlay'); if (!ov) return JSON.stringify({ err: 'no dialog' });
+      const w = ov.querySelector('#pcW'); w.value = '10'; w.dispatchEvent(new Event('input'));
+      const out = { h: ov.querySelector('#pcH').value };
+      ov.querySelector('#pcTrace').click();
+      const sh = CNC.job.shapes;
+      out.n = sh.length; out.ops = sh.map(s => s.op).sort();
+      out.boxes = sh.map(s => { const b = CNC.groupBBox([s]); return [+(b.x1 - b.x0).toFixed(2), +(b.y1 - b.y0).toFixed(2)]; }).sort((a, b) => b[0] - a[0]);
+      out.arcs = sh.reduce((n, s) => n + s.loop.filter(e => e.type === 'arc').length, 0);
+      out.pic = CNC.job.pic && [CNC.job.pic.w, CNC.job.pic.h];
+      out.left = !!document.querySelector('.overlay');
+      return JSON.stringify(out);
+    })()`));
+    ok(r.h === '5', 'height follows the width in proportion', JSON.stringify(r));
+    ok(r.n === 3 && JSON.stringify(r.ops) === '["inside","outside","outside"]', 'plate, its hole (cut inside) and the disc', JSON.stringify(r));
+    ok(r.boxes && Math.abs(r.boxes[0][0] - 5) < 0.06 && Math.abs(r.boxes[0][1] - 3) < 0.06 && Math.abs(r.boxes[1][0] - 2) < 0.06, 'traced to real size: plate 5 × 3, disc 2 across', JSON.stringify(r.boxes));
+    ok(r.arcs > 0, 'the round edges came out as arcs', String(r.arcs));
+    ok(JSON.stringify(r.pic) === '[10,5]' && !r.left, 'the picture stays behind them, dialog closed', JSON.stringify(r));
+    await run(`CNC.job.shapes.length=0; CNC.job.pic=null; CNC.refresh(); 0`);
+    }
+
+    { // scoped
+    console.log('a line drawing traced as centre lines, sized by two points');
+    const r = JSON.parse(await run(`(async () => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1; CNC.job.pic=null; CNC.refresh();
+      // a drawn square (outline only, 6 px pen) and a drawn circle - the kind that traced twice
+      const c = document.createElement('canvas'); c.width = 300; c.height = 150; const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, 300, 150); g.strokeStyle = '#000'; g.lineWidth = 6;
+      g.strokeRect(20, 25, 100, 100); g.beginPath(); g.arc(220, 75, 50, 0, Math.PI * 2); g.stroke();
+      await CNC.importPicture(c.toDataURL('image/png'), 'sketch.png');
+      let ov = document.querySelector('.overlay');
+      const w = ov.querySelector('#pcW'); w.value = '6'; w.dispatchEvent(new Event('input'));
+      // size it from the square's side instead: 100 px should be 4 in
+      ov.querySelector('#pcTwo').click();
+      const cv = document.querySelector('#cv'), rc = cv.getBoundingClientRect(), dpr = devicePixelRatio, pic = CNC.job.pic;
+      const at = (px, py) => { const s = CNC.W2S({ x: pic.x + (px + 0.5) * pic.w / 300, y: pic.y + pic.h - (py + 0.5) * pic.h / 150 }); return { clientX: rc.left + s.x / dpr, clientY: rc.top + s.y / dpr }; };
+      for (const q of [at(20, 125), at(120, 125)]) cv.dispatchEvent(new MouseEvent('mousedown', Object.assign({ bubbles: true, cancelable: true, button: 0 }, q)));
+      await new Promise(r => setTimeout(r, 50));
+      const ask = document.querySelector('#akVal'); if (!ask) return JSON.stringify({ err: 'no distance prompt' });
+      ask.value = '4'; document.querySelector('#akOk').click();
+      await new Promise(r => setTimeout(r, 50));
+      const out = { picW: +CNC.job.pic.w.toFixed(3) };
+      ov = document.querySelector('.overlay'); if (!ov) return JSON.stringify(Object.assign(out, { err: 'dialog did not come back' }));
+      const mode = ov.querySelector('#pcMode'); mode.value = 'mid'; mode.dispatchEvent(new Event('change'));
+      ov.querySelector('#pcTrace').click();
+      const sh = CNC.job.shapes;
+      out.n = sh.length; out.ops = sh.map(s => s.op);
+      out.boxes = sh.map(s => { const b = CNC.groupBBox([s]); return [+(b.x1 - b.x0).toFixed(2), +(b.y1 - b.y0).toFixed(2)]; });
+      out.arcs = sh.reduce((n, s) => n + s.loop.filter(e => e.type === 'arc').length, 0);
+      CNC.S.picTrace = null;   // leave the next picture on the defaults
+      return JSON.stringify(out);
+    })()`));
+    ok(Math.abs(r.picW - 12) < 0.15, 'two points 100 px apart called 4 in: the 300 px picture becomes 12 in wide', JSON.stringify(r));
+    ok(r.n === 2 && r.ops.every(o => o === 'on'), 'square and circle: ONE line each, cut on the line', JSON.stringify(r));
+    ok(r.boxes && r.boxes.some(b => Math.abs(b[0] - 4) < 0.15 && Math.abs(b[1] - 4) < 0.15) && r.boxes.some(b => Math.abs(b[0] - 4) < 0.15), 'down the middle of the pen: square 4 in, circle 4 in across', JSON.stringify(r.boxes));
+    ok(r.arcs > 0, 'the drawn circle comes back as arcs', String(r.arcs));
+    await run(`CNC.job.shapes.length=0; CNC.job.pic=null; CNC.refresh(); 0`);
+    }
+
+    { // scoped
+    console.log('an SVG imports at its own page size, duplicates dropped');
+    const r = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1; CNC.refresh();
+      const n = CNC.importSVG('<svg xmlns="http://www.w3.org/2000/svg" width="5.5in" height="5.5in" viewBox="0 0 200 200">'
+        + '<path d="M0 0 H200 V200 H0 Z"/><circle cx="100" cy="100" r="40"/><circle cx="100" cy="100" r="40" fill="none" stroke="#000"/><text>x</text></svg>', 'panel.svg');
+      const sh = CNC.job.shapes;
+      return JSON.stringify({ n, ops: sh.map(s => s.op).sort(), boxes: sh.map(s => { const b = CNC.groupBBox([s]); return +(b.x1 - b.x0).toFixed(4); }).sort(), arcs: sh.map(s => s.loop.filter(e => e.type === 'arc').length) });
+    })()`));
+    ok(r.n === 2 && JSON.stringify(r.ops) === '["inside","outside"]', 'square panel with a round hole; the circle drawn twice is cut once', JSON.stringify(r));
+    ok(JSON.stringify(r.boxes) === '[2.2,5.5]', 'sizes from the page: 5.5 in panel, 2.2 in hole', JSON.stringify(r.boxes));
+    ok(r.arcs && r.arcs.some(a => a > 0 && a <= 4), 'the hole is a few true arcs, not hundreds of lines', JSON.stringify(r.arcs));
+    await run(`CNC.job.shapes.length=0; CNC.refresh(); 0`);
+    }
+
+    { // scoped
     console.log('millimetres are a display skin over an inch drawing');
     const r = JSON.parse(await run(`(() => {
       CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
