@@ -29,7 +29,7 @@ this reason — holding tabs, for instance.
 - **When a test disagrees with the code, check the test first.** That has been
   the answer three times in a row.
 - `cd electron && npm test` (15 suites), `npm run smoke` (headless Electron,
-  352 assertions), `npm run scenarios` (ten designs, screenshots in
+  366 assertions), `npm run scenarios` (ten designs, screenshots in
   `test/shots/`). Run them. `npm start` rebuilds and launches.
 - `src/*.js` are plain IIFE modules concatenated by `build.js` in a fixed order
   (`log, geom, post, nest, snap, align, bool, region, font, trace, svg, pdf, icons, app`). A module

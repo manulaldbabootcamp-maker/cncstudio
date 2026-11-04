@@ -5,6 +5,37 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Copy and paste parts between design tabs
+
+### Added
+- **Ctrl+C / Ctrl+V for parts, across tabs.** The clipboard belongs to the app,
+  so parts copied in one design paste into any other. Pasted into a different
+  design they land at the same spot; pasted back into the same design each
+  paste steps 1 in up and right, as Duplicate does. Dimensions tied to the
+  copied parts come along; groups get fresh names so they do not merge with the
+  other design's groups. One undo takes a paste back.
+
+---
+
+## Dimensions stay with their part; no blue text on multi-select
+
+### Fixed
+- **Placed dimensions follow their part.** They were bare points on the bed, so
+  moving a part left its dimension measuring empty space. Each end is now tied
+  to the part it was placed on (as a fraction of the part's size, in its own
+  frame): it follows moves, turns and resizes. Dimensions placed earlier are
+  tied to whatever they sit on when the drawing is next shown.
+- **Dimensions can be deleted.** Click one with the select tool (it turns
+  white), press Delete or the Delete button. Deleting a part deletes its
+  dimensions. Before, Delete only worked with the mouse hovering exactly on the
+  line and nothing else selected.
+- **No blue highlight when selecting several parts.** Shift/Ctrl-click in the
+  parts list was also the browser's text selection. The app no longer
+  highlights text; typing and copying in boxes still work. Ctrl-click now adds
+  to the selection as Shift-click does.
+
+---
+
 ## Picture tracing: centre lines, noise, uneven light, gaps; SVG import
 
 ### Added

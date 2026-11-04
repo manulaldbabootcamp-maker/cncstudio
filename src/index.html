@@ -103,6 +103,10 @@
   input[type=range].slider { -webkit-appearance:none; appearance:none; width:100%; height:18px; background:transparent; padding:0; border:none; }
   input[type=range].slider::-webkit-slider-runnable-track { height:4px; background:var(--panel2); border:1px solid var(--border); border-radius:3px; }
   input[type=range].slider::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:14px; height:14px; margin-top:-6px; border-radius:50%; background:var(--accent); border:1px solid #0b1520; cursor:pointer; }
+  /* An app, not a page: shift-clicking parts or dragging a selection box
+     highlighted labels and list text in blue. Typing and copying still work. */
+  body { user-select:none; -webkit-user-select:none; }
+  input, textarea, pre, .gcode, [contenteditable] { user-select:text; -webkit-user-select:text; }
   textarea { width:100%; min-height:70px; font: 12px ui-monospace, Consolas, monospace; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:14px; max-width:980px; }
   .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }

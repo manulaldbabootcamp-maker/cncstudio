@@ -205,8 +205,8 @@
   let sel = new Set();
   let undoStack = [], redoStack = [];
   function snapshot() { undoStack.push(JSON.stringify(job)); if (undoStack.length > 60) undoStack.shift(); redoStack = []; }
-  function undo() { if (!undoStack.length) return; redoStack.push(JSON.stringify(job)); job = JSON.parse(undoStack.pop()); sel.clear(); refresh(); }
-  function redo() { if (!redoStack.length) return; undoStack.push(JSON.stringify(job)); job = JSON.parse(redoStack.pop()); sel.clear(); refresh(); }
+  function undo() { if (!undoStack.length) return; redoStack.push(JSON.stringify(job)); job = JSON.parse(undoStack.pop()); sel.clear(); selDim = null; refresh(); }
+  function redo() { if (!redoStack.length) return; undoStack.push(JSON.stringify(job)); job = JSON.parse(redoStack.pop()); sel.clear(); selDim = null; refresh(); }
 
   /* ---------- design tabs ----------
      Several designs open at once, one tab each. Each keeps its own parts, undo
@@ -996,6 +996,9 @@
     if (tool === 'select') {
       const sizeHit = hitSizeLabel(s);
       if (sizeHit) { clearDynTarget(); openSizeEditor(sizeHit); return; }
+      const di = dimAt(w, s);
+      if (di >= 0) { selDim = di; sel.clear(); clearEdge(); clearDynTarget(); refresh(); toast('Dimension selected - Delete removes it'); return; }
+      selDim = null;
       clearDynTarget();
       // a grip under the cursor takes precedence over selecting/moving the shape
       const g = hitGrip(w);
@@ -1312,12 +1315,14 @@
     }
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
     if (e.key === 'Shift') { orthoTemp = true; draw(); }
-    if (e.key === 'Escape') { if (clearDynTarget()) { draw(); return; } if (clearEdge()) { refreshProps(); draw(); return; } drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
+    if (e.key === 'Escape') { if (selDim != null) { selDim = null; draw(); return; } if (clearDynTarget()) { draw(); return; } if (clearEdge()) { refreshProps(); draw(); return; } drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
     if (e.key === 'Enter' && drawing) { if (drawing.kind === 'spline') finishSpline(); else finishPoly(); }
-    if (e.key === 'Delete' || e.key === 'Backspace') { if (selEdges.length && deleteSelectedEdge()) return; if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
+    if (e.key === 'Delete' || e.key === 'Backspace') { if (selDim != null && deleteSelDim()) return; if (selEdges.length && deleteSelectedEdge()) return; if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.shiftKey ? redo() : undo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { redo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { duplicateSel(); e.preventDefault(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { copySel(); e.preventDefault(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') { pasteClip(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { job.shapes.forEach(s => sel.add(s.id)); refresh(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { saveProject(); e.preventDefault(); }
     if (e.key.toLowerCase() === 'f') { fitBed(); draw(); }
@@ -1362,11 +1367,55 @@
     }
     refresh();
   }
-  function deleteSel() { if (!sel.size) return; snapshot(); job.shapes = job.shapes.filter(s => !sel.has(s.id)); sel.clear(); refresh(); }
+  function deleteSel() {
+    if (!sel.size) { deleteSelDim(); return; }
+    snapshot(); job.shapes = job.shapes.filter(s => !sel.has(s.id));
+    // a dimension on a deleted part would measure nothing; it goes with it
+    if (job.dims) job.dims = job.dims.filter(d => !(d.ra && sel.has(d.ra.id)) && !(d.rb && sel.has(d.rb.id)));
+    sel.clear(); refresh();
+  }
   function duplicateSel() {
     if (!sel.size) return; snapshot(); const copies = [];
     for (const sh of job.shapes) if (sel.has(sh.id)) { const c = JSON.parse(JSON.stringify(sh)); c.id = job.nextId++; c.name = sh.name + ' copy'; c.x += 1; c.y += 1; delete c.startPt; copies.push(c); }
     job.shapes.push(...copies); sel = new Set(copies.map(c => c.id)); refresh();
+  }
+  /* Copy and paste, across design tabs. The clipboard belongs to the app, not
+     to a tab, so parts copied in one design paste into another. Pasted into a
+     different design they land where they were, so a layout carries over; pasted
+     back into the same design they step off by 1 in each time, as Duplicate does,
+     so the copy is not hidden under the original. Dimensions tied to the copied
+     parts come along. Groups get new names: "g1" in one tab is not "g1" in another. */
+  let clip = null;
+  function copySel() {
+    if (!sel.size) return false;
+    const ids = new Set(sel);
+    const dims = (job.dims || []).filter(d => d.ra && d.rb && ids.has(d.ra.id) && ids.has(d.rb.id));
+    clip = { shapes: JSON.parse(JSON.stringify(job.shapes.filter(sh => ids.has(sh.id)))), dims: JSON.parse(JSON.stringify(dims)), src: job, n: 0 };
+    LOG.action(`Copied ${clip.shapes.length} part(s)`); toast(`Copied ${clip.shapes.length} part(s) - Ctrl+V pastes, in any design tab`);
+    return true;
+  }
+  function pasteClip() {
+    if (!clip || !clip.shapes.length) { toast('Nothing copied - select parts and press Ctrl+C'); return false; }
+    const step = clip.src === job ? ++clip.n : 0;
+    snapshot();
+    const idMap = new Map(), grpMap = new Map(), made = [];
+    for (const src of clip.shapes) {
+      const c = JSON.parse(JSON.stringify(src));
+      idMap.set(src.id, c.id = job.nextId++);
+      if (c.group) { if (!grpMap.has(c.group)) grpMap.set(c.group, 'g' + (nextGroup++)); c.group = grpMap.get(c.group); }
+      c.x += step; c.y += step; if (c.textAt) { c.textAt.x += step; c.textAt.y += step; }
+      if (step) delete c.startPt;
+      made.push(c);
+    }
+    job.shapes.push(...made);
+    for (const d of clip.dims) {
+      const c = JSON.parse(JSON.stringify(d));
+      c.ra.id = idMap.get(d.ra.id); c.rb.id = idMap.get(d.rb.id);
+      ensureDims().push(c);   // ends are recomputed from their parts on the next draw
+    }
+    sel = new Set(made.map(c => c.id)); selDim = null;
+    LOG.action(`Pasted ${made.length} part(s) into ${docName(docs[activeDoc])}`);
+    refresh(); return true;
   }
   $('#btnDel').onclick = deleteSel; $('#btnDup').onclick = duplicateSel; $('#btnUndo').onclick = undo;
 
@@ -1378,7 +1427,9 @@
     for (const sh of job.shapes) {
       const d = document.createElement('div'); d.className = 'item' + (sel.has(sh.id) ? ' sel' : '');
       d.innerHTML = `<span class="nm" title="Double-click to rename">${esc(sh.name)}</span><span class="op">${sh.op}</span>`;
-      d.onclick = (e) => { if (e.shiftKey) { sel.has(sh.id) ? sel.delete(sh.id) : sel.add(sh.id); } else { sel.clear(); sel.add(sh.id); } clearEdge(); refreshList(); refreshProps(); draw(); };
+      // shift-click in a list is the browser's "select text from here to there"; here it picks parts
+      d.onmousedown = (e) => { if (e.shiftKey || e.ctrlKey) e.preventDefault(); };
+      d.onclick = (e) => { if (e.shiftKey || e.ctrlKey) { sel.has(sh.id) ? sel.delete(sh.id) : sel.add(sh.id); } else { sel.clear(); sel.add(sh.id); } selDim = null; clearEdge(); refreshList(); refreshProps(); draw(); };
       // double-click the name to rename in place
       d.querySelector('.nm').ondblclick = (e) => {
         e.stopPropagation();
@@ -4020,6 +4071,59 @@
   // ---------- on-canvas dimensions ----------
   // dims live on the job but are annotation only: never posted, never cut
   function ensureDims() { if (!job.dims) job.dims = []; return job.dims; }
+  /* A dimension end placed on a part rides with it. Placed as bare points on
+     the bed, a dimension stayed behind when its part was moved and measured
+     empty space. Each end is kept in its part's own frame, as a fraction of the
+     part's size, so it follows a move or turn and stays on the same corner or
+     edge when the part is resized. An end on no part stays where it was put. */
+  const toLocal = (sh, p) => { const a = -(sh.rot || 0) * Math.PI / 180, x = p.x - sh.x, y = p.y - sh.y; return { x: x * Math.cos(a) - y * Math.sin(a), y: x * Math.sin(a) + y * Math.cos(a) }; };
+  const toWorld = (sh, l) => { const a = (sh.rot || 0) * Math.PI / 180; return { x: sh.x + l.x * Math.cos(a) - l.y * Math.sin(a), y: sh.y + l.x * Math.sin(a) + l.y * Math.cos(a) }; };
+  function dimAnchor(p) {
+    const tol = 8 * devicePixelRatio / view.scale;
+    let best = null, ba = Infinity;
+    for (const sh of job.shapes) {
+      let b; try { b = G.bbox(worldLoop(sh)); } catch (e) { continue; }
+      if (p.x < b.x0 - tol || p.x > b.x1 + tol || p.y < b.y0 - tol || p.y > b.y1 + tol) continue;
+      // the smallest part round the point: a hole's own part, not the sheet it sits on
+      const ar = Math.max(b.x1 - b.x0, tol) * Math.max(b.y1 - b.y0, tol);
+      if (ar < ba) { ba = ar; best = sh; }
+    }
+    if (!best) return null;
+    const l = toLocal(best, p), lb = G.bbox(localLoop(best)), w = lb.x1 - lb.x0, h = lb.y1 - lb.y0;
+    return { id: best.id, u: w > 1e-9 ? (l.x - lb.x0) / w : null, v: h > 1e-9 ? (l.y - lb.y0) / h : null, ox: l.x - lb.x0, oy: l.y - lb.y0 };
+  }
+  function dimEnd(r) {
+    const sh = r && job.shapes.find(s => s.id === r.id); if (!sh) return null;
+    const lb = G.bbox(localLoop(sh)), w = lb.x1 - lb.x0, h = lb.y1 - lb.y0;
+    return toWorld(sh, { x: lb.x0 + (r.u != null ? r.u * w : r.ox), y: lb.y0 + (r.v != null ? r.v * h : r.oy) });
+  }
+  // brings every dimension's ends to where their parts are now; run before anything reads d.a / d.b
+  function syncDims() {
+    for (const d of job.dims || []) {
+      // dimensions placed before ends were tied to parts are tied to whatever they sit on now
+      if (d.ra === undefined) d.ra = dimAnchor(d.a);
+      if (d.rb === undefined) d.rb = dimAnchor(d.b);
+      const a = dimEnd(d.ra), b = dimEnd(d.rb);
+      if (a) d.a = a; if (b) d.b = b;
+    }
+  }
+  let selDim = null, dimBoxes = [];   // the dimension picked with the select tool; label boxes for clicking
+  function dimAt(w, s) {
+    for (const bx of dimBoxes) if (s.x >= bx.x && s.x <= bx.x + bx.w && s.y >= bx.y && s.y <= bx.y + bx.h) return bx.i;
+    const dims = job.dims || [];
+    for (let i = dims.length - 1; i >= 0; i--) {
+      const d = dims[i], dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1;
+      const nx = -dy / L, ny = dx / L, off = d.off || 0;
+      const A = { x: d.a.x + nx * off, y: d.a.y + ny * off }, B = { x: d.b.x + nx * off, y: d.b.y + ny * off };
+      if (distToSeg(w, A, B) < 6 * devicePixelRatio / view.scale) return i;
+    }
+    return -1;
+  }
+  function deleteSelDim() {
+    if (selDim == null || !job.dims || !job.dims[selDim]) { selDim = null; return false; }
+    snapshot(); job.dims.splice(selDim, 1); selDim = null;
+    LOG.action('Dimension removed'); refresh(); return true;
+  }
   /* One dimension line: witness lines up from a and b, the measured line
      between them offset by `off`, arrow ticks, and a boxed label. Shared by
      placed dimensions and the automatic size labels on a selected part. */
@@ -4063,9 +4167,12 @@
     const dpr = devicePixelRatio;
     ctx.save();
     ctx.font = `${12 * dpr}px ui-monospace, monospace`;
+    syncDims(); dimBoxes = [];
+    if (selDim != null && !dims[selDim]) selDim = null;
     for (const d of dims.concat(dimDraft && dimDraft.b ? [dimDraft] : [])) {
-      const L = G.dist(d.a, d.b);
-      drawDimLine(d.a, d.b, d.off || 0, d.text || fmtLen(L), '#d38cff');
+      const L = G.dist(d.a, d.b), i = dims.indexOf(d);
+      const bx = drawDimLine(d.a, d.b, d.off || 0, d.text || fmtLen(L), i >= 0 && i === selDim ? '#ffffff' : '#d38cff');
+      if (bx && i >= 0) dimBoxes.push({ ...bx, i });
     }
     ctx.restore();
   }
@@ -4225,7 +4332,7 @@
     const d = dimDraft, dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1;
     d.off = ((ws.x - d.a.x) * (-dy / L)) + ((ws.y - d.a.y) * (dx / L));
     snapshot();
-    ensureDims().push({ a: d.a, b: d.b, off: d.off });
+    ensureDims().push({ a: d.a, b: d.b, off: d.off, ra: dimAnchor(d.a), rb: dimAnchor(d.b) });
     LOG.action(`Dimension added: ${fmtIn(L)} in`);
     dimDraft = null;
     refresh();
@@ -4969,6 +5076,7 @@
 
       // dimensions placed with the D tool, drawn in the same violet as on screen
       if (opts.dims) {
+        syncDims();
         for (const dm of (job.dims || [])) {
           const dx = dm.b.x - dm.a.x, dy = dm.b.y - dm.a.y, L = Math.hypot(dx, dy);
           if (L < 1e-9) continue;
@@ -5447,5 +5555,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, importSVG, importPicture, openPicture, tracePicture, picData, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, selectShapes: (ids) => { sel.clear(); ids.forEach(i => sel.add(i)); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
+  window.CNC = { get job() { return job; }, copySel, pasteClip, dimAt, selDimIndex: () => selDim, deleteSel, syncDims, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, importSVG, importPicture, openPicture, tracePicture, picData, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, selectShapes: (ids) => { sel.clear(); ids.forEach(i => sel.add(i)); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
 })();

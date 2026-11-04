@@ -1713,6 +1713,88 @@ app.whenReady().then(async () => {
     }
 
     { // scoped
+    console.log('placed dimensions ride with their part, and can be picked and deleted');
+    const r = JSON.parse(await run(`(async () => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'plate',kind:'rect',x:2,y:2,rot:0,w:10,h:4,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.job.shapes.push({id:2,name:'other',kind:'rect',x:30,y:2,rot:0,w:3,h:3,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.job.nextId=3;
+      CNC.job.dims.push({ a: {x:2,y:2}, b: {x:12,y:2}, off: -1 });
+      CNC.refresh();
+      const out = {};
+      const pl = CNC.job.shapes[0];
+      pl.x += 5; pl.y += 3; CNC.refresh();
+      const d = CNC.job.dims[0]; out.moved = [d.a.x, d.a.y, d.b.x, d.b.y].map(v => +v.toFixed(6));
+      pl.w = 20; CNC.refresh(); out.resized = [d.a.x, d.b.x].map(v => +v.toFixed(6));
+      pl.rot = 90; CNC.refresh(); out.turned = [d.a.x, d.a.y, d.b.x, d.b.y].map(v => +v.toFixed(6)); pl.rot = 0; CNC.refresh();
+      // click on the dimension line itself
+      const cv = document.querySelector('#cv'), rc = cv.getBoundingClientRect(), dpr = devicePixelRatio;
+      const mid = CNC.W2S({ x: (d.a.x + d.b.x) / 2, y: d.a.y - 1 });
+      cv.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientX: rc.left + mid.x / dpr, clientY: rc.top + mid.y / dpr }));
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: rc.left + mid.x / dpr, clientY: rc.top + mid.y / dpr }));
+      out.picked = CNC.selDimIndex();
+      out.partsSel = document.querySelectorAll('#shapeList .item.sel').length;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+      out.afterDelete = CNC.job.dims.length; out.parts = CNC.job.shapes.length;
+      // a dimension on a part that is deleted goes with it
+      CNC.job.dims.push({ a: {x:30,y:2}, b: {x:33,y:2}, off: -1 }); CNC.refresh();
+      CNC.selectShapes([2]); CNC.deleteSel();
+      out.withPart = CNC.job.dims.length;
+      out.noHighlight = getComputedStyle(document.querySelector('#shapeList')).userSelect;
+      return JSON.stringify(out);
+    })()`));
+    ok(JSON.stringify(r.moved) === '[7,5,17,5]', 'moved with the part (5 right, 3 up)', JSON.stringify(r));
+    ok(JSON.stringify(r.resized) === '[7,27]', 'part made 20 long: the dimension still spans it end to end', JSON.stringify(r.resized));
+    ok(r.turned && Math.abs(r.turned[0] - 7) < 1e-6 && Math.abs(r.turned[3] - 25) < 1e-6, 'part turned 90: the dimension turns with it', JSON.stringify(r.turned));
+    ok(r.picked === 0 && r.partsSel === 0, 'clicking the dimension picks it, not a part', JSON.stringify(r));
+    ok(r.afterDelete === 0 && r.parts === 2, 'Delete removes the dimension and leaves the parts', JSON.stringify(r));
+    ok(r.withPart === 0, 'deleting a part takes its dimension with it', JSON.stringify(r));
+    ok(r.noHighlight === 'none', 'the parts list does not highlight text on shift-click', r.noHighlight);
+    await run(`CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.refresh(); 0`);
+    }
+
+    { // scoped
+    console.log('parts copied in one design tab paste into another');
+    const r = JSON.parse(await run(`(() => {
+      const home = CNC.activeDocIndex();
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'plate',kind:'rect',x:2,y:2,rot:0,w:10,h:4,r:0,op:'outside',toolId:1,climb:false,open:false,group:'g1'});
+      CNC.job.shapes.push({id:2,name:'disc',kind:'circle',x:20,y:5,rot:0,r:1.5,op:'outside',toolId:1,climb:false,open:false,group:'g1'});
+      CNC.job.nextId=3;
+      CNC.job.dims.push({ a: {x:2,y:2}, b: {x:12,y:2}, off: -1 });
+      CNC.refresh();
+      CNC.selectShapes([1,2]);
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }));
+      const out = {};
+      CNC.newDoc('second');
+      CNC.job.shapes.push({id:1,name:'mine',kind:'rect',x:40,y:2,rot:0,w:2,h:2,r:0,op:'outside',toolId:1,climb:false,open:false,group:'g1'});
+      CNC.job.nextId=2; CNC.refresh();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true }));
+      const j = CNC.job;
+      out.n = j.shapes.length; out.ids = j.shapes.map(s => s.id);
+      out.pos = j.shapes.slice(1).map(s => [s.x, s.y]);
+      out.groups = j.shapes.map(s => s.group);
+      out.dims = (j.dims || []).length; CNC.syncDims();
+      out.dimAt = j.dims && j.dims[0] && [j.dims[0].a.x, j.dims[0].b.x, j.dims[0].ra.id];
+      out.selected = document.querySelectorAll('#shapeList .item.sel').length;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })); out.afterUndo = CNC.job.shapes.length;
+      CNC.switchDoc(home);
+      out.homeN = CNC.job.shapes.length;
+      CNC.pasteClip(); out.sameTab = CNC.job.shapes.slice(2).map(s => [s.x, s.y]);
+      return JSON.stringify(out);
+    })()`));
+    ok(r.n === 3 && new Set(r.ids).size === 3, 'two parts pasted beside the one already there, with their own ids', JSON.stringify(r));
+    ok(JSON.stringify(r.pos) === '[[2,2],[20,5]]', 'into another design they land where they were', JSON.stringify(r.pos));
+    ok(r.groups[1] === r.groups[2] && r.groups[1] !== 'g1', 'still grouped together, not with the other design\'s own g1', JSON.stringify(r.groups));
+    ok(r.dims === 1 && r.dimAt && r.dimAt[0] === 2 && r.dimAt[1] === 12 && r.dimAt[2] === r.ids[1], 'their dimension comes along, tied to the pasted plate', JSON.stringify(r.dimAt));
+    ok(r.selected === 2, 'the pasted parts are selected', String(r.selected));
+    ok(r.afterUndo === 1 && r.homeN === 2, 'undo takes the paste back; the first design is untouched', JSON.stringify(r));
+    ok(JSON.stringify(r.sameTab) === '[[3,3],[21,6]]', 'pasted back into the same design: stepped off 1 in', JSON.stringify(r.sameTab));
+    await run(`CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.refresh(); 0`);
+    }
+
+    { // scoped
     console.log('an SVG imports at its own page size, duplicates dropped');
     const r = JSON.parse(await run(`(() => {
       CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1; CNC.refresh();
