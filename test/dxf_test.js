@@ -161,5 +161,55 @@ console.log('millimetres still convert');
   ok(near(bb.x0 + bb.w / 2, 1) && near(bb.w, 1), 'a flipped 25.4 mm circle is 1 in across at X 1', JSON.stringify(bb));
 }
 
+console.log('export: a line two parts share is written once');
+{
+  const total = (r) => r.loops.concat(r.opens).flat().reduce((s, q) => s + G.segLen(q), 0);
+  const plain = (r) => r.loops.length + ' loops ' + r.opens.length + ' opens ' + r.removed + ' removed ' + total(r).toFixed(4) + ' in';
+  {
+    const r = G.dedupeOverlaps([G.rectLoop(0, 0, 2, 1), G.rectLoop(5, 0, 2, 1)], []);
+    ok(r.loops.length === 2 && r.opens.length === 0 && r.removed === 0, 'parts apart come out as they went in', plain(r));
+  }
+  {
+    // two 2 x 1 squares touching along x = 2: 12 in of outline, 1 in shared
+    const r = G.dedupeOverlaps([G.rectLoop(0, 0, 2, 1), G.rectLoop(2, 0, 2, 1)], []);
+    ok(r.loops.length === 1 && r.opens.length === 1 && near(total(r), 11, 1e-9) && near(r.removedLen, 1, 1e-9), 'side by side: the first stays closed, the second is an open U, 11 in cut', plain(r));
+    const u = r.opens[0];
+    ok(nearP(u[0].a, 2, 1) && nearP(u[u.length - 1].b, 2, 0) || nearP(u[0].a, 2, 0) && nearP(u[u.length - 1].b, 2, 1), 'the U ends on the shared line, round the far side', JSON.stringify([u[0].a, u[u.length - 1].b]));
+  }
+  {
+    // a short part against a long one: only the touching 1 in of the long edge goes
+    const r = G.dedupeOverlaps([G.rectLoop(0, 0, 4, 1), G.rectLoop(1, 1, 1, 1)], []);
+    ok(near(total(r), 10 + 3, 1e-9), 'partial overlap: 10 in plate + 3 in of the small part', plain(r));
+  }
+  {
+    // a stack: the same rectangle twice is cut once
+    const r = G.dedupeOverlaps([G.rectLoop(0, 0, 2, 1), G.rectLoop(0, 0, 2, 1)], []);
+    ok(r.loops.length === 1 && r.opens.length === 0 && near(total(r), 6, 1e-9), 'a rectangle on top of itself is one rectangle', plain(r));
+  }
+  {
+    const r = G.dedupeOverlaps([G.circleLoop(1, 1, 0.5), G.circleLoop(1, 1, 0.5), G.circleLoop(3, 1, 0.5)], []);
+    ok(r.loops.length === 2 && near(total(r), 2 * Math.PI, 1e-9), 'a circle twice is one circle; a different circle stays', plain(r));
+  }
+  {
+    // a quarter arc drawn over half of a circle is taken off the second part only where they meet
+    const c = G.P(0, 0);
+    const half = [G.arc(G.P(1, 0), G.P(-1, 0), c, true)];
+    const quarterCw = [G.arc(G.P(0, 1), G.P(1, 0), c, false)];
+    const r = G.dedupeOverlaps([], [half, quarterCw]);
+    ok(near(total(r), Math.PI, 1e-9) && r.removed === 1, 'an arc lying on a kept arc, drawn the other way, is dropped', plain(r));
+  }
+  {
+    // an open line half on a plate edge keeps its other half
+    const r = G.dedupeOverlaps([G.rectLoop(0, 0, 2, 1)], [[G.line(G.P(1, 0), G.P(3, 0))]]);
+    ok(r.opens.length === 1 && near(total(r), 6 + 1, 1e-9), 'a line along an edge keeps the part past the corner', plain(r));
+  }
+  {
+    // the written file has one fewer edge to cut
+    const r = G.dedupeOverlaps([G.rectLoop(0, 0, 2, 1), G.rectLoop(2, 0, 2, 1)], []);
+    const back = G.parseDXF(G.writeDXF(r.loops, r.opens));
+    ok(near(total(back), 11, 1e-6), 'round trip through DXF: 11 in, not 12', total(back));
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

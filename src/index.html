@@ -290,6 +290,8 @@
             <h3>Laser estimate</h3>
             <div class="row"><label>Cut speed</label><input type="number" id="lzSpeed" step="1" min="1"> <span>mm/s</span></div>
             <div class="row"><label>Travel speed</label><input type="number" id="lzTravel" step="5" min="1"> <span>mm/s</span> <span class="muted">controller idle speed</span></div>
+            <div class="row"><label></label><label><input type="checkbox" id="lzDedupe"> Remove overlapping lines on DXF export</label></div>
+            <p class="muted" style="font-size:11px">Two parts touching along an edge are written with that edge once, so the laser does not cut it twice. Untick to export every part as a whole closed outline (for a DXF you will reopen as router parts).</p>
             <p class="muted" style="font-size:11px">For the laser time shown under Output: every outline cut once, on the line. Use the speed from your cut tests for the material on the bed (1/8" acrylic: 28 mm/s at 60 %).</p>
           </div>
           <div class="card">

@@ -576,6 +576,90 @@ const GEOM = (() => {
     return arc(a, b, c, bulge > 0);
   }
   function arcBulge(s) { return Math.tan(sweep(s) / 4); }
+  /* Overlapping lines on export. Two parts that touch along an edge each carry
+     that edge, and RDWorks cuts both: twice the time on that line and a
+     melted, wider kerf on acrylic. Whatever an earlier segment already covers
+     is cut out of every later one - whole or partial, lines along the same
+     line and arcs on the same circle. The first part stays a closed outline;
+     the next keeps what is left as open runs. Nothing is moved, only dropped. */
+  function dedupeOverlaps(loops, opens = [], tol = 1e-4) {
+    const kept = [];   // every segment written so far, for the coverage test
+    const TAU = 2 * Math.PI;
+    const mod = (a) => ((a % TAU) + TAU) % TAU;
+    const boxOf = (s) => { const pts = s.type === 'line' ? [s.a, s.b] : [P(s.c.x - radius(s), s.c.y - radius(s)), P(s.c.x + radius(s), s.c.y + radius(s))]; return { x0: Math.min(pts[0].x, pts[1].x) - tol, y0: Math.min(pts[0].y, pts[1].y) - tol, x1: Math.max(pts[0].x, pts[1].x) + tol, y1: Math.max(pts[0].y, pts[1].y) + tol }; };
+    const meet = (p, q) => p.x0 <= q.x1 && q.x0 <= p.x1 && p.y0 <= q.y1 && q.y0 <= p.y1;
+    // the parts of s (as 0..1 along it) that k lies on
+    function covered(s, k) {
+      if (s.type !== k.type) return [];
+      if (s.type === 'line') {
+        const L = dist(s.a, s.b); if (L < tol) return [];
+        const d = mul(sub(s.b, s.a), 1 / L);
+        if (Math.abs(cross(d, sub(k.a, s.a))) > tol || Math.abs(cross(d, sub(k.b, s.a))) > tol) return [];
+        let t0 = dot(sub(k.a, s.a), d) / L, t1 = dot(sub(k.b, s.a), d) / L;
+        if (t0 > t1) [t0, t1] = [t1, t0];
+        return [[Math.max(0, t0), Math.min(1, t1)]];
+      }
+      if (!same(s.c, k.c, tol) || Math.abs(radius(s) - radius(k)) > tol) return [];
+      // angles measured the way s runs, from its start
+      const dir = s.ccw ? 1 : -1, a0 = angOf(s.c, s.a);
+      const u = (p) => mod(dir * (angOf(s.c, p) - a0));
+      const S = Math.abs(sweep(s)), K = Math.abs(sweep(k));
+      const k0 = s.ccw === k.ccw ? u(k.a) : u(k.b);
+      const out = [];
+      const k0n = k0 > TAU - 1e-9 ? 0 : k0;
+      if (k0n < S) out.push([k0n / S, Math.min(k0n + K, S) / S]);
+      if (k0n + K > TAU) out.push([0, Math.min(k0n + K - TAU, S) / S]);
+      return out;
+    }
+    function piece(s, t0, t1) {
+      if (s.type === 'line') return line(t0 === 0 ? s.a : pointAt(s, t0), t1 === 1 ? s.b : pointAt(s, t1));
+      return arc(t0 === 0 ? s.a : pointAt(s, t0), t1 === 1 ? s.b : pointAt(s, t1), s.c, s.ccw);
+    }
+    let removed = 0, removedLen = 0;
+    // what is left of s once everything kept is taken away, as pieces in order
+    function remainder(s) {
+      // a speck of a segment is left alone: dropping it opens a closed outline at that corner
+      const L = segLen(s); if (L < tol) return [s];
+      const bb = boxOf(s); const cov = [];
+      for (const k of kept) if (meet(bb, k.bb)) cov.push(...covered(s, k.s));
+      if (!cov.length) return [s];
+      cov.sort((p, q) => p[0] - q[0]);
+      const free = []; let at = 0; const e = tol / L;
+      for (const [c0, c1] of cov) { if (c1 <= c0 + e) continue; if (c0 > at + e) free.push([at, c0]); at = Math.max(at, c1); }
+      if (at < 1 - e) free.push([at, 1]);
+      const got = free.reduce((n, [a, b]) => n + (b - a), 0);
+      if (got > 1 - e) return [s];
+      removed++; removedLen += L * (1 - got);
+      return free.map(([a, b]) => piece(s, a, b));
+    }
+    const outLoops = [], runs = [];
+    const keep = (s) => kept.push({ s, bb: boxOf(s) });
+    for (const l of loops) {
+      const parts = l.map(remainder);
+      if (parts.every((p, i) => p.length === 1 && p[0] === l[i])) { l.forEach(keep); outLoops.push(l); continue; }
+      // split into runs where something was taken out; the last run joins the first round the closing corner
+      const mine = []; let run = [];
+      for (const q of parts.flat()) {
+        if (run.length && !same(run[run.length - 1].b, q.a, 1e-9)) { mine.push(run); run = []; }
+        run.push(q);
+      }
+      if (run.length) mine.push(run);
+      if (mine.length > 1 && same(mine[mine.length - 1].at(-1).b, mine[0][0].a, 1e-9)) mine[0] = mine.pop().concat(mine[0]);
+      mine.forEach(r => { r.forEach(keep); runs.push(r); });
+    }
+    for (const o of opens) {
+      let run = [];
+      for (const s of o) for (const q of remainder(s)) {
+        if (run.length && !same(run[run.length - 1].b, q.a, 1e-9)) { runs.push(run); run = []; }
+        run.push(q); keep(q);
+      }
+      if (run.length) runs.push(run);
+    }
+    // pieces that meet end to end become one path, so the laser starts fewer times
+    const outOpens = [];
+    for (const ch of chainOpen(runs)) (ch.closed ? outLoops : outOpens).push(ch.segs);
+    return { loops: outLoops, opens: outOpens, removed, removedLen };
+  }
   function writeDXF(loops, opens = []) {
     const f = (n) => (+n.toFixed(6)).toString();
     let o = '0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n';
@@ -589,6 +673,6 @@ const GEOM = (() => {
     return o;
   }
 
-  return { EPS, P, add, sub, mul, dot, cross, len, dist, norm, rot, same, line, arc, radius, sweep, tangentAt, segLen, pointAt, samplePts, loopPts, signedArea, reverseLoop, bbox, transformLoop, translateLoop, rotateLoop, mirrorLoopX, pointInLoop, polyLoop, normalizePolyPts, rectLoop, circleLoop, ellipseLoop, splineLoop, offsetLoop, offsetOpen, splitArcs, startLoopAt, longestLineIndex, midOfSeg, parseDXF, writeDXF, bulgeArc, arcBulge, chainOpen };
+  return { EPS, P, add, sub, mul, dot, cross, len, dist, norm, rot, same, line, arc, radius, sweep, tangentAt, segLen, pointAt, samplePts, loopPts, signedArea, reverseLoop, bbox, transformLoop, translateLoop, rotateLoop, mirrorLoopX, pointInLoop, polyLoop, normalizePolyPts, rectLoop, circleLoop, ellipseLoop, splineLoop, offsetLoop, offsetOpen, splitArcs, startLoopAt, longestLineIndex, midOfSeg, parseDXF, writeDXF, dedupeOverlaps, bulgeArc, arcBulge, chainOpen };
 })();
 if (typeof module !== 'undefined') module.exports = GEOM;

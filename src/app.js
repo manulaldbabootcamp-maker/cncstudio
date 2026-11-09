@@ -22,7 +22,7 @@
     /* The laser estimate. mm/s because that is what RDWorks shows. 28 mm/s is
        the best clean cut found for 1/8" acrylic at 60 %; 50 mm/s is the
        controller's idle (travel) speed after the Y-axis grinding fix. */
-    laser: { speed: 28, travel: 50 },
+    laser: { speed: 28, travel: 50, dedupe: true },
   };
   let S = loadSettings();
   function loadSettings() {
@@ -4437,7 +4437,11 @@
     if (!job.shapes.length) return toast('Nothing to export');
     const loops = [], opens = [];
     for (const s of expandShapes(job.shapes)) (s.open ? opens : loops).push(worldLoop(s));
-    download(jobName() + '.dxf', G.writeDXF(loops, opens), 'application/dxf'); toast('DXF exported');
+    if (!S.laser.dedupe) { download(jobName() + '.dxf', G.writeDXF(loops, opens), 'application/dxf'); toast('DXF exported'); return; }
+    const d = G.dedupeOverlaps(loops, opens);
+    download(jobName() + '.dxf', G.writeDXF(d.loops, d.opens), 'application/dxf');
+    const msg = d.removed ? `DXF exported - ${fmtLen(d.removedLen)} of overlapping line removed (${d.removed} edge${d.removed === 1 ? '' : 's'})` : 'DXF exported - no overlapping lines';
+    LOG.action(msg); toast(msg);
   };
   $('#btnSave').onclick = saveProject;
   async function saveProject() {
@@ -4882,7 +4886,7 @@
     $('#mHeader').value = m.header; $('#mToolChange').value = m.toolChange; $('#mFooter').value = m.footer;
     $('#tabOn').checked = !!S.tabs.on; $('#tabCount').value = S.tabs.count;
     $('#tabLen').value = fmtIn(S.tabs.len); $('#tabHeight').value = fmtIn(S.tabs.height);
-    $('#lzSpeed').value = S.laser.speed; $('#lzTravel').value = S.laser.travel;
+    $('#lzSpeed').value = S.laser.speed; $('#lzTravel').value = S.laser.travel; $('#lzDedupe').checked = S.laser.dedupe !== false;
     $('#nGap').value = fmtIn(S.nest.gap); $('#nMargin').value = fmtIn(S.nest.margin); $('#nRotate').value = S.nest.rotateMode || (S.nest.rotate ? 'quarter' : 'none');
     $('#aiKey').value = S.ai.key || ''; $('#aiModel').value = S.ai.model || '';
     renderKeys();
@@ -4959,6 +4963,7 @@
   // speeds are mm/s whatever the display units, because RDWorks shows them that way
   bindSetting('#lzSpeed', el => { const v = parseFloat(el.value); if (v > 0) S.laser.speed = v; });
   bindSetting('#lzTravel', el => { const v = parseFloat(el.value); if (v > 0) S.laser.travel = v; });
+  bindSetting('#lzDedupe', el => { S.laser.dedupe = el.checked; });
   bindSetting('#nGap', el => S.nest.gap = uParse(el.value)); bindSetting('#nMargin', el => S.nest.margin = uParse(el.value)); bindSetting('#nRotate', el => { S.nest.rotateMode = el.value; S.nest.rotate = el.value !== 'none'; });
   bindSetting('#aiKey', el => S.ai.key = el.value.trim()); bindSetting('#aiModel', el => S.ai.model = el.value.trim());
   $('#keyMode').addEventListener('change', () => {
