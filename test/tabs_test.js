@@ -46,13 +46,19 @@ console.log('a tab leaves material standing, and ramps up to it');
 
 console.log('tabs land on every pass that goes deeper than the tab');
 {
-  // 0.5 in stock at 0.125 per pass: passes at 0.375, 0.25, 0.125, 0, -0.02
-  const j = job([plate()], { tabs: { on: true, count: 2, len: 0.3, height: 0.03 } });
+  /* 0.5 in stock, 0.125 max pass, no cut-through: Z0.375 0.25 0.125 0.
+     A 0.15 in tab is above the last two of those, so both have to ramp over it.
+     This case used to be written as a 0.03 tab and leaned on the old pass
+     schedule putting both Z0 and Z-0.02 under it; the depths are equal bites
+     now (see zdepth_test.js), so the claim is tested with a tab tall enough to
+     clear two real passes instead of an artefact of the ladder. */
+  const j = job([plate()], { tabs: { on: true, count: 2, len: 0.3, height: 0.15 } });
   j.material.thickness = 0.5;
+  j.cutThrough = 0;
   const L = lines(j);
-  const tabbed = L.filter(l => /Z0\.03$/.test(l)).length;
+  const tabbed = L.filter(l => /Z0\.15$/.test(l)).length;
   ok(tabbed >= 4, 'the last two passes both reach the tab, so both ramp over it', String(tabbed));
-  const deepPasses = POST.passDepths(0.5, 0.125, 0.02).filter(z => z < 0.03).length;
+  const deepPasses = POST.passDepths(0.5, 0.125, 0).filter(z => z < 0.15).length;
   ok(deepPasses === 2, 'and there are exactly two such passes', String(deepPasses));
 }
 

@@ -64,7 +64,11 @@ const POST = (() => {
     const ap = h >= 12 ? 'PM' : 'AM';
     h = h % 12; if (h === 0) h = 12;
     const p2 = (n) => String(n).padStart(2, '0');
-    return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()} - ${p2(h)}:${p2(d.getMinutes())}:${p2(d.getSeconds())} ${ap}`;
+    /* The hour is NOT padded - minutes and seconds are. Checked across every
+       dated program in tapfiles/library: "8:14:59 AM", "3:46:03 PM", never
+       "08:" or "03:". We padded it and lost a byte-exact header on any job
+       posted before 10 a.m. */
+    return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()} - ${h}:${p2(d.getMinutes())}:${p2(d.getSeconds())} ${ap}`;
   }
 
   // number format: 4 decimals, strip trailing zeros, keep trailing "." (WinCNC/EnRoute style: 0. / 6.125)
@@ -76,12 +80,31 @@ const POST = (() => {
   }
   function rnd(n, dec = 4) { return parseFloat(n.toFixed(dec)); }
 
-  // compute pass depths (Z values, Z0 = bed). Returns array from first cut to last.
+  /* Pass depths (absolute Z, Z0 = bed), first cut to last.
+
+     The tool's pass depth is a MAXIMUM, not the step taken. EnRoute divides the
+     whole range into equal bites: N = ceil(total / passDepth), step = total/N.
+     This used to step by a fixed passDepth and then jump to the bottom, which
+     gave a full-depth bite followed by scrapes (0.236 stock came out
+     0.111, -0.014, -0.02 where EnRoute cuts 0.118, 0) and, whenever the
+     thickness divided evenly, an extra final pass through nothing but bed.
+     Measured over 77,159 multi-pass parts in tapfiles/library: 98.2% have all
+     steps equal and 87.6% end exactly on Z0. The 0.1180 and 0.1100 steps all
+     over the archive are 0.236/2 and 0.22/2 - they cannot arise any other way.
+     See tapfiles/LIBRARY.md.
+
+     Each depth is computed absolutely from i*step rather than accumulated, so
+     a ladder reads 0.2167 0.1033 -0.01 the way EnRoute writes it; accumulating
+     drifts in the last decimal. */
   function passDepths(thickness, passDepth, cutThrough = 0) {
-    const out = []; const bottom = -cutThrough; let z = thickness - passDepth;
-    if (passDepth <= 0) return [bottom];
-    while (z > bottom + 1e-6) { out.push(z); z -= passDepth; }
-    out.push(bottom);
+    const bottom = -cutThrough;
+    const total = thickness + cutThrough;
+    if (!(passDepth > 0) || !(total > 0)) return [bottom];
+    const n = Math.max(1, Math.ceil(total / passDepth - 1e-9));
+    const step = total / n;
+    const out = [];
+    for (let i = 1; i < n; i++) out.push(thickness - i * step);
+    out.push(bottom);          // exactly, never thickness - n*step with its rounding crumbs
     return out;
   }
 
@@ -209,8 +232,25 @@ const POST = (() => {
     const isCCW = G.signedArea(path) > 0;
     if (isCCW !== wantCCW) path = G.reverseLoop(path);
     // start point
+    /* Where the contour is seamed - the one spot where the tool plunges in and
+       comes back out. It is never on a corner: dwelling at a corner leaves a
+       mark and can chip the part, so the shop picks the start by hand and puts
+       it part-way along a straight edge. The point varies program to program
+       because it is a human choice, not a formula - three references of the
+       same shape seam 10.6087, 10.3514 and 17.0 in from their left corner.
+
+       So: an explicit start point is honoured exactly, wherever it lands, even
+       on a corner arc (the 24x36 reference does that, which is why
+       G.startLoopAt has to be able to split an arc). Failing that, the seam
+       goes to the middle of the longest straight run, never to a vertex. */
     let start = shape.startHint;
-    if (!start) { const s = path[G.longestLineIndex(path)]; start = G.midOfSeg(s); }
+    if (!start && shape.loop && shape.loop.length) {
+      const v = shape.loop[0].a;
+      /* Honour the drawn node only when it sits ON an edge. If offsetting it
+         produced an arc centred on it, it is a corner - skip it. */
+      if (!path.some(sg => sg.type === 'arc' && G.dist(sg.c, v) < 1e-7)) start = v;
+    }
+    if (!start) { const sg = path[G.longestLineIndex(path)]; start = G.midOfSeg(sg); }
     path = G.startLoopAt(path, start);
     return G.splitArcs(path, 90);
   }

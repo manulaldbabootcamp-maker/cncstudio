@@ -15,3 +15,10 @@ electron/dist/
 # scenario screenshots and the operator's reference images. They are the
 # material this app is checked against, and a clone of this repo is meant to be
 # the whole job - nothing left behind on one PC.
+
+# The shop's TAP archive, copied in from the EnRoute PC to work out what
+# EnRoute actually does: 5598 files, 72 MB, mostly customer-named. The
+# findings are in tapfiles/LIBRARY.md and the ladders they prove are pinned
+# in test/zdepth_test.js, so the archive itself is evidence, not source -
+# delete this line if it should travel with the repo after all.
+tapfiles/library/

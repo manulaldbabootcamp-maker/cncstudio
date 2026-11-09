@@ -372,15 +372,26 @@ const GEOM = (() => {
         const d = sub(s.b, s.a), L2 = dot(d, d) || 1; let t = dot(sub(pt, s.a), d) / L2; t = Math.max(0, Math.min(1, t));
         cand = { p: add(s.a, mul(d, t)), i, t };
       } else {
-        // nearest of endpoints only (no arc splitting)
-        cand = dist(s.a, pt) <= dist(s.b, pt) ? { p: s.a, i, t: 0 } : { p: s.b, i, t: 1 };
+        /* Nearest point ON the arc, not just its nearer endpoint. An outside
+           offset turns every corner into a tool-radius arc, and EnRoute seams
+           a contour at the offset image of the drawing's corner vertex - the
+           45 deg point halfway round that arc, splitting it in two. Snapping to
+           an endpoint instead moved the seam a whole corner and no reference
+           test caught it, because both golden tests pass the seam in by hand. */
+        const a0 = angOf(s.c, s.a), sw = sweep(s);
+        let t = sw === 0 ? 0 : (((angOf(s.c, pt) - a0) * Math.sign(sw)) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) / Math.abs(sw);
+        t = Math.max(0, Math.min(1, t));
+        cand = { p: pointAt(s, t), i, t };
       }
       const dd = dist(cand.p, pt); if (!best || dd < best.d) best = { ...cand, d: dd };
     });
     if (!best) return loop;
     const s = loop[best.i];
     let head, tail;
-    if (s.type === 'line' && best.t > 1e-6 && best.t < 1 - 1e-6) { head = [line(best.p, s.b)]; tail = [line(s.a, best.p)]; }
+    if (best.t > 1e-6 && best.t < 1 - 1e-6) {
+      head = [s.type === 'line' ? line(best.p, s.b) : arc(best.p, s.b, s.c, s.ccw)];
+      tail = [s.type === 'line' ? line(s.a, best.p) : arc(s.a, best.p, s.c, s.ccw)];
+    }
     else if (best.t >= 1 - 1e-6) { head = []; tail = [s]; }
     else { head = [s]; tail = []; }
     return head.concat(loop.slice(best.i + 1), loop.slice(0, best.i), tail);
