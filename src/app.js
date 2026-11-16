@@ -61,6 +61,7 @@
     text: { label: 'Text / engraving', run: () => clickBtn('#btnText') },
     dim: { label: 'Dimension', run: () => setTool('dim') },
     measure: { label: 'Measure (distance)', run: () => setTool('measure') },
+    autodim: { label: 'Auto dimensions (sizes, radii, holes)', run: () => clickBtn('#btnAutoDims') },
     divide: { label: 'Divide into regions (every enclosed area becomes a part)', run: () => explodeRegions() },
     boundary: { label: 'Region from a point inside it', run: () => { setTool('boundary'); toast('Click inside the area you want to become a part'); } },
     trim: { label: 'Trim / delete an edge', run: () => { setTool('trim'); toast('Click the edge you want to remove'); } },
@@ -961,14 +962,19 @@
     };
   }
 
+  /* The part under the cursor. A line within reach wins, the nearest one; failing
+     that, the smallest closed part the point is inside. Taking the topmost part
+     in the list meant a plate drawn after the small part sitting in it covered
+     that part completely: every click inside picked and moved the plate. */
   function hitShape(wp) {
     const tol = 6 / view.scale;
+    let edge = null, ed = tol, inside = null, ia = Infinity;
     for (let i = job.shapes.length - 1; i >= 0; i--) {
       const sh = job.shapes[i]; const loop = worldLoop(sh);
-      if (!sh.open && G.pointInLoop(wp, loop)) return sh;
-      for (const s of loop) { const pts = G.samplePts(s, 0.1); for (let k = 0; k + 1 < pts.length; k++) if (distToSeg(wp, pts[k], pts[k + 1]) < tol) return sh; }
+      for (const s of loop) { const pts = G.samplePts(s, 0.1); for (let k = 0; k + 1 < pts.length; k++) { const d = distToSeg(wp, pts[k], pts[k + 1]); if (d < ed) { ed = d; edge = sh; } } }
+      if (!sh.open && G.pointInLoop(wp, loop)) { const b = G.bbox(loop), a = (b.x1 - b.x0) * (b.y1 - b.y0); if (a < ia) { ia = a; inside = sh; } }
     }
-    return null;
+    return edge || inside;
   }
   function distToSeg(p, a, b) { const d = G.sub(b, a); const L2 = G.dot(d, d) || 1; let t = G.dot(G.sub(p, a), d) / L2; t = Math.max(0, Math.min(1, t)); return G.dist(p, G.add(a, G.mul(d, t))); }
 
@@ -2105,8 +2111,11 @@
       <div id="arGrid">
         <div class="row"><label>Columns</label><input type="number" step="1" min="1" id="arC" value="3"> across</div>
         <div class="row"><label>Rows</label><input type="number" step="1" min="1" id="arR" value="1"> up</div>
-        <div class="row"><label>X spacing</label><input type="number" step="0.125" id="arDX" value="${fmtIn(bb.w + 1)}"> ${uLabel()} <span class="muted">centre to centre</span></div>
-        <div class="row"><label>Y spacing</label><input type="number" step="0.125" id="arDY" value="${fmtIn(bb.h + 1)}"> ${uLabel()}</div>
+        <div class="row"><span class="muted" style="font-size:11px">Type either one - the other follows. The gap is the clear space between copies (edge to edge).</span></div>
+        <div class="row"><label>X centre-centre</label><input type="number" step="0.125" id="arDX" value="${fmtIn(bb.w + 1)}"> ${uLabel()}</div>
+        <div class="row"><label>X gap (edge)</label><input type="number" step="0.125" id="arGX" value="${fmtIn(1)}"> ${uLabel()} <span class="muted">part is ${fmtIn(bb.w)} wide</span></div>
+        <div class="row"><label>Y centre-centre</label><input type="number" step="0.125" id="arDY" value="${fmtIn(bb.h + 1)}"> ${uLabel()}</div>
+        <div class="row"><label>Y gap (edge)</label><input type="number" step="0.125" id="arGY" value="${fmtIn(1)}"> ${uLabel()} <span class="muted">part is ${fmtIn(bb.h)} tall</span></div>
       </div>
       <div id="arCirc" style="display:none">
         <div class="row"><label>Count</label><input type="number" step="1" min="2" id="arN" value="6"></div>
@@ -2124,20 +2133,34 @@
           ov.querySelector('#arGrid').style.display = type.value === 'grid' ? '' : 'none';
           ov.querySelector('#arCirc').style.display = type.value === 'circle' ? '' : 'none';
         };
+        /* Spacing two ways, kept in step: centre to centre is what a pattern on a
+           print gives, the edge-to-edge gap is what the operator sets for the
+           web of material left between parts. Both are the same number offset
+           by the selection's own width (or height). */
+        const link = (cc, gap, size) => {
+          const C = ov.querySelector(cc), Gp = ov.querySelector(gap);
+          C.oninput = () => { const v = uParse(C.value); if (isFinite(v)) Gp.value = fmtIn(v - size); };
+          Gp.oninput = () => { const v = uParse(Gp.value); if (isFinite(v)) C.value = fmtIn(v + size); };
+        };
+        link('#arDX', '#arGX', bb.w); link('#arDY', '#arGY', bb.h);
         ov.querySelector('#arCancel').onclick = close;
         ov.querySelector('#arOk').onclick = () => {
           const V = (id) => parseFloat(ov.querySelector(id).value) || 0;
+          // lengths go through uParse: the fields show the operator's unit, so a raw parseFloat is wrong in mm
+          const VL = (id) => { const v = uParse(ov.querySelector(id).value); return isFinite(v) ? v : 0; };
           const copies = [];
           snapshot();
           if (type.value === 'grid') {
             const nc = Math.max(1, Math.round(V('#arC'))), nr = Math.max(1, Math.round(V('#arR')));
-            const dx = V('#arDX'), dy = V('#arDY');
+            const dx = VL('#arDX'), dy = VL('#arDY');
             if (nc * nr > 500) { toast('That would make over 500 copies'); return; }
+            // copies laid over each other would cut the same material twice; say so rather than make them
+            if ((nc > 1 && dx < bb.w - 1e-9) || (nr > 1 && dy < bb.h - 1e-9)) { toast('Copies would overlap - the gap must be 0 or more'); return; }
             for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
               if (!r && !c) continue;
               for (const sh of shs) copies.push({ ...JSON.parse(JSON.stringify(sh)), id: job.nextId++, x: sh.x + c * dx, y: sh.y + r * dy });
             }
-            LOG.action(`Array: ${nc}×${nr} grid at ${dx} × ${dy} in`);
+            LOG.action(`Array: ${nc}×${nr} grid at ${fmtIn(dx)} × ${fmtIn(dy)} ${uLabel()} centre to centre (gap ${fmtIn(dx - bb.w)} × ${fmtIn(dy - bb.h)})`);
           } else {
             const n = Math.max(2, Math.round(V('#arN'))), R = V('#arBD') / 2;
             const cx = V('#arCX'), cy = V('#arCY'), a0 = V('#arA0') * Math.PI / 180;
@@ -4088,9 +4111,13 @@
       const ar = Math.max(b.x1 - b.x0, tol) * Math.max(b.y1 - b.y0, tol);
       if (ar < ba) { ba = ar; best = sh; }
     }
-    if (!best) return null;
-    const l = toLocal(best, p), lb = G.bbox(localLoop(best)), w = lb.x1 - lb.x0, h = lb.y1 - lb.y0;
-    return { id: best.id, u: w > 1e-9 ? (l.x - lb.x0) / w : null, v: h > 1e-9 ? (l.y - lb.y0) / h : null, ox: l.x - lb.x0, oy: l.y - lb.y0 };
+    return best ? dimAnchorOn(best, p) : null;
+  }
+  // a point tied to a given part - automatic dimensions know their part, and an
+  // arc centre can sit outside every part's box, where dimAnchor would find none
+  function dimAnchorOn(sh, p) {
+    const l = toLocal(sh, p), lb = G.bbox(localLoop(sh)), w = lb.x1 - lb.x0, h = lb.y1 - lb.y0;
+    return { id: sh.id, u: w > 1e-9 ? (l.x - lb.x0) / w : null, v: h > 1e-9 ? (l.y - lb.y0) / h : null, ox: l.x - lb.x0, oy: l.y - lb.y0 };
   }
   function dimEnd(r) {
     const sh = r && job.shapes.find(s => s.id === r.id); if (!sh) return null;
@@ -4171,7 +4198,7 @@
     if (selDim != null && !dims[selDim]) selDim = null;
     for (const d of dims.concat(dimDraft && dimDraft.b ? [dimDraft] : [])) {
       const L = G.dist(d.a, d.b), i = dims.indexOf(d);
-      const bx = drawDimLine(d.a, d.b, d.off || 0, d.text || fmtLen(L), i >= 0 && i === selDim ? '#ffffff' : '#d38cff');
+      const bx = drawDimLine(d.a, d.b, d.off || 0, d.text || (d.pre || '') + fmtLen(L), i >= 0 && i === selDim ? '#ffffff' : '#d38cff');
       if (bx && i >= 0) dimBoxes.push({ ...bx, i });
     }
     ctx.restore();
@@ -4347,6 +4374,143 @@
     }
     return false;
   }
+
+  /* ---------- automatic dimensions ----------
+     One click puts on the drawing what a customer's shop drawing shows: each
+     part's overall width and height, the radius of every arc, and each hole's
+     diameter and where its centre sits from the part's left and bottom edges -
+     so the design can be checked against the print without placing every
+     dimension by hand. They are ordinary dimensions (click to select, Delete,
+     printed in the PDF, never cut), tagged with their part so a second click
+     replaces that part's set instead of stacking copies on top. The label is
+     the measured length with a prefix ("R ", "4X R ", "Ø "), not frozen text,
+     so it follows a resize and the inch/mm switch. */
+  // a full circle, however it arrived: a circle part, a round ellipse, or a DXF circle imported as arcs
+  function circleOf(sh) {
+    if (sh.kind === 'circle') return { c: { x: sh.x, y: sh.y }, r: sh.r };
+    if (sh.kind === 'ellipse' && Math.abs(sh.rx - sh.ry) < 1e-9) return { c: { x: sh.x, y: sh.y }, r: sh.rx };
+    if (sh.kind !== 'path' || sh.open) return null;
+    let loop; try { loop = worldLoop(sh); } catch (e) { return null; }
+    const s0 = loop[0]; if (!s0 || s0.type !== 'arc') return null;
+    const r = G.radius(s0); let sw = 0;
+    for (const s of loop) {
+      if (s.type !== 'arc' || G.dist(s.c, s0.c) > 1e-6 || Math.abs(G.radius(s) - r) > 1e-6) return null;
+      sw += G.sweep(s);
+    }
+    return Math.abs(Math.abs(sw) - 2 * Math.PI) < 1e-3 ? { c: s0.c, r } : null;
+  }
+  /* The arcs of an outline, one per real curve. Imports split arcs at 90°
+     (WinCNC style), and a fillet in two pieces would be counted twice, so
+     neighbours on the same centre and radius are joined back first. */
+  function outlineArcs(loop) {
+    const same = (p, q) => p.type === 'arc' && q.type === 'arc' && G.dist(p.c, q.c) < 1e-6 && Math.abs(G.radius(p) - G.radius(q)) < 1e-6;
+    const out = [];
+    for (const s of loop) {
+      const last = out[out.length - 1];
+      if (last && same(last.segs[last.segs.length - 1], s)) last.segs.push(s);
+      else out.push({ segs: [s] });
+    }
+    if (out.length > 1 && same(out[out.length - 1].segs[0], out[0].segs[0])) out[0].segs = out.pop().segs.concat(out[0].segs);
+    return out.filter(g => g.segs[0].type === 'arc').map(g => {
+      // the label goes at the middle of the whole curve, not of one piece of it
+      const total = g.segs.reduce((t, s) => t + G.segLen(s), 0);
+      let run = 0, mid = G.midOfSeg(g.segs[0]);
+      for (const s of g.segs) { const L = G.segLen(s); if (run + L >= total / 2) { mid = G.pointAt(s, (total / 2 - run) / (L || 1)); break; } run += L; }
+      return { c: g.segs[0].c, r: G.radius(g.segs[0]), mid };
+    });
+  }
+  // past this many different radii an outline is free-form (a traced or spline
+  // shape), and a label on every arc would bury the drawing
+  const AUTO_DIM_MAX_RADII = 12;
+  function autoDims() {
+    const parts = job.shapes.filter(sh => !sel.size || sel.has(sh.id));
+    if (!parts.length) { toast('Nothing to dimension'); return; }
+    snapshot();
+    const dims = ensureDims();
+    const ids = new Set(parts.map(sh => sh.id));
+    for (let i = dims.length - 1; i >= 0; i--) if (dims[i].auto != null && ids.has(dims[i].auto)) dims.splice(i, 1);
+    selDim = null;
+    let n = 0, freeform = 0;
+    const done = new Set();    // circles already dimensioned as some part's hole
+    // a = first point, b = second; each end tied to the part it belongs to so it rides with it
+    const add = (owner, a, b, off, pre, onA, onB) => {
+      if (G.dist(a, b) < 1e-9) return;
+      dims.push({ a, b, off, pre, auto: owner.id, ra: dimAnchorOn(onA || owner, a), rb: dimAnchorOn(onB || owner, b) }); n++;
+    };
+    const gapFor = (b) => Math.max(0.25, 0.06 * Math.max(b.x1 - b.x0, b.y1 - b.y0));
+    const sizeAndRadii = (owner, sh, on) => {
+      let loop; try { loop = worldLoop(sh); } catch (e) { return; }
+      if (!loop.length) return;
+      const b = G.bbox(loop), gap = gapFor(b);
+      add(owner, { x: b.x0, y: b.y0 }, { x: b.x1, y: b.y0 }, -gap, '', on, on);   // width, under the part
+      add(owner, { x: b.x0, y: b.y1 }, { x: b.x0, y: b.y0 }, -gap, '', on, on);   // height, left of it
+      // ellipses and splines are fine polylines, not arcs; their "radii" mean nothing
+      if (sh.kind === 'ellipse' || sh.kind === 'spline') return;
+      const groups = new Map();
+      for (const a of outlineArcs(loop)) {
+        const k = a.r.toFixed(4);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(a);
+      }
+      if (groups.size > AUTO_DIM_MAX_RADII) { freeform++; return; }
+      // equal radii are said once, the way a print does: "8X R .275"
+      for (const g of groups.values()) add(owner, g[0].c, g[0].mid, 0, (g.length > 1 ? `${g.length}X ` : '') + 'R ', on, on);
+    };
+    const diameter = (owner, ci, on, count) =>
+      add(owner, { x: ci.c.x - ci.r, y: ci.c.y }, { x: ci.c.x + ci.r, y: ci.c.y }, 0, (count > 1 ? `${count}X ` : '') + 'Ø ', on, on);
+
+    for (const P of parts) {
+      if (circleOf(P)) continue;                       // a round part is done below, with the loose circles
+      let loop; try { loop = worldLoop(P); } catch (e) { continue; }
+      if (!loop.length) continue;
+      sizeAndRadii(P, P, P);
+      if (P.open) continue;
+      const b = G.bbox(loop), gap = gapFor(b);
+      /* Holes: the part's own, plus loose circles sitting inside it - a DXF
+         brings its holes in as parts of their own until they are grouped. */
+      const holes = holeShapes(P).map(h => ({ sh: h, on: P }));
+      for (const S of job.shapes) {
+        if (S === P || !circleOf(S)) continue;
+        const ci = circleOf(S), sb = shapeBBox(S);
+        if (sb.x1 - sb.x0 >= b.x1 - b.x0 || !G.pointInLoop(ci.c, loop)) continue;
+        holes.push({ sh: S, on: S });
+      }
+      const sameSize = new Map();
+      let k = 0;
+      for (const h of holes) {
+        const ci = circleOf(h.sh);
+        if (!ci) { sizeAndRadii(P, h.sh, P); continue; }  // a slot or cut-out: its own size and radii
+        if (h.on !== P) done.add(h.sh.id);
+        const key = (2 * ci.r).toFixed(4);
+        if (!sameSize.has(key)) sameSize.set(key, []);
+        sameSize.get(key).push({ ci, on: h.on });
+        // centre from the left edge (above the part) and from the bottom edge (right of it), stacked out
+        k++;
+        add(P, { x: b.x0, y: ci.c.y }, ci.c, (b.y1 - ci.c.y) + gap * (1 + k * 0.8), '', P, h.on);
+        add(P, { x: ci.c.x, y: b.y0 }, ci.c, -((b.x1 - ci.c.x) + gap * (1 + k * 0.8)), '', P, h.on);
+      }
+      for (const g of sameSize.values()) diameter(P, g[0].ci, g[0].on, g.length);
+    }
+    for (const P of parts) {
+      const ci = circleOf(P);
+      if (ci && !done.has(P.id)) diameter(P, ci, P, 1);
+    }
+    LOG.action(`Auto dimensions: ${n} on ${parts.length} part(s)` + (freeform ? `, ${freeform} free-form outline(s) given size only` : ''));
+    toast(n ? `${n} dimension${n > 1 ? 's' : ''} added` + (freeform ? ` - ${freeform} free-form part${freeform > 1 ? 's' : ''} given size only` : '') : 'Nothing to dimension');
+    refresh();
+  }
+  // takes off only what Auto dimensions put on; dimensions placed by hand stay
+  function clearAutoDims() {
+    const dims = job.dims || [];
+    const ids = sel.size ? sel : null;
+    const keep = dims.filter(d => d.auto == null || (ids && !ids.has(d.auto)));
+    if (keep.length === dims.length) { toast('No automatic dimensions to clear'); return; }
+    snapshot(); job.dims = keep; selDim = null;
+    LOG.action(`Auto dimensions cleared: ${dims.length - keep.length}`);
+    refresh();
+  }
+  $('#btnAutoDims').onclick = autoDims;
+  $('#btnClearAutoDims').onclick = clearAutoDims;
 
 
   // ---------- object snap settings ----------
@@ -5089,7 +5253,7 @@
           d.moveTo(A.x, A.y); d.lineTo(B.x, B.y);
           d.stroke();
           d.fillRgb(0.83, 0.55, 1);
-          d.text((A.x + B.x) / 2, (A.y + B.y) / 2, dm.text || fmtLen(L), 8, 'center', 0, 3);
+          d.text((A.x + B.x) / 2, (A.y + B.y) / 2, dm.text || (dm.pre || '') + fmtLen(L), 8, 'center', 0, 3);
           d.fillRgb(0, 0, 0);
         }
       }
@@ -5555,5 +5719,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, copySel, pasteClip, dimAt, selDimIndex: () => selDim, deleteSel, syncDims, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, importSVG, importPicture, openPicture, tracePicture, picData, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, selectShapes: (ids) => { sel.clear(); ids.forEach(i => sel.add(i)); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
+  window.CNC = { get job() { return job; }, copySel, pasteClip, dimAt, selDimIndex: () => selDim, deleteSel, syncDims, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, importSVG, importPicture, openPicture, tracePicture, picData, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, selectShapes: (ids) => { sel.clear(); ids.forEach(i => sel.add(i)); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf, autoDims, clearAutoDims };
 })();

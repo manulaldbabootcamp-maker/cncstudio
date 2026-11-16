@@ -5,6 +5,34 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Array spacing edge to edge, and automatic dimensions
+
+### Added
+- **Auto dimensions** (Measure tab). One click puts each part's overall width
+  and height, every arc radius (equal ones said once, "8X R .275"), and each
+  hole's diameter and centre position from the left and bottom edges on the
+  drawing - selected parts, or all. Ordinary dimensions: they ride with the
+  part, follow a resize and the mm switch, print in the PDF, are never cut.
+  A second click replaces the set; **Clear auto dimensions** removes only these.
+- **Array: edge-to-edge gap beside centre to centre.** Type either; the other
+  follows from the selection's width or height.
+
+### Fixed
+- Array spacing read the fields as inches even in mm mode.
+- An array whose copies would overlap is refused instead of made.
+
+---
+
+## A part inside another part can be picked
+
+### Fixed
+- **Clicking a small part inside a bigger one picked the bigger one.** The click
+  took the topmost part in the list, so a plate drawn after the part sitting in
+  it covered that part: every click inside moved the plate. Now a line within
+  reach wins (the nearest), and otherwise the smallest part the point is inside.
+
+---
+
 ## Copy and paste parts between design tabs
 
 ### Added
