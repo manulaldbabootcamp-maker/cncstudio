@@ -5,6 +5,50 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## EnRoute's real pass depths, date stamp and seam  (acdb889, 2eaf0ee)
+
+Found by reading the shop's whole TAP archive - 5598 programs copied off the
+EnRoute PC - and diffing a fresh EnRoute export of a 24x36 plate against ours.
+
+### Fixed
+- **Pass depths were unequal.** The cut-depth field is a *maximum*, not the
+  step. EnRoute divides the stock into equal bites - `N = ceil(total/field)`,
+  `step = total/N` - so 0.22 stock at 0.125 is two bites of 0.11 landing
+  exactly on Z0, not 0.125 and a 0.095 scrape. We stepped by the field
+  literally, leaving a short last bite on any thickness that does not divide
+  evenly and an extra pass through bare bed when cut-through was on. Proved on
+  77,159 ladders in the archive: 98.2% equal steps, 87.6% ending on Z0.
+- **The date stamp padded the hour.** `3:50:15 PM`, never `03:50:15 PM` - this
+  alone broke byte-identity on every job posted before 10am.
+- **The seam sat wherever we decided.** It was the midpoint of the longest
+  straight edge, a rule with no basis. EnRoute has no rule: the start point is
+  set by hand, part-way along a straight edge, because plunging and retracting
+  at a corner marks the part. Now an explicit start point is honoured exactly
+  wherever it lands, and failing that the seam goes to the middle of the
+  longest straight run - never to a vertex. Honouring an explicit start needed
+  `G.startLoopAt` to find the nearest point *on* an arc and split it.
+- **Overlapping lines on DXF export** (d57a012). Two parts sharing an edge each
+  carried it and RDWorks cut both - double time, melted kerf on acrylic.
+  `G.dedupeOverlaps` drops whatever an earlier segment already covers. On by
+  default, with a toggle in the laser settings; the export says how much it
+  removed.
+
+### Added
+- `test/zdepth_test.js` - sixteen ladders copied from real programs with their
+  source file named, plus the invariants.
+- `test/seam_test.js` - the 24x36 reference, byte-identical, plus the seam rule
+  itself. Both older golden tests pass the seam in by hand from the reference
+  file, which is exactly how the bug survived a green suite.
+- `tapfiles/LIBRARY.md` - the archive written up: dialect, the real tool table,
+  bed extents, the bridge profile. The archive itself is gitignored (72 MB of
+  customer-named files); the findings are not.
+
+### Still open
+Bridges are still a trapezoid of my own invention - EnRoute's is a cubic
+smoothstep. Waiting on programs 2 and 3 from `tapfiles/ENROUTE-REQUESTS.md`.
+
+---
+
 ## Array spacing edge to edge, and automatic dimensions
 
 ### Added
