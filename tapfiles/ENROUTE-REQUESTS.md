@@ -1,11 +1,13 @@
-# Three programs to draw in EnRoute and export
+# Programs to draw in EnRoute and export
 
-Three jobs, four `.tap` files (program 2 gets exported twice). Save them into
+**Program 1 is done. Two jobs left, three `.tap` files.**
+
+Program 2 gets exported twice, program 3 once. Save them into
 `tapfiles/ref-new/` with the exact names below, and write the dialog values you
 typed onto the lines marked **`-> write down:`** — the typed value is the thing
 I cannot recover from the file, and it is the whole point of program 1.
 
-Keep these the same in all three, so the only thing that varies is what is
+Keep these the same in both, so the only thing that varies is what is
 being tested:
 
 | Setting | Value |
@@ -36,7 +38,7 @@ in our offsetting rather than a placement difference.
 Settled on 9 Nov 2026 from `24x36_rect.TAP` plus the archive's own file dates.
 The operator confirmed the rule: thickness divided by the number of passes is
 each pass depth, and the cut-depth field is the ceiling that sets the count.
-0.25 is dead stock from the old config - all 490 programs with a 0.118 bite
+0.236 is dead stock from the old config - all 490 programs with a 0.118 bite
 are in the pre-2025 undated header dialect and no dated file uses it. Pinned in
 `test/zdepth_test.js` and `test/seam_test.js` (byte-identical).
 
@@ -94,7 +96,7 @@ what I need to replace it with EnRoute's actual arch.
 
 ## When they come back
 
-Drop the four files in `tapfiles/ref-new/` and tell me. I will:
+Drop the three files in `tapfiles/ref-new/` and tell me. I will:
 
 1. Rebuild each job in the app from the same numbers and diff against yours.
 2. Promote whichever ones are clean into `test/ref/` as golden files, so
