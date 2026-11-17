@@ -5,6 +5,127 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Array spacing edge to edge, and automatic dimensions
+
+### Added
+- **Auto dimensions** (Measure tab). One click puts each part's overall width
+  and height, every arc radius (equal ones said once, "8X R .275"), and each
+  hole's diameter and centre position from the left and bottom edges on the
+  drawing - selected parts, or all. Ordinary dimensions: they ride with the
+  part, follow a resize and the mm switch, print in the PDF, are never cut.
+  A second click replaces the set; **Clear auto dimensions** removes only these.
+- **Array: edge-to-edge gap beside centre to centre.** Type either; the other
+  follows from the selection's width or height.
+
+### Fixed
+- Array spacing read the fields as inches even in mm mode.
+- An array whose copies would overlap is refused instead of made.
+
+---
+
+## A part inside another part can be picked
+
+### Fixed
+- **Clicking a small part inside a bigger one picked the bigger one.** The click
+  took the topmost part in the list, so a plate drawn after the part sitting in
+  it covered that part: every click inside moved the plate. Now a line within
+  reach wins (the nearest), and otherwise the smallest part the point is inside.
+
+---
+
+## Copy and paste parts between design tabs
+
+### Added
+- **Ctrl+C / Ctrl+V for parts, across tabs.** The clipboard belongs to the app,
+  so parts copied in one design paste into any other. Pasted into a different
+  design they land at the same spot; pasted back into the same design each
+  paste steps 1 in up and right, as Duplicate does. Dimensions tied to the
+  copied parts come along; groups get fresh names so they do not merge with the
+  other design's groups. One undo takes a paste back.
+
+---
+
+## Dimensions stay with their part; no blue text on multi-select
+
+### Fixed
+- **Placed dimensions follow their part.** They were bare points on the bed, so
+  moving a part left its dimension measuring empty space. Each end is now tied
+  to the part it was placed on (as a fraction of the part's size, in its own
+  frame): it follows moves, turns and resizes. Dimensions placed earlier are
+  tied to whatever they sit on when the drawing is next shown.
+- **Dimensions can be deleted.** Click one with the select tool (it turns
+  white), press Delete or the Delete button. Deleting a part deletes its
+  dimensions. Before, Delete only worked with the mouse hovering exactly on the
+  line and nothing else selected.
+- **No blue highlight when selecting several parts.** Shift/Ctrl-click in the
+  parts list was also the browser's text selection. The app no longer
+  highlights text; typing and copying in boxes still work. Ctrl-click now adds
+  to the selection as Shift-click does.
+
+---
+
+## Picture tracing: centre lines, noise, uneven light, gaps; SVG import
+
+### Added
+- **Trace as lines.** A drawing made of lines traced as two outlines per line
+  (one each side of the pen stroke) and was cut twice. "Lines" mode thins each
+  stroke to one pixel (Zhang-Suen, then the corner pixels it leaves) and cuts
+  once down the middle, on the line. Junctions stay junctions; spurs are
+  trimmed; drawn circles come back closed, with arcs.
+- **Close gaps up to** - a broken or faint line is bridged end to end.
+- **Smooth out noise** (light blur) and **Uneven lighting / shadows** (each
+  pixel compared with the paper around it instead of one level for the page).
+- **Set size from two points** - click two points on the picture, type the real
+  distance; the picture is scaled about the first point.
+- **Duplicates dropped** - the same outline twice (fill and stroke, a pasted
+  copy) is cut once.
+- The preview shows exactly what will be traced (red = the cut line in Lines
+  mode). Trace settings are remembered for the next picture.
+- **SVG import** (`src/svg.js`): paths (all commands, relative, run-together arc
+  flags), rect (rounded), circle, ellipse, line, polyline, polygon, group
+  transforms. Real size from the page's width/height/viewBox (in, mm, cm, pt;
+  plain numbers 96 to the inch), turned right way up. Circles come in as true
+  circles; other curves within 0.0005 in, with arcs fitted back. Text, <use>
+  and embedded pictures are named and left out.
+
+---
+
+## Pictures (PNG / JPG): place to draw over, or trace into parts
+
+### Added
+- **Open / Import takes .png, .jpg, .jpeg.** The picture dialog sets its real
+  size (height follows width), position and fade. Place it to draw over by
+  hand - it sits under the drawing and is never cut - or **Trace outlines**.
+- **Tracing** (`src/trace.js`): ink from brightness (clear PNG pixels count as
+  paper), automatic threshold with a slider and live black/white preview,
+  "light shapes on dark", specks under a size ignored. Edges are followed
+  between pixels, simplified, and round runs fitted as arcs. Outlines come in
+  cut outside, holes cut inside, islands in holes outside again.
+- The picture is saved inside the .cncjob. Command `PIC` reopens the dialog to
+  resize, hide or remove it.
+
+---
+
+## DXF files from other CAD programs import
+
+### Fixed
+- **Old-style POLYLINEs are read.** POLYLINE + VERTEX + SEQEND (older AutoCAD
+  and many converters) was skipped entirely, so a panel sent from another shop
+  came in with no outlines and a message to re-export it. Bulges, closed flag
+  and the drawn-from-below plane are handled as for LWPOLYLINE; 3D meshes are
+  named and left out.
+- **SPLINEs follow the true curve.** They were joined control point to control
+  point - the frame the curve is pulled towards, not the curve. Now evaluated
+  as NURBS (knots and weights) and split until every chord is within 0.0005 in.
+  Fit-point-only splines pass through their fit points.
+- **ELLIPSE is read** (full or partial), within 0.0005 in.
+- **Text, dimensions, hatches** are counted as notes: mentioned in the import
+  message, no longer listed as missing geometry. Block references (INSERT) are
+  still named; the message no longer says to re-export - Import anyway brings
+  in the rest.
+
+---
+
 ## Size several parts at once
 
 ### Added

@@ -105,10 +105,50 @@ console.log('a 3D file is reported, not silently flattened');
   ok(zeroLen === 0, 'no zero-length line comes in');
 }
 
-console.log('what cannot be read is named');
+console.log('what cannot be read is named; text and dimensions are notes, not losses');
 {
-  const r = G.parseDXF(dxf([LINE(0, 0, 1, 0), ['ELLIPSE', [[10, 0], [20, 0], [11, 1], [21, 0], [40, 0.375]]], ['ELLIPSE', [[10, 5], [20, 0], [11, 1], [21, 0], [40, 0.375]]], ['INSERT', [[2, 'BLK'], [10, 0], [20, 0]]]]));
-  ok(r.report.skipped.ELLIPSE === 2 && r.report.skipped.INSERT === 1, '2 ELLIPSE and 1 INSERT reported as skipped', JSON.stringify(r.report.skipped));
+  const r = G.parseDXF(dxf([LINE(0, 0, 1, 0), ['INSERT', [[2, 'BLK'], [10, 0], [20, 0]]], ['TEXT', [[10, 0], [20, 0], [1, 'A']]], ['DIMENSION', [[10, 0], [20, 0]]]]));
+  ok(r.report.skipped.INSERT === 1 && Object.keys(r.report.skipped).length === 1, 'the INSERT is reported as skipped, nothing else', JSON.stringify(r.report.skipped));
+  ok(r.report.notes.TEXT === 1 && r.report.notes.DIMENSION === 1, 'TEXT and DIMENSION counted as notes', JSON.stringify(r.report.notes));
+}
+
+/* A panel sent from another shop came in with nothing to cut and a message to
+   re-export it - its outlines were old-style POLYLINEs and its curves SPLINEs,
+   which nobody there could re-export for us. */
+console.log('an old-style POLYLINE (POLYLINE, VERTEX..., SEQEND) is read');
+{
+  const V = (x, y, b = 0) => ['VERTEX', [[10, x], [20, y], [30, 0], [42, b]]];
+  // 4 x 2 with the top edge bulged into a half circle of radius 2 (bulge 1)
+  const r = G.parseDXF(dxf([['POLYLINE', [[66, 1], [10, 0], [20, 0], [30, 0], [70, 1]]], V(0, 0), V(4, 0), V(4, 2, 1), V(0, 2), ['SEQEND', []], LINE(9, 9, 10, 9)]));
+  ok(r.loops.length === 1 && r.opens.length === 1, 'one closed outline, and the LINE after SEQEND still reads', `${r.loops.length} loops ${r.opens.length} opens`);
+  const area = r.loops.length ? Math.abs(G.signedArea(r.loops[0])) : 0;
+  ok(near(area, 8 + Math.PI * 2, 1e-3), 'area 8 + half of a R2 circle - the bulge is kept', area);
+  ok(empty(r.report), 'nothing reported', JSON.stringify(r.report));
+  const m = G.parseDXF(dxf([['POLYLINE', [[66, 1], [70, 64]]], V(0, 0), ['SEQEND', []]]));
+  ok(m.report.skipped['3D mesh'] === 1, 'a polyface mesh is named, not read as an outline', JSON.stringify(m.report.skipped));
+}
+
+console.log('a SPLINE follows its curve, not the frame of its control points');
+{
+  // a quarter of a unit circle as a rational quadratic NURBS: exact in theory
+  const w = Math.SQRT1_2;
+  const r = G.parseDXF(dxf([['SPLINE', [[70, 8], [71, 2], [72, 6], [73, 3], [40, 0], [40, 0], [40, 0], [40, 1], [40, 1], [40, 1], [41, 1], [10, 1], [20, 0], [30, 0], [41, w], [10, 1], [20, 1], [30, 0], [41, 1], [10, 0], [20, 1], [30, 0]]]]));
+  const segs = r.opens[0] || [];
+  const worst = Math.max(...segs.map(s => Math.max(Math.abs(Math.hypot(s.a.x, s.a.y) - 1), Math.abs(Math.hypot((s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2) - 1))));
+  ok(segs.length > 4 && worst < 0.0006, 'every point and chord within 0.0006 in of the true arc', `${segs.length} lines, worst ${worst}`);
+  ok(segs.length && nearP(segs[0].a, 1, 0) && nearP(segs[segs.length - 1].b, 0, 1), 'starts at 1,0 and ends at 0,1');
+  // the old reading went straight to the corner control point 1,1
+  ok(!segs.some(s => Math.hypot(s.b.x - 1, s.b.y - 1) < 0.2), 'nowhere near the 1,1 control point');
+}
+
+console.log('an ELLIPSE is read');
+{
+  const r = G.parseDXF(dxf([['ELLIPSE', [[10, 5], [20, 3], [30, 0], [11, 2], [21, 0], [31, 0], [40, 0.5], [41, 0], [42, Math.PI * 2]]]]));
+  ok(r.loops.length === 1, 'a full ellipse is one closed outline', `${r.loops.length} loops`);
+  const bb = r.loops.length ? G.bbox(r.loops[0]) : {};
+  ok(near(bb.x0, 3, 1e-3) && near(bb.x1, 7, 1e-3) && near(bb.y0, 2, 1e-3) && near(bb.y1, 4, 1e-3), '4 x 2, centred on 5,3', JSON.stringify(bb));
+  const area = r.loops.length ? Math.abs(G.signedArea(r.loops[0])) : 0;
+  ok(near(area, Math.PI * 2 * 1, 0.01), 'area within 0.01 of pi a b', area);
 }
 
 console.log('the same edge twice comes in once - a laser would cut it twice');

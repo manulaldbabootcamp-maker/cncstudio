@@ -103,6 +103,10 @@
   input[type=range].slider { -webkit-appearance:none; appearance:none; width:100%; height:18px; background:transparent; padding:0; border:none; }
   input[type=range].slider::-webkit-slider-runnable-track { height:4px; background:var(--panel2); border:1px solid var(--border); border-radius:3px; }
   input[type=range].slider::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:14px; height:14px; margin-top:-6px; border-radius:50%; background:var(--accent); border:1px solid #0b1520; cursor:pointer; }
+  /* An app, not a page: shift-clicking parts or dragging a selection box
+     highlighted labels and list text in blue. Typing and copying still work. */
+  body { user-select:none; -webkit-user-select:none; }
+  input, textarea, pre, .gcode, [contenteditable] { user-select:text; -webkit-user-select:text; }
   textarea { width:100%; min-height:70px; font: 12px ui-monospace, Consolas, monospace; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:14px; max-width:980px; }
   .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
@@ -144,8 +148,8 @@
     <div class="hrow ribbon">
       <div class="rib active" data-rib="file">
         <button id="btnNew" data-name="New design" title="Open a new, empty design in a tab of its own">New design</button>
-        <button id="btnOpen" data-name="Open" data-cmd="open" title="Open a project or DXF in a new tab (or this one, if it is empty)">Open</button>
-        <button id="btnImport" data-name="Import into this design" title="Add a DXF's parts to the design you have open">Import into this design</button>
+        <button id="btnOpen" data-name="Open" data-cmd="open" title="Open a project, DXF, SVG or picture (PNG/JPG) in a new tab (or this one, if it is empty)">Open</button>
+        <button id="btnImport" data-name="Import into this design" title="Add a DXF's or SVG's parts, or a picture to trace, to the design you have open">Import into this design</button>
         <button id="btnSave" data-name="Save" data-key="Ctrl+S" title="Save project (.cncjob)">Save</button>
       </div>
       <div class="rib" data-rib="draw">
@@ -182,6 +186,8 @@
       <div class="rib" data-rib="measure">
         <button class="tool" data-tool="measure" data-name="Measure" data-cmd="measure" title="Click two points for distance and angle">Measure</button>
         <button class="tool" data-tool="dim" data-name="Dimension" data-cmd="dim" title="Click two points to place a dimension on the drawing">Dimension</button>
+        <button id="btnAutoDims" data-name="Auto dimensions" data-cmd="autodim" title="One click: overall width and height, every arc radius, and each hole's diameter and position - on the selected parts, or all parts if none are selected">Auto dimensions</button>
+        <button id="btnClearAutoDims" data-name="Clear auto dimensions" title="Remove the automatic dimensions (selected parts, or all) - ones placed by hand stay">Clear auto dimensions</button>
       </div>
       <div class="rib" data-rib="snap">
         <button id="btnSnapMenu" data-name="Snap settings" data-key="F3 on/off" title="Object snap settings">Snap settings</button>
@@ -378,7 +384,7 @@
   </footer>
 </div>
 <div id="toast" class="toast"></div>
-<input type="file" id="fileIn" style="display:none" accept=".cncjob,.json,.dxf,.tap,.nc,.txt">
+<input type="file" id="fileIn" style="display:none" accept=".cncjob,.json,.dxf,.svg,.png,.jpg,.jpeg,.tap,.nc,.txt">
 <input type="file" id="fileSim" style="display:none" accept=".tap,.nc,.txt">
 <input type="file" id="fileSet" style="display:none" accept=".json">
 <!--SCRIPTS-->

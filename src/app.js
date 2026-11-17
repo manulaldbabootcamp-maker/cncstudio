@@ -61,6 +61,7 @@
     text: { label: 'Text / engraving', run: () => clickBtn('#btnText') },
     dim: { label: 'Dimension', run: () => setTool('dim') },
     measure: { label: 'Measure (distance)', run: () => setTool('measure') },
+    autodim: { label: 'Auto dimensions (sizes, radii, holes)', run: () => clickBtn('#btnAutoDims') },
     divide: { label: 'Divide into regions (every enclosed area becomes a part)', run: () => explodeRegions() },
     boundary: { label: 'Region from a point inside it', run: () => { setTool('boundary'); toast('Click inside the area you want to become a part'); } },
     trim: { label: 'Trim / delete an edge', run: () => { setTool('trim'); toast('Click the edge you want to remove'); } },
@@ -83,6 +84,7 @@
     ungroup: { label: 'Ungroup', run: () => ungroupSel() },
     nest: { label: 'Auto-arrange on the bed', run: () => clickBtn('#btnNest') },
     trace: { label: 'Trace a paper template', run: () => openOffsetTrace() },
+    picture: { label: 'Picture - size, fade, trace or remove it', run: () => openPicture() },
     zoom: { label: 'Zoom to the bed', run: () => { fitBed(); draw(); } },
     undo: { label: 'Undo', run: () => undo() },
     redo: { label: 'Redo', run: () => redo() },
@@ -104,7 +106,7 @@
     M: 'move', CO: 'copy', CP: 'copy', RO: 'rotate', SC: 'scale', MI: 'mirror',
     O: 'offset', AR: 'array', GR: 'grid', GRID: 'grid', F: 'fillet', CHA: 'chamfer',
     UNI: 'union', SU: 'subtract', G: 'group', UNG: 'ungroup',
-    NE: 'nest', TRACE: 'trace', Z: 'zoom', U: 'undo', RE: 'redo',
+    NE: 'nest', TRACE: 'trace', PIC: 'picture', IMG: 'picture', Z: 'zoom', U: 'undo', RE: 'redo',
     SA: 'save', OP: 'open', TAP: 'tap', DXF: 'dxf', PDF: 'pdf',
     OR: 'ortho', OS: 'osnap', S: 'select', SEL: 'select',
     X: 'setx', Y: 'sety',
@@ -204,8 +206,8 @@
   let sel = new Set();
   let undoStack = [], redoStack = [];
   function snapshot() { undoStack.push(JSON.stringify(job)); if (undoStack.length > 60) undoStack.shift(); redoStack = []; }
-  function undo() { if (!undoStack.length) return; redoStack.push(JSON.stringify(job)); job = JSON.parse(undoStack.pop()); sel.clear(); refresh(); }
-  function redo() { if (!redoStack.length) return; undoStack.push(JSON.stringify(job)); job = JSON.parse(redoStack.pop()); sel.clear(); refresh(); }
+  function undo() { if (!undoStack.length) return; redoStack.push(JSON.stringify(job)); job = JSON.parse(undoStack.pop()); sel.clear(); selDim = null; refresh(); }
+  function redo() { if (!redoStack.length) return; undoStack.push(JSON.stringify(job)); job = JSON.parse(redoStack.pop()); sel.clear(); selDim = null; refresh(); }
 
   /* ---------- design tabs ----------
      Several designs open at once, one tab each. Each keeps its own parts, undo
@@ -503,6 +505,7 @@
     for (let i = 0; i * major <= m.bedH + 1e-9; i++) { const y = i * major; const p = W2S({ x: 0, y }); ctx.fillText(tick(y), bl.x - 30 * dpr, p.y - 2); }
     // origin marker
     ctx.fillStyle = '#ff5c5c'; ctx.beginPath(); ctx.arc(bl.x, bl.y, 4 * dpr, 0, Math.PI * 2); ctx.fill();
+    drawPicture();
     // shapes
     const showPaths = $('#chkPaths').checked, showKerf = $('#chkKerf').checked;
     // world loops once per frame; the hole pairing needs them all up front
@@ -959,14 +962,19 @@
     };
   }
 
+  /* The part under the cursor. A line within reach wins, the nearest one; failing
+     that, the smallest closed part the point is inside. Taking the topmost part
+     in the list meant a plate drawn after the small part sitting in it covered
+     that part completely: every click inside picked and moved the plate. */
   function hitShape(wp) {
     const tol = 6 / view.scale;
+    let edge = null, ed = tol, inside = null, ia = Infinity;
     for (let i = job.shapes.length - 1; i >= 0; i--) {
       const sh = job.shapes[i]; const loop = worldLoop(sh);
-      if (!sh.open && G.pointInLoop(wp, loop)) return sh;
-      for (const s of loop) { const pts = G.samplePts(s, 0.1); for (let k = 0; k + 1 < pts.length; k++) if (distToSeg(wp, pts[k], pts[k + 1]) < tol) return sh; }
+      for (const s of loop) { const pts = G.samplePts(s, 0.1); for (let k = 0; k + 1 < pts.length; k++) { const d = distToSeg(wp, pts[k], pts[k + 1]); if (d < ed) { ed = d; edge = sh; } } }
+      if (!sh.open && G.pointInLoop(wp, loop)) { const b = G.bbox(loop), a = (b.x1 - b.x0) * (b.y1 - b.y0); if (a < ia) { ia = a; inside = sh; } }
     }
-    return null;
+    return edge || inside;
   }
   function distToSeg(p, a, b) { const d = G.sub(b, a); const L2 = G.dot(d, d) || 1; let t = G.dot(G.sub(p, a), d) / L2; t = Math.max(0, Math.min(1, t)); return G.dist(p, G.add(a, G.mul(d, t))); }
 
@@ -994,6 +1002,9 @@
     if (tool === 'select') {
       const sizeHit = hitSizeLabel(s);
       if (sizeHit) { clearDynTarget(); openSizeEditor(sizeHit); return; }
+      const di = dimAt(w, s);
+      if (di >= 0) { selDim = di; sel.clear(); clearEdge(); clearDynTarget(); refresh(); toast('Dimension selected - Delete removes it'); return; }
+      selDim = null;
       clearDynTarget();
       // a grip under the cursor takes precedence over selecting/moving the shape
       const g = hitGrip(w);
@@ -1310,12 +1321,14 @@
     }
     if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
     if (e.key === 'Shift') { orthoTemp = true; draw(); }
-    if (e.key === 'Escape') { if (clearDynTarget()) { draw(); return; } if (clearEdge()) { refreshProps(); draw(); return; } drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
+    if (e.key === 'Escape') { if (selDim != null) { selDim = null; draw(); return; } if (clearDynTarget()) { draw(); return; } if (clearEdge()) { refreshProps(); draw(); return; } drawing = null; measure = null; dimDraft = null; showDyn(false); setTool('select'); draw(); }
     if (e.key === 'Enter' && drawing) { if (drawing.kind === 'spline') finishSpline(); else finishPoly(); }
-    if (e.key === 'Delete' || e.key === 'Backspace') { if (selEdges.length && deleteSelectedEdge()) return; if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
+    if (e.key === 'Delete' || e.key === 'Backspace') { if (selDim != null && deleteSelDim()) return; if (selEdges.length && deleteSelectedEdge()) return; if (!sel.size && deleteDimNear({ x: mouse.wx, y: mouse.wy })) return; deleteSel(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.shiftKey ? redo() : undo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { redo(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { duplicateSel(); e.preventDefault(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { copySel(); e.preventDefault(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') { pasteClip(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { job.shapes.forEach(s => sel.add(s.id)); refresh(); e.preventDefault(); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { saveProject(); e.preventDefault(); }
     if (e.key.toLowerCase() === 'f') { fitBed(); draw(); }
@@ -1360,11 +1373,55 @@
     }
     refresh();
   }
-  function deleteSel() { if (!sel.size) return; snapshot(); job.shapes = job.shapes.filter(s => !sel.has(s.id)); sel.clear(); refresh(); }
+  function deleteSel() {
+    if (!sel.size) { deleteSelDim(); return; }
+    snapshot(); job.shapes = job.shapes.filter(s => !sel.has(s.id));
+    // a dimension on a deleted part would measure nothing; it goes with it
+    if (job.dims) job.dims = job.dims.filter(d => !(d.ra && sel.has(d.ra.id)) && !(d.rb && sel.has(d.rb.id)));
+    sel.clear(); refresh();
+  }
   function duplicateSel() {
     if (!sel.size) return; snapshot(); const copies = [];
     for (const sh of job.shapes) if (sel.has(sh.id)) { const c = JSON.parse(JSON.stringify(sh)); c.id = job.nextId++; c.name = sh.name + ' copy'; c.x += 1; c.y += 1; delete c.startPt; copies.push(c); }
     job.shapes.push(...copies); sel = new Set(copies.map(c => c.id)); refresh();
+  }
+  /* Copy and paste, across design tabs. The clipboard belongs to the app, not
+     to a tab, so parts copied in one design paste into another. Pasted into a
+     different design they land where they were, so a layout carries over; pasted
+     back into the same design they step off by 1 in each time, as Duplicate does,
+     so the copy is not hidden under the original. Dimensions tied to the copied
+     parts come along. Groups get new names: "g1" in one tab is not "g1" in another. */
+  let clip = null;
+  function copySel() {
+    if (!sel.size) return false;
+    const ids = new Set(sel);
+    const dims = (job.dims || []).filter(d => d.ra && d.rb && ids.has(d.ra.id) && ids.has(d.rb.id));
+    clip = { shapes: JSON.parse(JSON.stringify(job.shapes.filter(sh => ids.has(sh.id)))), dims: JSON.parse(JSON.stringify(dims)), src: job, n: 0 };
+    LOG.action(`Copied ${clip.shapes.length} part(s)`); toast(`Copied ${clip.shapes.length} part(s) - Ctrl+V pastes, in any design tab`);
+    return true;
+  }
+  function pasteClip() {
+    if (!clip || !clip.shapes.length) { toast('Nothing copied - select parts and press Ctrl+C'); return false; }
+    const step = clip.src === job ? ++clip.n : 0;
+    snapshot();
+    const idMap = new Map(), grpMap = new Map(), made = [];
+    for (const src of clip.shapes) {
+      const c = JSON.parse(JSON.stringify(src));
+      idMap.set(src.id, c.id = job.nextId++);
+      if (c.group) { if (!grpMap.has(c.group)) grpMap.set(c.group, 'g' + (nextGroup++)); c.group = grpMap.get(c.group); }
+      c.x += step; c.y += step; if (c.textAt) { c.textAt.x += step; c.textAt.y += step; }
+      if (step) delete c.startPt;
+      made.push(c);
+    }
+    job.shapes.push(...made);
+    for (const d of clip.dims) {
+      const c = JSON.parse(JSON.stringify(d));
+      c.ra.id = idMap.get(d.ra.id); c.rb.id = idMap.get(d.rb.id);
+      ensureDims().push(c);   // ends are recomputed from their parts on the next draw
+    }
+    sel = new Set(made.map(c => c.id)); selDim = null;
+    LOG.action(`Pasted ${made.length} part(s) into ${docName(docs[activeDoc])}`);
+    refresh(); return true;
   }
   $('#btnDel').onclick = deleteSel; $('#btnDup').onclick = duplicateSel; $('#btnUndo').onclick = undo;
 
@@ -1376,7 +1433,9 @@
     for (const sh of job.shapes) {
       const d = document.createElement('div'); d.className = 'item' + (sel.has(sh.id) ? ' sel' : '');
       d.innerHTML = `<span class="nm" title="Double-click to rename">${esc(sh.name)}</span><span class="op">${sh.op}</span>`;
-      d.onclick = (e) => { if (e.shiftKey) { sel.has(sh.id) ? sel.delete(sh.id) : sel.add(sh.id); } else { sel.clear(); sel.add(sh.id); } clearEdge(); refreshList(); refreshProps(); draw(); };
+      // shift-click in a list is the browser's "select text from here to there"; here it picks parts
+      d.onmousedown = (e) => { if (e.shiftKey || e.ctrlKey) e.preventDefault(); };
+      d.onclick = (e) => { if (e.shiftKey || e.ctrlKey) { sel.has(sh.id) ? sel.delete(sh.id) : sel.add(sh.id); } else { sel.clear(); sel.add(sh.id); } selDim = null; clearEdge(); refreshList(); refreshProps(); draw(); };
       // double-click the name to rename in place
       d.querySelector('.nm').ondblclick = (e) => {
         e.stopPropagation();
@@ -2052,8 +2111,11 @@
       <div id="arGrid">
         <div class="row"><label>Columns</label><input type="number" step="1" min="1" id="arC" value="3"> across</div>
         <div class="row"><label>Rows</label><input type="number" step="1" min="1" id="arR" value="1"> up</div>
-        <div class="row"><label>X spacing</label><input type="number" step="0.125" id="arDX" value="${fmtIn(bb.w + 1)}"> ${uLabel()} <span class="muted">centre to centre</span></div>
-        <div class="row"><label>Y spacing</label><input type="number" step="0.125" id="arDY" value="${fmtIn(bb.h + 1)}"> ${uLabel()}</div>
+        <div class="row"><span class="muted" style="font-size:11px">Type either one - the other follows. The gap is the clear space between copies (edge to edge).</span></div>
+        <div class="row"><label>X centre-centre</label><input type="number" step="0.125" id="arDX" value="${fmtIn(bb.w + 1)}"> ${uLabel()}</div>
+        <div class="row"><label>X gap (edge)</label><input type="number" step="0.125" id="arGX" value="${fmtIn(1)}"> ${uLabel()} <span class="muted">part is ${fmtIn(bb.w)} wide</span></div>
+        <div class="row"><label>Y centre-centre</label><input type="number" step="0.125" id="arDY" value="${fmtIn(bb.h + 1)}"> ${uLabel()}</div>
+        <div class="row"><label>Y gap (edge)</label><input type="number" step="0.125" id="arGY" value="${fmtIn(1)}"> ${uLabel()} <span class="muted">part is ${fmtIn(bb.h)} tall</span></div>
       </div>
       <div id="arCirc" style="display:none">
         <div class="row"><label>Count</label><input type="number" step="1" min="2" id="arN" value="6"></div>
@@ -2071,20 +2133,34 @@
           ov.querySelector('#arGrid').style.display = type.value === 'grid' ? '' : 'none';
           ov.querySelector('#arCirc').style.display = type.value === 'circle' ? '' : 'none';
         };
+        /* Spacing two ways, kept in step: centre to centre is what a pattern on a
+           print gives, the edge-to-edge gap is what the operator sets for the
+           web of material left between parts. Both are the same number offset
+           by the selection's own width (or height). */
+        const link = (cc, gap, size) => {
+          const C = ov.querySelector(cc), Gp = ov.querySelector(gap);
+          C.oninput = () => { const v = uParse(C.value); if (isFinite(v)) Gp.value = fmtIn(v - size); };
+          Gp.oninput = () => { const v = uParse(Gp.value); if (isFinite(v)) C.value = fmtIn(v + size); };
+        };
+        link('#arDX', '#arGX', bb.w); link('#arDY', '#arGY', bb.h);
         ov.querySelector('#arCancel').onclick = close;
         ov.querySelector('#arOk').onclick = () => {
           const V = (id) => parseFloat(ov.querySelector(id).value) || 0;
+          // lengths go through uParse: the fields show the operator's unit, so a raw parseFloat is wrong in mm
+          const VL = (id) => { const v = uParse(ov.querySelector(id).value); return isFinite(v) ? v : 0; };
           const copies = [];
           snapshot();
           if (type.value === 'grid') {
             const nc = Math.max(1, Math.round(V('#arC'))), nr = Math.max(1, Math.round(V('#arR')));
-            const dx = V('#arDX'), dy = V('#arDY');
+            const dx = VL('#arDX'), dy = VL('#arDY');
             if (nc * nr > 500) { toast('That would make over 500 copies'); return; }
+            // copies laid over each other would cut the same material twice; say so rather than make them
+            if ((nc > 1 && dx < bb.w - 1e-9) || (nr > 1 && dy < bb.h - 1e-9)) { toast('Copies would overlap - the gap must be 0 or more'); return; }
             for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
               if (!r && !c) continue;
               for (const sh of shs) copies.push({ ...JSON.parse(JSON.stringify(sh)), id: job.nextId++, x: sh.x + c * dx, y: sh.y + r * dy });
             }
-            LOG.action(`Array: ${nc}×${nr} grid at ${dx} × ${dy} in`);
+            LOG.action(`Array: ${nc}×${nr} grid at ${fmtIn(dx)} × ${fmtIn(dy)} ${uLabel()} centre to centre (gap ${fmtIn(dx - bb.w)} × ${fmtIn(dy - bb.h)})`);
           } else {
             const n = Math.max(2, Math.round(V('#arN'))), R = V('#arBD') / 2;
             const cx = V('#arCX'), cy = V('#arCY'), a0 = V('#arA0') * Math.PI / 180;
@@ -4018,6 +4094,63 @@
   // ---------- on-canvas dimensions ----------
   // dims live on the job but are annotation only: never posted, never cut
   function ensureDims() { if (!job.dims) job.dims = []; return job.dims; }
+  /* A dimension end placed on a part rides with it. Placed as bare points on
+     the bed, a dimension stayed behind when its part was moved and measured
+     empty space. Each end is kept in its part's own frame, as a fraction of the
+     part's size, so it follows a move or turn and stays on the same corner or
+     edge when the part is resized. An end on no part stays where it was put. */
+  const toLocal = (sh, p) => { const a = -(sh.rot || 0) * Math.PI / 180, x = p.x - sh.x, y = p.y - sh.y; return { x: x * Math.cos(a) - y * Math.sin(a), y: x * Math.sin(a) + y * Math.cos(a) }; };
+  const toWorld = (sh, l) => { const a = (sh.rot || 0) * Math.PI / 180; return { x: sh.x + l.x * Math.cos(a) - l.y * Math.sin(a), y: sh.y + l.x * Math.sin(a) + l.y * Math.cos(a) }; };
+  function dimAnchor(p) {
+    const tol = 8 * devicePixelRatio / view.scale;
+    let best = null, ba = Infinity;
+    for (const sh of job.shapes) {
+      let b; try { b = G.bbox(worldLoop(sh)); } catch (e) { continue; }
+      if (p.x < b.x0 - tol || p.x > b.x1 + tol || p.y < b.y0 - tol || p.y > b.y1 + tol) continue;
+      // the smallest part round the point: a hole's own part, not the sheet it sits on
+      const ar = Math.max(b.x1 - b.x0, tol) * Math.max(b.y1 - b.y0, tol);
+      if (ar < ba) { ba = ar; best = sh; }
+    }
+    return best ? dimAnchorOn(best, p) : null;
+  }
+  // a point tied to a given part - automatic dimensions know their part, and an
+  // arc centre can sit outside every part's box, where dimAnchor would find none
+  function dimAnchorOn(sh, p) {
+    const l = toLocal(sh, p), lb = G.bbox(localLoop(sh)), w = lb.x1 - lb.x0, h = lb.y1 - lb.y0;
+    return { id: sh.id, u: w > 1e-9 ? (l.x - lb.x0) / w : null, v: h > 1e-9 ? (l.y - lb.y0) / h : null, ox: l.x - lb.x0, oy: l.y - lb.y0 };
+  }
+  function dimEnd(r) {
+    const sh = r && job.shapes.find(s => s.id === r.id); if (!sh) return null;
+    const lb = G.bbox(localLoop(sh)), w = lb.x1 - lb.x0, h = lb.y1 - lb.y0;
+    return toWorld(sh, { x: lb.x0 + (r.u != null ? r.u * w : r.ox), y: lb.y0 + (r.v != null ? r.v * h : r.oy) });
+  }
+  // brings every dimension's ends to where their parts are now; run before anything reads d.a / d.b
+  function syncDims() {
+    for (const d of job.dims || []) {
+      // dimensions placed before ends were tied to parts are tied to whatever they sit on now
+      if (d.ra === undefined) d.ra = dimAnchor(d.a);
+      if (d.rb === undefined) d.rb = dimAnchor(d.b);
+      const a = dimEnd(d.ra), b = dimEnd(d.rb);
+      if (a) d.a = a; if (b) d.b = b;
+    }
+  }
+  let selDim = null, dimBoxes = [];   // the dimension picked with the select tool; label boxes for clicking
+  function dimAt(w, s) {
+    for (const bx of dimBoxes) if (s.x >= bx.x && s.x <= bx.x + bx.w && s.y >= bx.y && s.y <= bx.y + bx.h) return bx.i;
+    const dims = job.dims || [];
+    for (let i = dims.length - 1; i >= 0; i--) {
+      const d = dims[i], dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1;
+      const nx = -dy / L, ny = dx / L, off = d.off || 0;
+      const A = { x: d.a.x + nx * off, y: d.a.y + ny * off }, B = { x: d.b.x + nx * off, y: d.b.y + ny * off };
+      if (distToSeg(w, A, B) < 6 * devicePixelRatio / view.scale) return i;
+    }
+    return -1;
+  }
+  function deleteSelDim() {
+    if (selDim == null || !job.dims || !job.dims[selDim]) { selDim = null; return false; }
+    snapshot(); job.dims.splice(selDim, 1); selDim = null;
+    LOG.action('Dimension removed'); refresh(); return true;
+  }
   /* One dimension line: witness lines up from a and b, the measured line
      between them offset by `off`, arrow ticks, and a boxed label. Shared by
      placed dimensions and the automatic size labels on a selected part. */
@@ -4061,9 +4194,12 @@
     const dpr = devicePixelRatio;
     ctx.save();
     ctx.font = `${12 * dpr}px ui-monospace, monospace`;
+    syncDims(); dimBoxes = [];
+    if (selDim != null && !dims[selDim]) selDim = null;
     for (const d of dims.concat(dimDraft && dimDraft.b ? [dimDraft] : [])) {
-      const L = G.dist(d.a, d.b);
-      drawDimLine(d.a, d.b, d.off || 0, d.text || fmtLen(L), '#d38cff');
+      const L = G.dist(d.a, d.b), i = dims.indexOf(d);
+      const bx = drawDimLine(d.a, d.b, d.off || 0, d.text || (d.pre || '') + fmtLen(L), i >= 0 && i === selDim ? '#ffffff' : '#d38cff');
+      if (bx && i >= 0) dimBoxes.push({ ...bx, i });
     }
     ctx.restore();
   }
@@ -4223,7 +4359,7 @@
     const d = dimDraft, dx = d.b.x - d.a.x, dy = d.b.y - d.a.y, L = Math.hypot(dx, dy) || 1;
     d.off = ((ws.x - d.a.x) * (-dy / L)) + ((ws.y - d.a.y) * (dx / L));
     snapshot();
-    ensureDims().push({ a: d.a, b: d.b, off: d.off });
+    ensureDims().push({ a: d.a, b: d.b, off: d.off, ra: dimAnchor(d.a), rb: dimAnchor(d.b) });
     LOG.action(`Dimension added: ${fmtIn(L)} in`);
     dimDraft = null;
     refresh();
@@ -4238,6 +4374,143 @@
     }
     return false;
   }
+
+  /* ---------- automatic dimensions ----------
+     One click puts on the drawing what a customer's shop drawing shows: each
+     part's overall width and height, the radius of every arc, and each hole's
+     diameter and where its centre sits from the part's left and bottom edges -
+     so the design can be checked against the print without placing every
+     dimension by hand. They are ordinary dimensions (click to select, Delete,
+     printed in the PDF, never cut), tagged with their part so a second click
+     replaces that part's set instead of stacking copies on top. The label is
+     the measured length with a prefix ("R ", "4X R ", "Ø "), not frozen text,
+     so it follows a resize and the inch/mm switch. */
+  // a full circle, however it arrived: a circle part, a round ellipse, or a DXF circle imported as arcs
+  function circleOf(sh) {
+    if (sh.kind === 'circle') return { c: { x: sh.x, y: sh.y }, r: sh.r };
+    if (sh.kind === 'ellipse' && Math.abs(sh.rx - sh.ry) < 1e-9) return { c: { x: sh.x, y: sh.y }, r: sh.rx };
+    if (sh.kind !== 'path' || sh.open) return null;
+    let loop; try { loop = worldLoop(sh); } catch (e) { return null; }
+    const s0 = loop[0]; if (!s0 || s0.type !== 'arc') return null;
+    const r = G.radius(s0); let sw = 0;
+    for (const s of loop) {
+      if (s.type !== 'arc' || G.dist(s.c, s0.c) > 1e-6 || Math.abs(G.radius(s) - r) > 1e-6) return null;
+      sw += G.sweep(s);
+    }
+    return Math.abs(Math.abs(sw) - 2 * Math.PI) < 1e-3 ? { c: s0.c, r } : null;
+  }
+  /* The arcs of an outline, one per real curve. Imports split arcs at 90°
+     (WinCNC style), and a fillet in two pieces would be counted twice, so
+     neighbours on the same centre and radius are joined back first. */
+  function outlineArcs(loop) {
+    const same = (p, q) => p.type === 'arc' && q.type === 'arc' && G.dist(p.c, q.c) < 1e-6 && Math.abs(G.radius(p) - G.radius(q)) < 1e-6;
+    const out = [];
+    for (const s of loop) {
+      const last = out[out.length - 1];
+      if (last && same(last.segs[last.segs.length - 1], s)) last.segs.push(s);
+      else out.push({ segs: [s] });
+    }
+    if (out.length > 1 && same(out[out.length - 1].segs[0], out[0].segs[0])) out[0].segs = out.pop().segs.concat(out[0].segs);
+    return out.filter(g => g.segs[0].type === 'arc').map(g => {
+      // the label goes at the middle of the whole curve, not of one piece of it
+      const total = g.segs.reduce((t, s) => t + G.segLen(s), 0);
+      let run = 0, mid = G.midOfSeg(g.segs[0]);
+      for (const s of g.segs) { const L = G.segLen(s); if (run + L >= total / 2) { mid = G.pointAt(s, (total / 2 - run) / (L || 1)); break; } run += L; }
+      return { c: g.segs[0].c, r: G.radius(g.segs[0]), mid };
+    });
+  }
+  // past this many different radii an outline is free-form (a traced or spline
+  // shape), and a label on every arc would bury the drawing
+  const AUTO_DIM_MAX_RADII = 12;
+  function autoDims() {
+    const parts = job.shapes.filter(sh => !sel.size || sel.has(sh.id));
+    if (!parts.length) { toast('Nothing to dimension'); return; }
+    snapshot();
+    const dims = ensureDims();
+    const ids = new Set(parts.map(sh => sh.id));
+    for (let i = dims.length - 1; i >= 0; i--) if (dims[i].auto != null && ids.has(dims[i].auto)) dims.splice(i, 1);
+    selDim = null;
+    let n = 0, freeform = 0;
+    const done = new Set();    // circles already dimensioned as some part's hole
+    // a = first point, b = second; each end tied to the part it belongs to so it rides with it
+    const add = (owner, a, b, off, pre, onA, onB) => {
+      if (G.dist(a, b) < 1e-9) return;
+      dims.push({ a, b, off, pre, auto: owner.id, ra: dimAnchorOn(onA || owner, a), rb: dimAnchorOn(onB || owner, b) }); n++;
+    };
+    const gapFor = (b) => Math.max(0.25, 0.06 * Math.max(b.x1 - b.x0, b.y1 - b.y0));
+    const sizeAndRadii = (owner, sh, on) => {
+      let loop; try { loop = worldLoop(sh); } catch (e) { return; }
+      if (!loop.length) return;
+      const b = G.bbox(loop), gap = gapFor(b);
+      add(owner, { x: b.x0, y: b.y0 }, { x: b.x1, y: b.y0 }, -gap, '', on, on);   // width, under the part
+      add(owner, { x: b.x0, y: b.y1 }, { x: b.x0, y: b.y0 }, -gap, '', on, on);   // height, left of it
+      // ellipses and splines are fine polylines, not arcs; their "radii" mean nothing
+      if (sh.kind === 'ellipse' || sh.kind === 'spline') return;
+      const groups = new Map();
+      for (const a of outlineArcs(loop)) {
+        const k = a.r.toFixed(4);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(a);
+      }
+      if (groups.size > AUTO_DIM_MAX_RADII) { freeform++; return; }
+      // equal radii are said once, the way a print does: "8X R .275"
+      for (const g of groups.values()) add(owner, g[0].c, g[0].mid, 0, (g.length > 1 ? `${g.length}X ` : '') + 'R ', on, on);
+    };
+    const diameter = (owner, ci, on, count) =>
+      add(owner, { x: ci.c.x - ci.r, y: ci.c.y }, { x: ci.c.x + ci.r, y: ci.c.y }, 0, (count > 1 ? `${count}X ` : '') + 'Ø ', on, on);
+
+    for (const P of parts) {
+      if (circleOf(P)) continue;                       // a round part is done below, with the loose circles
+      let loop; try { loop = worldLoop(P); } catch (e) { continue; }
+      if (!loop.length) continue;
+      sizeAndRadii(P, P, P);
+      if (P.open) continue;
+      const b = G.bbox(loop), gap = gapFor(b);
+      /* Holes: the part's own, plus loose circles sitting inside it - a DXF
+         brings its holes in as parts of their own until they are grouped. */
+      const holes = holeShapes(P).map(h => ({ sh: h, on: P }));
+      for (const S of job.shapes) {
+        if (S === P || !circleOf(S)) continue;
+        const ci = circleOf(S), sb = shapeBBox(S);
+        if (sb.x1 - sb.x0 >= b.x1 - b.x0 || !G.pointInLoop(ci.c, loop)) continue;
+        holes.push({ sh: S, on: S });
+      }
+      const sameSize = new Map();
+      let k = 0;
+      for (const h of holes) {
+        const ci = circleOf(h.sh);
+        if (!ci) { sizeAndRadii(P, h.sh, P); continue; }  // a slot or cut-out: its own size and radii
+        if (h.on !== P) done.add(h.sh.id);
+        const key = (2 * ci.r).toFixed(4);
+        if (!sameSize.has(key)) sameSize.set(key, []);
+        sameSize.get(key).push({ ci, on: h.on });
+        // centre from the left edge (above the part) and from the bottom edge (right of it), stacked out
+        k++;
+        add(P, { x: b.x0, y: ci.c.y }, ci.c, (b.y1 - ci.c.y) + gap * (1 + k * 0.8), '', P, h.on);
+        add(P, { x: ci.c.x, y: b.y0 }, ci.c, -((b.x1 - ci.c.x) + gap * (1 + k * 0.8)), '', P, h.on);
+      }
+      for (const g of sameSize.values()) diameter(P, g[0].ci, g[0].on, g.length);
+    }
+    for (const P of parts) {
+      const ci = circleOf(P);
+      if (ci && !done.has(P.id)) diameter(P, ci, P, 1);
+    }
+    LOG.action(`Auto dimensions: ${n} on ${parts.length} part(s)` + (freeform ? `, ${freeform} free-form outline(s) given size only` : ''));
+    toast(n ? `${n} dimension${n > 1 ? 's' : ''} added` + (freeform ? ` - ${freeform} free-form part${freeform > 1 ? 's' : ''} given size only` : '') : 'Nothing to dimension');
+    refresh();
+  }
+  // takes off only what Auto dimensions put on; dimensions placed by hand stay
+  function clearAutoDims() {
+    const dims = job.dims || [];
+    const ids = sel.size ? sel : null;
+    const keep = dims.filter(d => d.auto == null || (ids && !ids.has(d.auto)));
+    if (keep.length === dims.length) { toast('No automatic dimensions to clear'); return; }
+    snapshot(); job.dims = keep; selDim = null;
+    LOG.action(`Auto dimensions cleared: ${dims.length - keep.length}`);
+    refresh();
+  }
+  $('#btnAutoDims').onclick = autoDims;
+  $('#btnClearAutoDims').onclick = clearAutoDims;
 
 
   // ---------- object snap settings ----------
@@ -4450,7 +4723,9 @@
     job.name = name.trim() || jobName();
     const file = job.name.replace(/\.cncjob$/i, '') + '.cncjob';
     try {
-      download(file, JSON.stringify({ version: 1, job, settingsSnapshot: { material: job.material, machine: S.machine, tools: S.tools } }, null, 1), 'application/json');
+      // the picture travels inside the project, or it opens on another machine as a blank
+      const pictures = picOf(job.pic) ? { [job.pic.id]: picOf(job.pic).url } : undefined;
+      download(file, JSON.stringify({ version: 1, job, settingsSnapshot: { material: job.material, machine: S.machine, tools: S.tools }, pictures }, null, 1), 'application/json');
       LOG.action(`Saved project ${file} — ${job.shapes.length} part(s)`);
       toast('Project saved: ' + file);
     } catch (err) { LOG.error('Project save failed', err); toast('Could not save: ' + err.message); }
@@ -4460,7 +4735,8 @@
   $('#btnImport').onclick = () => { importHere = true; $('#fileIn').click(); };
   $('#fileIn').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return; e.target.value = '';
-    const text = await f.text(); const ext = f.name.split('.').pop().toLowerCase();
+    const ext = f.name.split('.').pop().toLowerCase(), isPic = /^(png|jpe?g)$/.test(ext);
+    const text = isPic ? '' : await f.text();
     /* A project or DXF opens in a tab of its own, so several can be worked on
        side by side - unless this tab is still empty, or Import asked to add
        the parts to the design showing. */
@@ -4468,9 +4744,11 @@
     importHere = false;
     const base = f.name.replace(/\.[^.]+$/, '');
     if (!here && ext !== 'tap' && ext !== 'nc') newDoc(base);
-    else if (!job.name && ext === 'dxf' && !job.shapes.length) job.name = base;
-    if (ext === 'cncjob' || ext === 'json') { try { const j = JSON.parse(text); snapshot(); job = j.job || j; sel.clear(); syncMaterialUI(); refresh(); toast('Project loaded'); } catch (err) { toast('Bad project file'); } }
+    else if (!job.name && (ext === 'dxf' || ext === 'svg' || isPic) && !job.shapes.length) job.name = base;
+    if (ext === 'cncjob' || ext === 'json') { try { const j = JSON.parse(text); await restorePictures(j.pictures); snapshot(); job = j.job || j; sel.clear(); syncMaterialUI(); refresh(); toast('Project loaded'); } catch (err) { toast('Bad project file'); } }
     else if (ext === 'dxf') importDXF(text, f.name);
+    else if (ext === 'svg') importSVG(text, f.name);
+    else if (isPic) importPicture(await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); }), f.name);
     else importTAP(text, f.name);
   });
   /* Plain words for what parseDXF found that a flat cut cannot use. Empty when
@@ -4488,12 +4766,15 @@
     }
     if (threeD && rep.duplicates) out.push(`${rep.duplicates} duplicate edge${rep.duplicates > 1 ? 's' : ''} removed - stacked copies that would each have been cut again.`);
     const sk = Object.entries(rep.skipped);
-    if (sk.length) out.push('Not read, so missing from the drawing:\n• ' + sk.map(([t, n]) => `${n} ${t}`).join('\n• '));
+    const what = { INSERT: 'block reference (title border, symbol or part drawn as a block)', '3D mesh': '3D surface' };
+    if (sk.length) out.push('Not read, so missing from the drawing:\n• ' + sk.map(([t, n]) => `${n} ${what[t] ? what[t] + (n > 1 ? 's' : '') : t}`).join('\n• '));
     if (out.length) out.push(threeD
       ? 'A laser cuts one flat face. Export a flat 2D view of that face from your CAD program, with curves as arcs.'
-      : 'Export again from your CAD program with curves as arcs or polylines.');
+      : 'Import anyway brings in everything else. Check nothing you need to cut is missing.');
     return out.join('\n\n');
   }
+  // text, dimensions and fills - never cut, so said in passing rather than asked about
+  const dxfNotes = (rep) => Object.entries(rep.notes || {}).map(([t, n]) => `${n} ${t}`).join(', ');
   function importDXF(text, name) {
     let res; try { res = G.parseDXF(text); } catch (err) { console.error(err); return toast('Could not read DXF'); }
     const rep = res.report;
@@ -4501,6 +4782,7 @@
     if (rep.duplicates) LOG.info(`DXF ${name}: ${rep.duplicates} duplicate edge(s) removed - each would have been cut twice`);
     const problems = dxfProblems(rep);
     if (problems) LOG.warn(`DXF ${name}: ${problems.replace(/\n+/g, ' ')}`);
+    if (dxfNotes(rep)) LOG.info(`DXF ${name}: notes left out (not cut): ${dxfNotes(rep)}`);
     if (!res.loops.length && !res.opens.length) {
       if (problems) askConfirm('Nothing could be imported', problems, 'OK');
       return toast('No usable geometry in DXF');
@@ -4523,11 +4805,298 @@
     });
     res.opens.forEach((l, i) => { const bb = G.bbox(l); const sh = makeShape('path', { name: `line ${i + 1}`, x: bb.x0 + shift.x, y: bb.y0 + shift.y, loop: G.translateLoop(l, -bb.x0, -bb.y0), open: true, op: 'on' }); added.push(sh); });
     job.shapes.push(...added); sel = new Set(added.map(a => a.id)); refresh();
-    toast(`Imported ${added.length} objects from DXF` + (res.report && res.report.duplicates ? ` - ${res.report.duplicates} duplicate edge${res.report.duplicates > 1 ? "s" : ""} removed` : ""));
+    toast(`Imported ${added.length} objects from DXF` + (res.report && res.report.duplicates ? ` - ${res.report.duplicates} duplicate edge${res.report.duplicates > 1 ? "s" : ""} removed` : "")
+      + (res.report && dxfNotes(res.report) ? ' - text and dimensions left out' : ''));
   }
   function importTAP(text, name) {
     // show existing TAP in simulator
     showPage('sim'); simLoadText(text, name);
+  }
+
+  /* ---------- pictures (PNG / JPG) ----------
+     A picture is either something to draw over by hand, sized to real inches
+     and never cut, or a source of outlines (trace.js). The design keeps only
+     where it sits - job.pic {id, name, x, y, w, h, fade, hide} - and the pixels
+     live here, keyed by id: undo copies the whole job sixty times over, and a
+     few megabytes of picture in each copy is what that would cost. */
+  const picData = new Map();   // id -> { url, img }
+  function loadPicImage(url) {
+    return new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = () => rej(new Error('not a picture this app can read')); img.src = url; });
+  }
+  async function importPicture(url, name) {
+    let img; try { img = await loadPicImage(url); } catch (err) { LOG.error('Picture import failed', err); return toast('Could not read ' + name); }
+    const id = 'p' + Date.now().toString(36);
+    picData.set(id, { url, img });
+    // 96 per inch is what a screen picture assumes; the dialog asks for the real size anyway
+    const w = Math.min(img.naturalWidth / 96, 48), h = w * img.naturalHeight / img.naturalWidth;
+    LOG.action(`Picture ${name} opened - ${img.naturalWidth} × ${img.naturalHeight} px`);
+    openPicture({ id, name, x: S.nest.margin, y: S.nest.margin, w, h, fade: 0.5, hide: false }, true);
+  }
+  const picOf = (pic) => pic && picData.get(pic.id);
+  async function restorePictures(pics) {
+    for (const [id, url] of Object.entries(pics || {})) {
+      try { picData.set(id, { url, img: await loadPicImage(url) }); } catch (err) { LOG.warn('A picture saved in the project could not be read', err); }
+    }
+  }
+  function drawPicture() {
+    const pic = job.pic, d = picOf(pic); if (!pic || pic.hide || !d) return;
+    const tl = W2S({ x: pic.x, y: pic.y + pic.h });
+    ctx.save(); ctx.globalAlpha = pic.fade;
+    ctx.drawImage(d.img, tl.x, tl.y, pic.w * view.scale, pic.h * view.scale);
+    ctx.restore();
+  }
+  // the picture's pixels, no bigger than `max` on the long side - a phone photo
+  // traced at full size takes seconds and gives nothing a router can follow
+  function picPixels(img, max) {
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * k)), h = Math.max(1, Math.round(img.naturalHeight * k));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); g.drawImage(img, 0, 0, w, h);
+    return { data: g.getImageData(0, 0, w, h).data, w, h };
+  }
+  /* An SVG is outlines already: read, put on the bed, arcs fitted back where
+     the curves were round. Its own page size decides the parts' size. */
+  function importSVG(text, name) {
+    let res; try { res = SVG.parse(text); } catch (err) { LOG.error('SVG import failed', err); return toast('Could not read SVG'); }
+    const notes = Object.entries(res.notes).map(([t, n]) => `${n} ${t}`).join(', ');
+    if (notes) LOG.info(`SVG ${name}: left out (not outlines): ${notes}`);
+    const all = res.loops.concat(res.opens);
+    if (!all.length) return toast('No outlines in this SVG' + (res.notes.text ? ' - its text needs converting to outlines/paths first' : ''));
+    // a drawing off the bed's lower-left comes in at the margin, as a DXF does
+    let x0 = Infinity, y0 = Infinity; for (const r of all) for (const p of r.pts) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); }
+    const dx = x0 < 0 ? S.nest.margin - x0 : 0, dy = y0 < 0 ? S.nest.margin - y0 : 0;
+    const mv = (pts) => pts.map(p => ({ x: p.x + dx, y: p.y + dy }));
+    const items = res.loops.map(r => ({ loop: r.circle ? G.circleLoop(r.circle.x + dx, r.circle.y + dy, r.circle.r) : fitClosed(mv(r.pts), 0.001, r.curved) }))
+      .concat(res.opens.map(r => ({ loop: fitOpen(mv(r.pts), 0.001, r.curved), open: true })))
+      .filter(it => it.loop.length);
+    const { added, dropped } = addOutlines(items, name.replace(/.svg$/i, ''));
+    const g = groupBBox(added);
+    LOG.action(`Imported SVG ${name}: ${added.length} part(s), ${fmtIn(g.x1 - g.x0)} × ${fmtIn(g.y1 - g.y0)} ${uLabel()}` + (dropped ? `, ${dropped} duplicate(s) dropped` : ''));
+    toast(`Imported ${added.length} objects from SVG - ${fmtIn(g.x1 - g.x0)} × ${fmtIn(g.y1 - g.y0)} ${uLabel()}`
+      + (dropped ? ` - ${dropped} duplicate${dropped > 1 ? 's' : ''} dropped` : '') + (res.notes.text ? ' - text left out' : ''));
+    refresh();
+    return added.length;
+  }
+
+  /* ---------- traced or imported outlines -> parts ----------
+     Shared by picture tracing and SVG import: both hand over point runs in
+     inches, closed or open, and both want arcs where the run is round. */
+
+  /* Arcs for a closed run of points that lie ON a curve. Not refitLoop's own
+     area check: that one guards boolean results, whose points are exact. Here
+     the chords cut inside the curve, so the right arc adds about a sagitta all
+     the way round - up to the fit tolerance times the perimeter is the arc
+     being right, not wrong. Arc fitting grows with the cube of the points, and
+     a run that long is mostly fine detail anyway, so long runs stay lines. */
+  function fitClosed(pts, tol, arcs) {
+    let loop = BOOL.refitLoop(pts, { noRefit: true });
+    if (!arcs || pts.length > 800 || pts.length < 6) return loop;
+    try {
+      const fit = BOOL.refit(pts, tol), want = Math.abs(BOOL.area(pts)), got = Math.abs(G.signedArea(fit));
+      const per = loop.reduce((s, e) => s + G.dist(e.a, e.b), 0);
+      if (isFinite(got) && Math.abs(got - want) <= per * tol) loop = G.signedArea(fit) < 0 ? G.reverseLoop(fit) : fit;
+    } catch (e) { LOG.warn('Arc fitting failed on an outline, keeping lines', e); }
+    return loop;
+  }
+  // the same for an open run: refit treats it as a ring, so keep only the run up to its last point
+  function fitOpen(pts, tol, arcs) {
+    const lines = []; for (let i = 1; i < pts.length; i++) if (G.dist(pts[i - 1], pts[i]) > 1e-9) lines.push(G.line(G.P(pts[i - 1].x, pts[i - 1].y), G.P(pts[i].x, pts[i].y)));
+    if (!arcs || pts.length > 800 || pts.length < 6) return lines;
+    try {
+      const last = pts[pts.length - 1], fit = BOOL.refit(pts, tol), out = [];
+      for (const sg of fit) { out.push(sg); if (G.same(sg.b, last, 1e-6)) break; }
+      if (out.length && G.same(out[out.length - 1].b, last, 1e-6) && G.same(out[0].a, pts[0], 1e-6)) return out;
+    } catch (e) { LOG.warn('Arc fitting failed on a line, keeping segments', e); }
+    return lines;
+  }
+  /* The same outline twice - an SVG with a fill and a stroke drawn over it,
+     a logo pasted twice - would be cut twice. Same size, place and area within
+     a hair is the same outline. */
+  function dropDuplicates(items) {
+    const out = [], tol = 0.003;
+    for (const it of items) {
+      const bb = G.bbox(it.loop), a = Math.abs(G.signedArea(it.loop)), L = it.loop.reduce((s, e) => s + G.segLen(e), 0);
+      const dup = out.some(o => o.open === it.open && Math.abs(o.bb.x0 - bb.x0) < tol && Math.abs(o.bb.y0 - bb.y0) < tol && Math.abs(o.bb.x1 - bb.x1) < tol && Math.abs(o.bb.y1 - bb.y1) < tol
+        && Math.abs(o.a - a) <= Math.max(1e-4, a * 0.01) && Math.abs(o.L - L) <= Math.max(tol, L * 0.01));
+      if (!dup) out.push(Object.assign({ bb, a, L }, it));
+    }
+    return { items: out, dropped: items.length - out.length };
+  }
+  /* Parts from loops in inches. Closed ones cut outside or, nested inside
+     another, inside - an island in a hole is outside again. `on` forces cutting
+     down the line (centre lines). Selected afterwards so they can be moved as one. */
+  function addOutlines(items, base) {
+    const { items: kept, dropped } = dropDuplicates(items);
+    const closed = kept.filter(it => !it.open && !it.on);
+    for (const it of closed) {
+      if (it.depth != null) continue;
+      const p = it.loop[0].a; let depth = 0;
+      for (const o of closed) if (o !== it && o.a > it.a && p.x >= o.bb.x0 && p.x <= o.bb.x1 && p.y >= o.bb.y0 && p.y <= o.bb.y1 && G.pointInLoop(p, o.loop)) depth++;
+      it.depth = depth;
+    }
+    snapshot();
+    const added = kept.map((it, i) => {
+      const bb = it.bb;
+      return makeShape('path', { name: `${base} ${i + 1}`, x: bb.x0, y: bb.y0, loop: G.translateLoop(it.loop, -bb.x0, -bb.y0), open: !!it.open,
+        op: it.open || it.on ? 'on' : (it.depth % 2 ? 'inside' : 'outside') });
+    });
+    job.shapes.push(...added); sel = new Set(added.map(a => a.id));
+    return { added, dropped };
+  }
+
+  /* Outlines from the picture as it sits on the bed. Rings and lines come back
+     in pixels, y down; each is placed by the picture's corner and size. */
+  function tracePicture(pic, o) {
+    const d = picOf(pic); if (!d) return 0;
+    const px = picPixels(d.img, 2000);
+    const ppi = px.w / pic.w;   // pixels per inch at the size the picture was given
+    const res = RASTER.trace(px.data, px.w, px.h, {
+      level: o.level, invert: o.invert, smooth: o.smooth, adaptive: o.adaptive, centre: o.centre,
+      minArea: o.speck > 0 ? Math.pow(o.speck * ppi, 2) : 4, gap: o.gap > 0 ? o.gap * ppi : 0,
+    });
+    /* Edge points are found between pixels and sit within a fraction of one;
+       a thinned line's points wobble by half a pixel either way, so its arcs
+       are allowed that much, which is still inside what the picture shows. */
+    const sx = pic.w / px.w, sy = pic.h / px.h, tol = Math.max(0.002, sx * (o.centre ? 0.9 : 0.4));
+    const W = (p) => ({ x: pic.x + (p.x + 0.5) * sx, y: pic.y + pic.h - (p.y + 0.5) * sy });
+    const items = o.centre
+      ? res.paths.map(p => p.closed ? { loop: fitClosed(p.pts.map(W), tol, o.arcs), on: true } : { loop: fitOpen(p.pts.map(W), tol, o.arcs), open: true })
+      : res.rings.map(r => ({ loop: fitClosed(r.pts.map(W), tol, o.arcs), depth: r.depth }));
+    const good = items.filter(it => it.loop.length);
+    if (!good.length) { toast('Nothing to trace - try the threshold, "light shapes" or the other trace mode'); return 0; }
+    const { added, dropped } = addOutlines(good, pic.name.replace(/\.[^.]+$/, ''));
+    const arcs = added.reduce((n, s) => n + s.loop.filter(e => e.type === 'arc').length, 0);
+    const holes = added.filter(s => s.op === 'inside').length;
+    LOG.action(`Traced ${pic.name} (${o.centre ? 'centre lines' : 'outlines'}): ${added.length} part(s)`
+      + (holes ? `, ${holes} holes` : '') + (arcs ? `, ${arcs} arcs` : '') + (dropped ? `, ${dropped} duplicates dropped` : ''));
+    toast(`Traced ${added.length} ${o.centre ? 'line' : 'outline'}${added.length > 1 ? 's' : ''} from the picture` + (dropped ? ` - ${dropped} duplicate${dropped > 1 ? 's' : ''} dropped` : ''));
+    refresh();
+    return added.length;
+  }
+
+  /* Picture size from two points the operator knows the distance between -
+     the length of a table edge in a photo, a dimension on a scanned drawing.
+     Scaled about the first point, so that point stays where it was clicked. */
+  function scalePictureByPoints(after) {
+    const pic = job.pic; if (!pic) return;
+    const pts = [];
+    toast('Click the first of two points a known distance apart (Esc cancels)');
+    const stop = () => { cv.removeEventListener('mousedown', grab, true); window.removeEventListener('keydown', esc, true); };
+    const esc = (e) => { if (e.key === 'Escape') { stop(); toast('Cancelled'); after && after(); } };
+    const grab = async (e) => {
+      if (e.button !== 0) return;
+      e.stopPropagation(); e.preventDefault();
+      pts.push(evPos(e).w);
+      if (pts.length < 2) return toast('Now click the second point');
+      stop();
+      const now = G.dist(pts[0], pts[1]);
+      if (now < 1e-6) { toast('The two points are the same'); return after && after(); }
+      const t = await askText('Real distance', `Real distance between the two points (${uLabel()})`, fmtIn(now));
+      const want = t == null ? NaN : uParse(t);
+      if (!(want > 0)) { after && after(); return; }
+      const k = want / now, a = pts[0];
+      snapshot();
+      Object.assign(pic, { x: a.x + (pic.x - a.x) * k, y: a.y + (pic.y - a.y) * k, w: pic.w * k, h: pic.h * k });
+      LOG.action(`Picture scaled by two points: ${fmtIn(now)} -> ${fmtIn(want)} ${uLabel()} (x${k.toFixed(4)})`);
+      refresh(); after && after();
+    };
+    cv.addEventListener('mousedown', grab, true);
+    window.addEventListener('keydown', esc, true);
+  }
+
+  function openPicture(pic, fresh) {
+    if (!pic) pic = job.pic;
+    const d = picOf(pic);
+    if (!pic || !d) return toast('No picture in this design - Open or Import a PNG or JPG');
+    const p = Object.assign({}, pic), ar = d.img.naturalHeight / d.img.naturalWidth;
+    const prev = picPixels(d.img, 360);
+    const L = (v) => `${fmtIn(v)}`;
+    const t = Object.assign({ centre: false, smooth: false, adaptive: false, invert: false, arcs: true, speck: 0.03, gap: 0 }, S.picTrace || {});
+    modal(`<h3>Picture: ${esc(pic.name)}</h3>
+      <canvas id="pcPrev" width="${prev.w}" height="${prev.h}" style="display:block;max-width:100%;max-height:220px;margin:0 auto 4px;background:#fff;border:1px solid var(--border)"></canvas>
+      <p class="muted" style="text-align:center;margin-top:0" id="pcCap"></p>
+      <div class="row"><label>Width</label><input type="number" step="${uStep(0.125)}" id="pcW" value="${L(p.w)}"> ${uLabel()}
+        <label style="min-width:0;margin-left:8px">Height</label><input type="number" step="${uStep(0.125)}" id="pcH" value="${L(p.h)}"> ${uLabel()}</div>
+      <div class="row"><label>X</label><input type="number" step="${uStep(0.125)}" id="pcX" value="${L(p.x)}"> ${uLabel()}
+        <label style="min-width:0;margin-left:8px">Y</label><input type="number" step="${uStep(0.125)}" id="pcY" value="${L(p.y)}"> ${uLabel()}</div>
+      <div class="row"><button class="small" id="pcTwo">Set size from two points…</button><span class="muted" style="font-size:11px">click two points on the picture, type the real distance</span></div>
+      <div class="row"><label>Show</label><input type="range" id="pcFade" min="10" max="100" value="${Math.round(p.fade * 100)}" style="flex:1"><label style="min-width:0"><input type="checkbox" id="pcHide" ${p.hide ? 'checked' : ''}> Hide</label></div>
+      <h4 style="margin:12px 0 4px">Trace</h4>
+      <div class="row"><label>Trace as</label><select id="pcMode" style="flex:1">
+        <option value="out"${t.centre ? '' : ' selected'}>Filled shapes - cut round each shape (logos, letters, stencils)</option>
+        <option value="mid"${t.centre ? ' selected' : ''}>Lines - one cut down the middle of each line (drawings, sketches)</option></select></div>
+      <div class="row"><label>Threshold</label><input type="range" id="pcLv" min="1" max="98" style="flex:1"><span id="pcLvT" style="min-width:44px"></span><button class="small" id="pcAuto">Auto</button></div>
+      <div class="row"><label style="min-width:0"><input type="checkbox" id="pcInv" ${t.invert ? 'checked' : ''}> Light shapes on a dark background</label></div>
+      <div class="row"><label style="min-width:0"><input type="checkbox" id="pcSmooth" ${t.smooth ? 'checked' : ''}> Smooth out noise (scans, photos)</label>
+        <label style="min-width:0;margin-left:10px"><input type="checkbox" id="pcAdapt" ${t.adaptive ? 'checked' : ''}> Uneven lighting / shadows</label></div>
+      <div class="row"><label>Ignore specks under</label><input type="number" step="${uStep(0.01)}" id="pcSp" value="${L(t.speck)}"> ${uLabel()}</div>
+      <div class="row" id="pcGapRow"><label>Close gaps up to</label><input type="number" step="${uStep(0.01)}" id="pcGap" value="${L(t.gap)}"> ${uLabel()}</div>
+      <div class="row"><label style="min-width:0"><input type="checkbox" id="pcArc" ${t.arcs ? 'checked' : ''}> Turn curves into arcs</label></div>
+      <p class="muted" style="font-size:11px;margin-top:0" id="pcNote"></p>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="pcTrace">Trace</button>
+        <button id="pcPlace">${fresh ? 'Place picture only' : 'Apply'}</button>
+        ${fresh ? '' : '<button id="pcDel">Remove picture</button>'}
+        <button id="pcCancel">Cancel</button></div>`,
+      (ov, close) => {
+        const $o = (s) => ov.querySelector(s);
+        const cv2 = $o('#pcPrev'), g = cv2.getContext('2d'), out = g.createImageData(prev.w, prev.h);
+        let level = null;
+        const opts = () => ({ centre: $o('#pcMode').value === 'mid', invert: $o('#pcInv').checked, smooth: $o('#pcSmooth').checked, adaptive: $o('#pcAdapt').checked });
+        // what the trace will see, drawn from the same code the trace runs; centre lines in red over it
+        const paint = () => {
+          const o = opts(), fl = RASTER.field(prev.data, prev.w, prev.h, Object.assign({}, o, { level: level != null ? level : undefined }));
+          $o('#pcLv').value = Math.round(fl.level * 100); $o('#pcLvT').textContent = Math.round(fl.level * 100) + (level == null ? ' auto' : '');
+          const mask = new Uint8Array(fl.f.length); for (let i = 0; i < mask.length; i++) mask[i] = fl.f[i] > fl.level ? 1 : 0;
+          const sk = o.centre ? RASTER.skeleton(mask.slice(), prev.w, prev.h) : null;
+          for (let i = 0; i < mask.length; i++) {
+            const k = i * 4;
+            if (sk && sk[i]) { out.data[k] = 230; out.data[k + 1] = 40; out.data[k + 2] = 40; }
+            else { const v = mask[i] ? (o.centre ? 150 : 0) : 255; out.data[k] = out.data[k + 1] = out.data[k + 2] = v; }
+            out.data[k + 3] = 255;
+          }
+          g.putImageData(out, 0, 0);
+          $o('#pcCap').textContent = o.centre ? 'What the trace sees - the red line is what gets cut' : 'What the trace sees - black is cut round';
+          $o('#pcGapRow').style.display = o.centre ? '' : 'none';
+          $o('#pcNote').textContent = o.centre
+            ? 'Each line is cut once, down its middle, on the line. Use this when filled shapes gives two lines per line.'
+            : 'Shapes are cut outside, holes inside. The picture itself is never cut.';
+        };
+        paint();
+        $o('#pcLv').oninput = () => { level = $o('#pcLv').value / 100; paint(); };
+        $o('#pcAuto').onclick = () => { level = null; paint(); };
+        for (const id of ['#pcInv', '#pcSmooth', '#pcAdapt']) $o(id).onchange = () => { level = null; paint(); };
+        $o('#pcMode').onchange = paint;
+        // width and height stay in proportion: a stretched picture traces stretched parts
+        $o('#pcW').oninput = () => { const v = uParse($o('#pcW').value); if (v > 0) $o('#pcH').value = L(v * ar); };
+        $o('#pcH').oninput = () => { const v = uParse($o('#pcH').value); if (v > 0) $o('#pcW').value = L(v / ar); };
+        const read = () => {
+          const w = uParse($o('#pcW').value), x = uParse($o('#pcX').value), y = uParse($o('#pcY').value);
+          if (!(w > 0) || !isFinite(x) || !isFinite(y)) { toast('Width, X and Y need numbers'); return null; }
+          return Object.assign(p, { w, h: w * ar, x, y, fade: $o('#pcFade').value / 100, hide: $o('#pcHide').checked });
+        };
+        const keep = (np) => {
+          snapshot(); job.pic = np;
+          LOG.action(`Picture ${np.name} at ${fmtIn(np.x)}, ${fmtIn(np.y)} - ${fmtIn(np.w)} × ${fmtIn(np.h)} ${uLabel()}`);
+        };
+        $o('#pcCancel').onclick = () => { if (fresh) picData.delete(p.id); close(); };
+        $o('#pcPlace').onclick = () => { const np = read(); if (!np) return; keep(np); close(); refresh(); };
+        if ($o('#pcDel')) $o('#pcDel').onclick = () => { snapshot(); job.pic = null; LOG.action('Picture removed'); close(); refresh(); };
+        $o('#pcTwo').onclick = () => {
+          const np = read(); if (!np) return;
+          keep(np); np.hide = false; close(); refresh();
+          scalePictureByPoints(() => openPicture());
+        };
+        $o('#pcTrace').onclick = () => {
+          const np = read(); if (!np) return;
+          const sp = uParse($o('#pcSp').value), gp = uParse($o('#pcGap').value);
+          const o = Object.assign(opts(), { level: level != null ? level : undefined, speck: isFinite(sp) ? sp : 0, gap: isFinite(gp) ? gp : 0, arcs: $o('#pcArc').checked });
+          // remembered for the next picture, which is usually the same kind
+          S.picTrace = { centre: o.centre, invert: o.invert, smooth: o.smooth, adaptive: o.adaptive, arcs: o.arcs, speck: o.speck, gap: o.gap }; saveSettings();
+          keep(np); close();
+          tracePicture(np, o);
+        };
+      });
   }
   function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 2200); }
 
@@ -4675,6 +5244,7 @@
 
       // dimensions placed with the D tool, drawn in the same violet as on screen
       if (opts.dims) {
+        syncDims();
         for (const dm of (job.dims || [])) {
           const dx = dm.b.x - dm.a.x, dy = dm.b.y - dm.a.y, L = Math.hypot(dx, dy);
           if (L < 1e-9) continue;
@@ -4687,7 +5257,7 @@
           d.moveTo(A.x, A.y); d.lineTo(B.x, B.y);
           d.stroke();
           d.fillRgb(0.83, 0.55, 1);
-          d.text((A.x + B.x) / 2, (A.y + B.y) / 2, dm.text || fmtLen(L), 8, 'center', 0, 3);
+          d.text((A.x + B.x) / 2, (A.y + B.y) / 2, dm.text || (dm.pre || '') + fmtLen(L), 8, 'center', 0, 3);
           d.fillRgb(0, 0, 0);
         }
       }
@@ -5154,5 +5724,5 @@ Holes are positioned relative to the part's bottom-left corner. "outside" = cut 
   updateHint();
   syncMaterialUI(); syncSnapUI(); resize(); refresh(); renderLog();
   LOG.info(`CNC Studio ready — bed ${S.machine.bedW}×${S.machine.bedH} in, ${S.tools.length} tools`);
-  window.CNC = { get job() { return job; }, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, selectShapes: (ids) => { sel.clear(); ids.forEach(i => sel.add(i)); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf };
+  window.CNC = { get job() { return job; }, copySel, pasteClip, dimAt, selDimIndex: () => selDim, deleteSel, syncDims, view, S, G, PO, NE, RG, SNAP, LOG, BOOL, ICONS, FONT, worldLoop, boundaryAt, explodeRegions, doBoolean, toU, fromU, uLabel, syncUnitsUI, runCommand, COMMANDS, DEFAULT_ALIASES, aliasMap, parseCoord, placePoint, importDXF, importSVG, importPicture, openPicture, tracePicture, picData, refresh, W2S, S2W, resolvePoint, snapTol, makeEditable, edgeIndexAt, deleteSelectedEdge, setSelEdge: (id,i) => { sel.clear(); sel.add(id); selEdges = [{ id, i }]; refresh(); }, getSelEdges: () => selEdges.slice(), doMarquee, mergeSelected, newDoc, switchDoc, closeDoc, docs, activeDocIndex: () => activeDoc, gcodeFor, nestAll, nestUnits, unitBBox, holeParents, dynTargetInfo: () => dynTarget, hitSizeLabel, applySize, sizeHitsInfo: () => sizeHits, buildPdf, openPdf, dynMode, commitDyn2: commitDyn, drawSizeLabels, selectShape: (id) => { sel.clear(); sel.add(id); clearEdge(); refresh(); }, selectShapes: (ids) => { sel.clear(); ids.forEach(i => sel.add(i)); clearEdge(); refresh(); }, axisLock, askText, askConfirm, buildFromOffsets, openOffsetTrace, autoSplitAround, hoverEdgeInfo: () => hoverEdge, splitAtIntersections, segTouchesBox, splitAtTouches, orderSegs, lastSnapInfo: () => lastSnap, healEndsOf, healSelection, replaceWithLoop, eraseEdgeAt, crossingsOf, gripsOf, buildText, commitPoint, commitDyn, extentAlong, refPoint, centresOf, groupSel, ungroupSel, holeShapes, expandShapes, loadedFonts, sagitta, arcThrough, sagittaToArcR, arcRFromGeometry, scaleShape, groupBBox, tabsOf, autoDims, clearAutoDims };
 })();

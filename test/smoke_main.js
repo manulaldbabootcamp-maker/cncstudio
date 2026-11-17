@@ -1644,6 +1644,205 @@ app.whenReady().then(async () => {
     }
 
     { // scoped
+    console.log('a picture is placed to size and traced into parts');
+    const r = JSON.parse(await run(`(async () => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1; CNC.job.pic=null; CNC.refresh();
+      // 200×100 px: a plate with a round hole, and a disc beside it
+      const c = document.createElement('canvas'); c.width = 200; c.height = 100; const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, 200, 100);
+      g.fillStyle = '#000'; g.fillRect(20, 20, 100, 60);
+      g.fillStyle = '#fff'; g.beginPath(); g.arc(70, 50, 15, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#000'; g.beginPath(); g.arc(160, 50, 20, 0, Math.PI * 2); g.fill();
+      await CNC.importPicture(c.toDataURL('image/png'), 'logo.png');
+      const ov = document.querySelector('.overlay'); if (!ov) return JSON.stringify({ err: 'no dialog' });
+      const w = ov.querySelector('#pcW'); w.value = '10'; w.dispatchEvent(new Event('input'));
+      const out = { h: ov.querySelector('#pcH').value };
+      ov.querySelector('#pcTrace').click();
+      const sh = CNC.job.shapes;
+      out.n = sh.length; out.ops = sh.map(s => s.op).sort();
+      out.boxes = sh.map(s => { const b = CNC.groupBBox([s]); return [+(b.x1 - b.x0).toFixed(2), +(b.y1 - b.y0).toFixed(2)]; }).sort((a, b) => b[0] - a[0]);
+      out.arcs = sh.reduce((n, s) => n + s.loop.filter(e => e.type === 'arc').length, 0);
+      out.pic = CNC.job.pic && [CNC.job.pic.w, CNC.job.pic.h];
+      out.left = !!document.querySelector('.overlay');
+      return JSON.stringify(out);
+    })()`));
+    ok(r.h === '5', 'height follows the width in proportion', JSON.stringify(r));
+    ok(r.n === 3 && JSON.stringify(r.ops) === '["inside","outside","outside"]', 'plate, its hole (cut inside) and the disc', JSON.stringify(r));
+    ok(r.boxes && Math.abs(r.boxes[0][0] - 5) < 0.06 && Math.abs(r.boxes[0][1] - 3) < 0.06 && Math.abs(r.boxes[1][0] - 2) < 0.06, 'traced to real size: plate 5 × 3, disc 2 across', JSON.stringify(r.boxes));
+    ok(r.arcs > 0, 'the round edges came out as arcs', String(r.arcs));
+    ok(JSON.stringify(r.pic) === '[10,5]' && !r.left, 'the picture stays behind them, dialog closed', JSON.stringify(r));
+    await run(`CNC.job.shapes.length=0; CNC.job.pic=null; CNC.refresh(); 0`);
+    }
+
+    { // scoped
+    console.log('a line drawing traced as centre lines, sized by two points');
+    const r = JSON.parse(await run(`(async () => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1; CNC.job.pic=null; CNC.refresh();
+      // a drawn square (outline only, 6 px pen) and a drawn circle - the kind that traced twice
+      const c = document.createElement('canvas'); c.width = 300; c.height = 150; const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, 300, 150); g.strokeStyle = '#000'; g.lineWidth = 6;
+      g.strokeRect(20, 25, 100, 100); g.beginPath(); g.arc(220, 75, 50, 0, Math.PI * 2); g.stroke();
+      await CNC.importPicture(c.toDataURL('image/png'), 'sketch.png');
+      let ov = document.querySelector('.overlay');
+      const w = ov.querySelector('#pcW'); w.value = '6'; w.dispatchEvent(new Event('input'));
+      // size it from the square's side instead: 100 px should be 4 in
+      ov.querySelector('#pcTwo').click();
+      const cv = document.querySelector('#cv'), rc = cv.getBoundingClientRect(), dpr = devicePixelRatio, pic = CNC.job.pic;
+      const at = (px, py) => { const s = CNC.W2S({ x: pic.x + (px + 0.5) * pic.w / 300, y: pic.y + pic.h - (py + 0.5) * pic.h / 150 }); return { clientX: rc.left + s.x / dpr, clientY: rc.top + s.y / dpr }; };
+      for (const q of [at(20, 125), at(120, 125)]) cv.dispatchEvent(new MouseEvent('mousedown', Object.assign({ bubbles: true, cancelable: true, button: 0 }, q)));
+      await new Promise(r => setTimeout(r, 50));
+      const ask = document.querySelector('#akVal'); if (!ask) return JSON.stringify({ err: 'no distance prompt' });
+      ask.value = '4'; document.querySelector('#akOk').click();
+      await new Promise(r => setTimeout(r, 50));
+      const out = { picW: +CNC.job.pic.w.toFixed(3) };
+      ov = document.querySelector('.overlay'); if (!ov) return JSON.stringify(Object.assign(out, { err: 'dialog did not come back' }));
+      const mode = ov.querySelector('#pcMode'); mode.value = 'mid'; mode.dispatchEvent(new Event('change'));
+      ov.querySelector('#pcTrace').click();
+      const sh = CNC.job.shapes;
+      out.n = sh.length; out.ops = sh.map(s => s.op);
+      out.boxes = sh.map(s => { const b = CNC.groupBBox([s]); return [+(b.x1 - b.x0).toFixed(2), +(b.y1 - b.y0).toFixed(2)]; });
+      out.arcs = sh.reduce((n, s) => n + s.loop.filter(e => e.type === 'arc').length, 0);
+      CNC.S.picTrace = null;   // leave the next picture on the defaults
+      return JSON.stringify(out);
+    })()`));
+    ok(Math.abs(r.picW - 12) < 0.15, 'two points 100 px apart called 4 in: the 300 px picture becomes 12 in wide', JSON.stringify(r));
+    ok(r.n === 2 && r.ops.every(o => o === 'on'), 'square and circle: ONE line each, cut on the line', JSON.stringify(r));
+    ok(r.boxes && r.boxes.some(b => Math.abs(b[0] - 4) < 0.15 && Math.abs(b[1] - 4) < 0.15) && r.boxes.some(b => Math.abs(b[0] - 4) < 0.15), 'down the middle of the pen: square 4 in, circle 4 in across', JSON.stringify(r.boxes));
+    ok(r.arcs > 0, 'the drawn circle comes back as arcs', String(r.arcs));
+    await run(`CNC.job.shapes.length=0; CNC.job.pic=null; CNC.refresh(); 0`);
+    }
+
+    { // scoped
+    console.log('placed dimensions ride with their part, and can be picked and deleted');
+    const r = JSON.parse(await run(`(async () => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'plate',kind:'rect',x:2,y:2,rot:0,w:10,h:4,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.job.shapes.push({id:2,name:'other',kind:'rect',x:30,y:2,rot:0,w:3,h:3,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.job.nextId=3;
+      CNC.job.dims.push({ a: {x:2,y:2}, b: {x:12,y:2}, off: -1 });
+      CNC.refresh();
+      const out = {};
+      const pl = CNC.job.shapes[0];
+      pl.x += 5; pl.y += 3; CNC.refresh();
+      const d = CNC.job.dims[0]; out.moved = [d.a.x, d.a.y, d.b.x, d.b.y].map(v => +v.toFixed(6));
+      pl.w = 20; CNC.refresh(); out.resized = [d.a.x, d.b.x].map(v => +v.toFixed(6));
+      pl.rot = 90; CNC.refresh(); out.turned = [d.a.x, d.a.y, d.b.x, d.b.y].map(v => +v.toFixed(6)); pl.rot = 0; CNC.refresh();
+      // click on the dimension line itself
+      const cv = document.querySelector('#cv'), rc = cv.getBoundingClientRect(), dpr = devicePixelRatio;
+      const mid = CNC.W2S({ x: (d.a.x + d.b.x) / 2, y: d.a.y - 1 });
+      cv.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientX: rc.left + mid.x / dpr, clientY: rc.top + mid.y / dpr }));
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: rc.left + mid.x / dpr, clientY: rc.top + mid.y / dpr }));
+      out.picked = CNC.selDimIndex();
+      out.partsSel = document.querySelectorAll('#shapeList .item.sel').length;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+      out.afterDelete = CNC.job.dims.length; out.parts = CNC.job.shapes.length;
+      // a dimension on a part that is deleted goes with it
+      CNC.job.dims.push({ a: {x:30,y:2}, b: {x:33,y:2}, off: -1 }); CNC.refresh();
+      CNC.selectShapes([2]); CNC.deleteSel();
+      out.withPart = CNC.job.dims.length;
+      out.noHighlight = getComputedStyle(document.querySelector('#shapeList')).userSelect;
+      return JSON.stringify(out);
+    })()`));
+    ok(JSON.stringify(r.moved) === '[7,5,17,5]', 'moved with the part (5 right, 3 up)', JSON.stringify(r));
+    ok(JSON.stringify(r.resized) === '[7,27]', 'part made 20 long: the dimension still spans it end to end', JSON.stringify(r.resized));
+    ok(r.turned && Math.abs(r.turned[0] - 7) < 1e-6 && Math.abs(r.turned[3] - 25) < 1e-6, 'part turned 90: the dimension turns with it', JSON.stringify(r.turned));
+    ok(r.picked === 0 && r.partsSel === 0, 'clicking the dimension picks it, not a part', JSON.stringify(r));
+    ok(r.afterDelete === 0 && r.parts === 2, 'Delete removes the dimension and leaves the parts', JSON.stringify(r));
+    ok(r.withPart === 0, 'deleting a part takes its dimension with it', JSON.stringify(r));
+    ok(r.noHighlight === 'none', 'the parts list does not highlight text on shift-click', r.noHighlight);
+    await run(`CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.refresh(); 0`);
+    }
+
+    { // scoped
+    console.log('a part inside another part can be clicked and moved on its own');
+    const r = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.dims=[];
+      // the small part first, the plate round it drawn after: the plate is on top of the list
+      CNC.job.shapes.push({id:1,name:'small',kind:'rect',x:5,y:5,rot:0,w:2,h:2,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.job.shapes.push({id:2,name:'plate',kind:'rect',x:2,y:2,rot:0,w:10,h:8,r:0,op:'outside',toolId:1,climb:false,open:false});
+      CNC.job.nextId=3; CNC.selectShapes([]); CNC.refresh();
+      const cv = document.querySelector('#cv'), rc = cv.getBoundingClientRect(), dpr = devicePixelRatio;
+      const click = (p, q) => {
+        const a = CNC.W2S(p), b = CNC.W2S(q || p);
+        cv.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientX: rc.left + a.x / dpr, clientY: rc.top + a.y / dpr }));
+        if (q) cv.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: rc.left + b.x / dpr, clientY: rc.top + b.y / dpr }));
+        window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: rc.left + b.x / dpr, clientY: rc.top + b.y / dpr }));
+      };
+      const selNames = () => CNC.job.shapes.filter(s => document.querySelector('#shapeList .item.sel') && [...document.querySelectorAll('#shapeList .item.sel .nm')].some(n => n.textContent === s.name)).map(s => s.name);
+      const out = {};
+      click({x:6,y:6}); out.inner = selNames();
+      click({x:3,y:3}); out.outer = selNames();
+      // with the plate selected, clicking the small part picks the small part, not the plate
+      click({x:6,y:6}); out.fromOuter = selNames();
+      click({x:6,y:6}, {x:7,y:6.5});
+      const sm = CNC.job.shapes.find(s => s.name === 'small'), pl = CNC.job.shapes.find(s => s.name === 'plate');
+      out.moved = [sm.x, sm.y, pl.x, pl.y].map(v => +v.toFixed(3));
+      return JSON.stringify(out);
+    })()`));
+    ok(JSON.stringify(r.inner) === '["small"]', 'clicking inside the small part picks it, though the plate is on top', JSON.stringify(r));
+    ok(JSON.stringify(r.outer) === '["plate"]', 'clicking the plate outside the small part still picks the plate', JSON.stringify(r));
+    ok(JSON.stringify(r.fromOuter) === '["small"]', 'plate selected, clicking the small part picks the small part', JSON.stringify(r));
+    ok(r.moved[2] === 2 && r.moved[3] === 2 && (r.moved[0] !== 5 || r.moved[1] !== 5), 'dragging the small part moves it and leaves the plate', JSON.stringify(r.moved));
+    await run(`CNC.job.shapes.length=0; CNC.refresh(); 0`);
+    }
+
+    { // scoped
+    console.log('parts copied in one design tab paste into another');
+    const r = JSON.parse(await run(`(() => {
+      const home = CNC.activeDocIndex();
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
+      CNC.job.shapes.push({id:1,name:'plate',kind:'rect',x:2,y:2,rot:0,w:10,h:4,r:0,op:'outside',toolId:1,climb:false,open:false,group:'g1'});
+      CNC.job.shapes.push({id:2,name:'disc',kind:'circle',x:20,y:5,rot:0,r:1.5,op:'outside',toolId:1,climb:false,open:false,group:'g1'});
+      CNC.job.nextId=3;
+      CNC.job.dims.push({ a: {x:2,y:2}, b: {x:12,y:2}, off: -1 });
+      CNC.refresh();
+      CNC.selectShapes([1,2]);
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }));
+      const out = {};
+      CNC.newDoc('second');
+      CNC.job.shapes.push({id:1,name:'mine',kind:'rect',x:40,y:2,rot:0,w:2,h:2,r:0,op:'outside',toolId:1,climb:false,open:false,group:'g1'});
+      CNC.job.nextId=2; CNC.refresh();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true }));
+      const j = CNC.job;
+      out.n = j.shapes.length; out.ids = j.shapes.map(s => s.id);
+      out.pos = j.shapes.slice(1).map(s => [s.x, s.y]);
+      out.groups = j.shapes.map(s => s.group);
+      out.dims = (j.dims || []).length; CNC.syncDims();
+      out.dimAt = j.dims && j.dims[0] && [j.dims[0].a.x, j.dims[0].b.x, j.dims[0].ra.id];
+      out.selected = document.querySelectorAll('#shapeList .item.sel').length;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })); out.afterUndo = CNC.job.shapes.length;
+      CNC.switchDoc(home);
+      out.homeN = CNC.job.shapes.length;
+      CNC.pasteClip(); out.sameTab = CNC.job.shapes.slice(2).map(s => [s.x, s.y]);
+      return JSON.stringify(out);
+    })()`));
+    ok(r.n === 3 && new Set(r.ids).size === 3, 'two parts pasted beside the one already there, with their own ids', JSON.stringify(r));
+    ok(JSON.stringify(r.pos) === '[[2,2],[20,5]]', 'into another design they land where they were', JSON.stringify(r.pos));
+    ok(r.groups[1] === r.groups[2] && r.groups[1] !== 'g1', 'still grouped together, not with the other design\'s own g1', JSON.stringify(r.groups));
+    ok(r.dims === 1 && r.dimAt && r.dimAt[0] === 2 && r.dimAt[1] === 12 && r.dimAt[2] === r.ids[1], 'their dimension comes along, tied to the pasted plate', JSON.stringify(r.dimAt));
+    ok(r.selected === 2, 'the pasted parts are selected', String(r.selected));
+    ok(r.afterUndo === 1 && r.homeN === 2, 'undo takes the paste back; the first design is untouched', JSON.stringify(r));
+    ok(JSON.stringify(r.sameTab) === '[[3,3],[21,6]]', 'pasted back into the same design: stepped off 1 in', JSON.stringify(r.sameTab));
+    await run(`CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.refresh(); 0`);
+    }
+
+    { // scoped
+    console.log('an SVG imports at its own page size, duplicates dropped');
+    const r = JSON.parse(await run(`(() => {
+      CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1; CNC.refresh();
+      const n = CNC.importSVG('<svg xmlns="http://www.w3.org/2000/svg" width="5.5in" height="5.5in" viewBox="0 0 200 200">'
+        + '<path d="M0 0 H200 V200 H0 Z"/><circle cx="100" cy="100" r="40"/><circle cx="100" cy="100" r="40" fill="none" stroke="#000"/><text>x</text></svg>', 'panel.svg');
+      const sh = CNC.job.shapes;
+      return JSON.stringify({ n, ops: sh.map(s => s.op).sort(), boxes: sh.map(s => { const b = CNC.groupBBox([s]); return +(b.x1 - b.x0).toFixed(4); }).sort(), arcs: sh.map(s => s.loop.filter(e => e.type === 'arc').length) });
+    })()`));
+    ok(r.n === 2 && JSON.stringify(r.ops) === '["inside","outside"]', 'square panel with a round hole; the circle drawn twice is cut once', JSON.stringify(r));
+    ok(JSON.stringify(r.boxes) === '[2.2,5.5]', 'sizes from the page: 5.5 in panel, 2.2 in hole', JSON.stringify(r.boxes));
+    ok(r.arcs && r.arcs.some(a => a > 0 && a <= 4), 'the hole is a few true arcs, not hundreds of lines', JSON.stringify(r.arcs));
+    await run(`CNC.job.shapes.length=0; CNC.refresh(); 0`);
+    }
+
+    { // scoped
     console.log('millimetres are a display skin over an inch drawing');
     const r = JSON.parse(await run(`(() => {
       CNC.job.shapes.length=0; CNC.job.dims=[]; CNC.job.nextId=1;
@@ -1911,6 +2110,74 @@ app.whenReady().then(async () => {
         'mixed spans 2x6, 4 by 3x5 make a 16 x 15 grid at 1,2', JSON.stringify(r.bb));
       ok(typeof r.g === 'number' && r.g > 100, 'TAP generates for the grid', String(r.g));
       ok(r.refused, 'a span that is not a size draws nothing');
+    }
+
+    console.log('auto dimensions');
+    {
+      /* An 8 x 5 plate with R.5 corners and a .5 hole off centre at 3,2. One
+         corner comes in as two 45° arcs, the way a WinCNC-style export splits
+         them - it is still one R.5 corner, so the print reads 4X R .5. */
+      const L = (x1, y1, x2, y2) => `0\nLINE\n8\n0\n10\n${x1}\n20\n${y1}\n11\n${x2}\n21\n${y2}\n`;
+      const A = (cx, cy, r, a, b) => `0\nARC\n8\n0\n10\n${cx}\n20\n${cy}\n40\n${r}\n50\n${a}\n51\n${b}\n`;
+      const dxf = '0\nSECTION\n2\nENTITIES\n'
+        + L(0.5, 0, 7.5, 0) + A(7.5, 0.5, 0.5, 270, 360) + L(8, 0.5, 8, 4.5) + A(7.5, 4.5, 0.5, 0, 45) + A(7.5, 4.5, 0.5, 45, 90)
+        + L(7.5, 5, 0.5, 5) + A(0.5, 4.5, 0.5, 90, 180) + L(0, 4.5, 0, 0.5) + A(0.5, 0.5, 0.5, 180, 270)
+        + '0\nCIRCLE\n8\n0\n10\n3\n20\n2\n40\n0.25\n0\nENDSEC\n0\nEOF\n';
+      const res = JSON.parse(await run(`(() => {
+        CNC.newDoc('autodim');
+        CNC.importDXF(${JSON.stringify(dxf)}, 'lid.dxf');
+        document.querySelectorAll('.overlay').forEach(o => o.remove());
+        CNC.selectShapes([]);
+        CNC.autoDims();
+        CNC.syncDims();
+        const d = CNC.job.dims || [];
+        const lab = d.map(x => (x.pre || '') + (Math.round(CNC.G.dist(x.a, x.b) * 1000) / 1000));
+        const n1 = d.length;
+        CNC.autoDims();
+        const n2 = (CNC.job.dims || []).length;
+        // a hand-placed dimension must survive a clear
+        CNC.job.dims.push({ a: { x: 0, y: -2 }, b: { x: 1, y: -2 }, off: 0 });
+        CNC.clearAutoDims();
+        const left = CNC.job.dims.length, gl = CNC.gcodeFor(CNC.job);
+        return JSON.stringify({ lab, n1, n2, left, shapes: CNC.job.shapes.length, g: gl ? gl.length : 0 });
+      })()`));
+      const has = (s) => res.lab.includes(s);
+      ok(has('8') && has('5'), 'overall width 8 and height 5', JSON.stringify(res.lab));
+      ok(has('4X R 0.5') && !res.lab.some(s => /R/.test(s) && s !== '4X R 0.5'), 'corner radii said once as 4X R .5 - the split corner is not counted twice', JSON.stringify(res.lab));
+      ok(has('Ø 0.5'), 'hole diameter .5', JSON.stringify(res.lab));
+      ok(has('3') && has('2'), 'hole centre 3 from the left edge, 2 from the bottom', JSON.stringify(res.lab));
+      ok(res.lab.length === 6, 'width, height, radius, diameter and two hole positions - nothing extra', JSON.stringify(res.lab));
+      ok(res.n1 === res.n2, 'a second click replaces the set instead of stacking copies', `${res.n1} then ${res.n2}`);
+      ok(res.left === 1, 'clear takes off only the automatic ones; a hand-placed dimension stays', String(res.left));
+    }
+
+    console.log('array spacing: centre to centre or edge gap');
+    {
+      const r = JSON.parse(await run(`(() => {
+        CNC.newDoc('array');
+        CNC.importDXF('0\\nSECTION\\n2\\nENTITIES\\n0\\nLWPOLYLINE\\n8\\n0\\n90\\n4\\n70\\n1\\n10\\n0\\n20\\n0\\n10\\n2\\n20\\n0\\n10\\n2\\n20\\n1\\n10\\n0\\n20\\n1\\n0\\nENDSEC\\n0\\nEOF\\n', 'r.dxf');
+        document.querySelectorAll('.overlay').forEach(o => o.remove());
+        const id = CNC.job.shapes[0].id; CNC.selectShapes([id]);
+        const open = () => { document.querySelector('#btnArray').click(); return document.querySelector('.overlay'); };
+        const set = (ov, sel, v) => { const el = ov.querySelector(sel); el.value = v; el.oninput && el.oninput(); };
+        // a 2 x 1 part, 3 across with a .5 gap: centre to centre must read 2.5
+        let ov = open();
+        set(ov, '#arC', 3); set(ov, '#arGX', 0.5);
+        const cc = ov.querySelector('#arDX').value;
+        ov.querySelector('#arOk').click();
+        const xs = CNC.job.shapes.map(s => CNC.G.bbox(CNC.worldLoop(s)).x0).sort((a, b) => a - b);
+        // typing centre to centre fills in the gap
+        CNC.selectShapes([id]); ov = open(); set(ov, '#arDY', 3); const gy = ov.querySelector('#arGY').value;
+        // an overlap is refused, nothing made
+        set(ov, '#arR', 2); set(ov, '#arGY', -0.5); const n0 = CNC.job.shapes.length; ov.querySelector('#arOk').click();
+        const refused = CNC.job.shapes.length === n0;
+        document.querySelectorAll('.overlay').forEach(o => o.remove());
+        return JSON.stringify({ cc, xs, gy, refused });
+      })()`));
+      ok(r.cc === '2.5', 'a .5 gap on a 2 wide part fills in 2.5 centre to centre', r.cc);
+      ok(r.xs.length === 3 && Math.abs(r.xs[1] - r.xs[0] - 2.5) < 1e-9 && Math.abs(r.xs[2] - r.xs[1] - 2.5) < 1e-9, 'copies land 2.5 apart - a .5 gap edge to edge', JSON.stringify(r.xs));
+      ok(r.gy === '2', '3 centre to centre on a 1 tall part fills in a 2 gap', r.gy);
+      ok(r.refused, 'copies that would overlap are refused, not made');
     }
 
     console.log('no errors accumulated');
