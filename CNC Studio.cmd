@@ -7,7 +7,9 @@ REM  the app. If the PC is offline or GitHub is unreachable it says so and
 REM  starts the copy already on disk, so the shop is never stopped by the
 REM  network.
 REM
-REM  First run on a new PC needs: Git, Node.js, and `npm install` in electron\.
+REM  First run on a new PC needs: Git, Node.js, and in electron\ either
+REM  `npm install --omit=optional` to just run the app, or a plain
+REM  `npm install` on a machine that also builds the .exe.
 REM  See README for that one-time setup.
 REM ---------------------------------------------------------------------------
 setlocal
@@ -46,7 +48,7 @@ REM A pull can bring in new dependencies.
 if not exist "electron\node_modules" (
   echo.
   echo   Installing dependencies, one moment...
-  pushd electron && call npm install && popd
+  pushd electron && call npm install --omit=optional && popd
 )
 
 :launch

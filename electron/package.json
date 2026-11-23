@@ -13,7 +13,10 @@
     "scenarios": "node ../build.js && electron ../test/scenarios_main.js"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
+    "electron": "^33.0.0"
+  },
+  "_comment_optional": "electron-builder only makes the .exe. It is optional so a shop PC that just runs the app can install with --omit=optional and skip its 120 MB of downloads and its code-signing tools, which need elevation. Machines that build the installer run a plain npm install.",
+  "optionalDependencies": {
     "electron-builder": "^25.0.0"
   },
   "build": {
