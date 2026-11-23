@@ -5,6 +5,39 @@ Each entry names the commit so anything here can be found in `git log`.
 
 ---
 
+## Holding bridges are a square step  (c7c7ba3)
+
+### Fixed
+- **The bridge shape was wrong.** EnRoute steps straight up at the contour
+  feed, runs across the bridge at that height, and plunges straight back down -
+  four lines, nothing interpolated. Ours ramped up to a flat top and back down,
+  with the Z riding on the cutting moves. Measured from a fresh export and now
+  reproduced byte for byte (`test/bridge_test.js`).
+- **The bridge was the wrong length.** The raised span is the bridge length
+  plus the tool diameter, so the material left standing is the length asked
+  for. A 0.5 bridge with a 0.25 cutter keeps the tool up for 0.75.
+- **A bridge as tall as the stock was posted anyway.** The tool would ride over
+  the material for the whole span and the part would come out still attached.
+  Refused now, with the reason.
+
+### Added
+- **Bridges can be placed by hand.** `at` takes a list of distances along the
+  path to the centre of each bridge; with none given they are spread evenly and
+  kept off the seam. EnRoute's are wherever the operator put them - the
+  reference file has four a quarter of the path apart, but 8.239 in along it
+  from the seam rather than half an interval. **There is no UI for this yet:
+  the post accepts the list, the screen cannot set it.**
+- The bridge marks on the canvas are planned with the real tool and stock now,
+  so what is drawn is what gets cut.
+
+### Note
+`tapfiles/LIBRARY.md` claimed bridges were a cubic smoothstep, fitted to
+0.00006 in across 180 of them. True - of the pre-2025 archive, which is the old
+spindle configuration. Corrected there, with the old shape kept on record for
+reading old programs.
+
+---
+
 ## EnRoute's real pass depths, date stamp and seam  (acdb889, 2eaf0ee)
 
 Found by reading the shop's whole TAP archive - 5598 programs copied off the
