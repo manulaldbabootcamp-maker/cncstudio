@@ -42,35 +42,28 @@ each pass depth, and the cut-depth field is the ceiling that sets the count.
 are in the pre-2025 undated header dialect and no dated file uses it. Pinned in
 `test/zdepth_test.js` and `test/seam_test.js` (byte-identical).
 
-## 2. Bridges, at two different sizes
+## 2. ~~Bridges, at two different sizes~~ - DONE from one file
 
-Same rectangle, same position, same 0.25 stock — **bridges on**, 4 of them,
-spread around the outline. Export it twice, changing only the bridge size:
+Settled 23 Nov 2026 from `Path file with bridge .5_.08h.tap`. The bridge turned
+out to be a **square step**, not the smoothstep arch I had read out of the old
+archive, so the segment-count question the second size was for does not exist.
 
-**`02a_24x36_0.25_bridge-0.5x0.08.tap`**
-- bridge **length 0.5 in**, **height 0.08 in**
-- `-> write down:` exactly what the two bridge fields are called and what you
-  typed in them, and whether the count is "4 bridges" or a spacing.
+Measured and now reproduced byte for byte in `test/bridge_test.js`:
+the raised span is the bridge length plus the tool diameter, the height is
+absolute Z, and the first raised move carries the feed word because the plunge
+left F20 behind. `tapfiles/LIBRARY.md` has the correction and keeps the old
+smoothstep on record for reading old programs.
 
-**`02b_24x36_0.25_bridge-1.0x0.04.tap`**
-- bridge **length 1.0 in**, **height 0.04 in**, everything else identical.
-
-**What it proves.** Your archive has 180 bridges and they are all the same size
-— 0.875 in long, 0.08 tall, cut as 88 tiny straight segments. The Z profile
-fits a cubic smoothstep to 0.00006 in, which is below the file's own rounding,
-so the *shape* is settled. What I cannot tell from one size is whether EnRoute
-always uses **88 segments** or always uses a **~0.01 in step**: at one size
-those are the same thing. Two sizes separate them.
-
-Our bridges are currently a straight ramp up, a flat top, and a ramp down —
-a shape I invented when there was no reference to copy. These two files are
-what I need to replace it with EnRoute's actual arch.
-
----
+**Still worth one more file, when convenient:** the same part with a
+**1.0 x 0.04** bridge. The "span = length + tool diameter" rule rests on a
+single measurement with a single tool, and that would confirm it. Not blocking
+anything.
 
 ## 3. A circle and a hole, on current stock
 
-**`03_circle-and-hole_0.25.tap`**
+**`03_circle-and-hole_0.25.tap`** - **still needed.** The file sent on 23 Nov
+was an EnRoute *project* file saved with a `.tap` extension (binary, no
+G-code in it at all). It needs posting through Output, not Save As.
 
 - A **12 in diameter circle**, centre at **X10 Y10**, cut **outside**.
 - A **10 × 10 square**, lower-left at **X26 Y2**, cut **outside**, with a

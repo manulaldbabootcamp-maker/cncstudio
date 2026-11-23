@@ -191,37 +191,63 @@ So the usable area runs past 60 × 120 in, and the park position `X0 Y120` is a
 real corner of it. Small negative X and Y appear in a handful of programs —
 overcuts and lead-ins that run off the sheet edge, not mistakes.
 
-## EnRoute's bridges are a smoothstep, not a ramp
+## Bridges: a square step now, a smoothstep in the old programs
 
-117 programs modulate Z inside a contour. Most of those are lead-outs, but
-`01. Bins\8in_Full sheet tube bin lids.tap` has **180 real bridges**, and they
-are all identical:
+**Corrected 23 Nov 2026.** This section used to say EnRoute ramps a bridge
+with a cubic smoothstep, full stop. That was read off the archive alone, and
+the archive is the *old* configuration. A bridge posted from EnRoute on
+17 Nov 2026 - `test/ref/bridge_0.5x0.08.TAP` - is a plain square step:
 
 ```
-0.8751 in long · 0.08 in tall · 88 segments of ~0.0099 in · one segment at full height
+G1 X9.7232        cutting at full depth
+G1 Z0.08F217      straight up, at the CONTOUR feed, no X or Y
+G1 X8.9732        across the bridge at that height
+G1 Z0.            straight back down
 ```
 
-Fitting the measured Z profile against the obvious candidates:
+Four lines, no interpolation, no ramp. Three rules come out of it, and
+`test/bridge_test.js` holds a whole program to the file byte for byte:
+
+- the raised span is the bridge length **plus the tool diameter** - 0.75 for a
+  0.5 bridge with a 0.25 cutter - so the material left is the length asked for;
+- `height` is absolute Z, which is the thickness of material left standing;
+- the **first** raised move carries the feed word and the rest do not, because
+  the last Z move before it was the plunge at F20. Z moves carry their own
+  feed, separate from the contour feed.
+
+Placement is the operator's. The reference has its four bridges a quarter of
+the path apart but 8.239 in along it from the seam, not half an interval - so
+`tabPlan` takes `at`, a list of distances along the path, and falls back to an
+even spread when none is given.
+
+### The old shape, for reading old programs
+
+The pre-2025 side of the archive really is a smoothstep. 117 programs modulate
+Z inside a contour; most are lead-outs, but `01. Bins\8in_Full sheet tube bin
+lids.tap` has **180 real bridges**, all identical:
+
+```
+0.8751 in long - 0.08 in tall - 88 segments of ~0.0099 in - one segment at full height
+```
 
 | Profile | worst error | rms |
 |---|---|---|
-| **cubic smoothstep `3u²−2u³` on each half** | **0.00006 in** | **0.00003 in** |
-| raised cosine `sin²` | 0.0008 | 0.0005 |
+| **cubic smoothstep `3u2-2u3` on each half** | **0.00006 in** | **0.00003 in** |
+| raised cosine `sin2` | 0.0008 | 0.0005 |
 | straight ramps | 0.0077 | 0.0055 |
 | sine half-wave | 0.019 | 0.013 |
 | parabola | 0.024 | 0.016 |
 | circular arc | 0.024 | 0.016 |
 
-0.00006 in is below the four-decimal rounding of the file, so this is exact:
-**EnRoute ramps a bridge with a cubic smoothstep, with no flat top, cut as
-~0.01 in straight segments.**
+0.00006 in is below the four-decimal rounding of the file, so the fit is exact
+for those programs - a different bridge style on the old config, not something
+the shop posts now. We do not generate it. If an old program ever has to be
+reproduced, this is the shape.
 
-Our `tabPlan` in `src/post.js` builds a trapezoid instead — linear ramp up, a
-flat run at height, linear ramp down, emitted as whole path segments. That is a
-different shape and a different number of lines. It cuts a usable tab, but it
-will never match EnRoute byte for byte, and the tab is slightly weaker because
-the material under the ramps is removed on a straight line rather than a curve.
-Worth changing if bridges are ever meant to reproduce.
+**The lesson, for the next time.** The archive says what the shop *used to do*.
+Only a fresh export says what it does now, and the two had diverged on the
+spindle, the feeds, the stock and the bridge shape. Dating the files first
+would have caught it.
 
 ## The oddities, for whoever hits them
 

@@ -1,6 +1,6 @@
 /* Holding tabs (bridges), and scaling a part by typing a size.
    The claims worth holding them to: with tabs off nothing in the program
-   changes at all, a tab rises to leave material and ramps instead of hopping,
+   changes at all, a tab rises to leave material as a square step,
    tabs land on every pass that goes deeper than the tab, a part cut on the line
    never gets one, a path too short for the tabs asked for is reported rather
    than cut to pieces, and scaling a part keeps it where it was.
@@ -30,18 +30,24 @@ console.log('with tabs off, the program is exactly what it always was');
   ok(!/Z0\.03/.test(a), 'and no tab height appears anywhere', a.split('\n').filter(l => /Z/.test(l)).join(' | '));
 }
 
-console.log('a tab leaves material standing, and ramps up to it');
+console.log('a tab leaves material standing, as a square step');
 {
+  /* EnRoute's bridge is a vertical hop, a flat run across, and a vertical
+     plunge back - no ramp. Measured from "Path file with bridge .5_.08h.tap";
+     bridge_test.js holds a whole program to it byte for byte. */
   const L = lines(job([plate()], { tabs: { on: true, count: 4, len: 0.3, height: 0.03 } }));
-  const tabMoves = L.filter(l => /^G[123].*Z0\.03$/.test(l));
-  ok(tabMoves.length >= 4, 'the tool rises to the tab height at least once per tab', String(tabMoves.length));
-  // every Z in the contour is either the cut depth or the tab height, never between-and-stuck
-  // contour moves only: a bare "G1 Z..." is the plunge to the pass depth
-  const zs = L.filter(l => /^G1 [XY].*Z/.test(l)).map(l => parseFloat(/Z(-?[\d.]+)/.exec(l)[1]));
-  ok(zs.every(z => z >= -0.0201 && z <= 0.0301), 'every tab Z is between the cut depth and the tab top', JSON.stringify(zs.slice(0, 8)));
-  // a ramp means the move that reaches the tab also moves in X or Y
-  const hops = L.filter(l => /^G1 Z0\.03$/.test(l));
-  ok(hops.length === 0, 'the tool never hops straight up to a tab - it ramps', JSON.stringify(hops));
+  const up = L.filter(l => /^G1 Z0\.03(F[\d.]+)?$/.test(l));
+  ok(up.length >= 4, 'the tool rises to the tab height once per tab, on its own line', String(up.length));
+  /* No cutting move carries a Z word: that is what separates a square step
+     from the ramp this used to be, because a Z on an XY move interpolates. */
+  const ramped = L.filter(l => /^G[123] .*[XY].*Z/.test(l));
+  ok(ramped.length === 0, 'no cutting move carries a Z - nothing is ramped', JSON.stringify(ramped.slice(0, 4)));
+  /* Every Z the program commands is either a pass depth or the tab top -
+     nothing in between, which is what a square step means. */
+  const zs = L.filter(l => /^G1 Z/.test(l)).map(l => parseFloat(/Z(-?[\d.]+)/.exec(l)[1]));
+  const allowed = POST.passDepths(0.25, 0.125, 0.02).concat([0.03]);
+  ok(zs.every(z => allowed.some(a => Math.abs(a - z) < 1e-9)),
+    'every Z is a pass depth or the tab top, never between', JSON.stringify(zs.slice(0, 8)));
 }
 
 console.log('tabs land on every pass that goes deeper than the tab');
@@ -56,8 +62,8 @@ console.log('tabs land on every pass that goes deeper than the tab');
   j.material.thickness = 0.5;
   j.cutThrough = 0;
   const L = lines(j);
-  const tabbed = L.filter(l => /Z0\.15$/.test(l)).length;
-  ok(tabbed >= 4, 'the last two passes both reach the tab, so both ramp over it', String(tabbed));
+  const tabbed = L.filter(l => /^G1 Z0\.15(F[\d.]+)?$/.test(l)).length;
+  ok(tabbed >= 4, 'the last two passes both reach the tab, so both step over it', String(tabbed));
   const deepPasses = POST.passDepths(0.5, 0.125, 0).filter(z => z < 0.15).length;
   ok(deepPasses === 2, 'and there are exactly two such passes', String(deepPasses));
 }
@@ -93,12 +99,28 @@ console.log('the plan itself');
   const mids = p.spans.map(sp => (sp.m0 + sp.m1) / 2);
   ok(JSON.stringify(mids.map(m => +m.toFixed(3))) === JSON.stringify([5, 15, 25, 35]),
     'spread evenly and clear of the seam at distance 0', JSON.stringify(mids));
-  const flat = p.spans.map(sp => +(sp.m1 - sp.m0).toFixed(6));
-  ok(flat.every(f => Math.abs(f - 0.3) < 1e-9), 'each flat top is the length asked for', JSON.stringify(flat));
-  ok(Math.abs(p.ramp - 0.09) < 1e-9, 'with a 1:3 ramp either side of it', String(p.ramp));
+  const flat = p.spans.map(sp => +(sp.s1 - sp.s0).toFixed(6));
+  ok(flat.every(f => Math.abs(f - 0.3) < 1e-9), 'each span is the length asked for when no tool is given', JSON.stringify(flat));
+
+  /* The span is the material left PLUS the tool diameter: the cutter has to be
+     clear of the bridge at both ends, so a 0.5 bridge with a 0.25 cutter keeps
+     the tool up for 0.75 - which is what the reference file does. */
+  const withTool = POST.tabPlan(path, { count: 4, len: 0.5, height: 0.08 }, 0.25);
+  ok(Math.abs(withTool.span - 0.75) < 1e-9, 'with a 0.25 cutter a 0.5 bridge raises the tool for 0.75', String(withTool.span));
+
+  // placed by hand: `at` is the centre of each bridge, in inches along the path
+  const byHand = POST.tabPlan(path, { count: 4, len: 0.3, height: 0.03, at: [2, 12, 30] }, 0);
+  ok(byHand.spans.length === 3, 'three placements give three bridges, whatever the count says', String(byHand.spans.length));
+  ok(Math.abs((byHand.spans[0].s0 + byHand.spans[0].s1) / 2 - 2) < 1e-9, 'and the first sits where it was put');
+  const offEnd = POST.tabPlan(path, { count: 1, len: 0.3, height: 0.03, at: [0.05] }, 0.25);
+  ok(!offEnd.spans.length && /does not fit/.test(offEnd.why || ''),
+    'a placement too near the seam is refused with a reason', JSON.stringify(offEnd.why));
 
   // the pieces cover the path once, in order, with no length lost
-  const pieces = POST.tabPieces(path, p, -0.02);
+  const all = POST.tabPieces(path, p, -0.02);
+  const pieces = all.filter(x => x.seg);      // the rest are the vertical steps
+  ok(all.length - pieces.length === 8, 'four tabs means eight vertical steps, up and down',
+    String(all.length - pieces.length));
   const sum = pieces.reduce((a, x) => a + G.segLen(x.seg), 0);
   ok(Math.abs(sum - 40) < 1e-6, 'the split path is still the same length', String(sum));
   ok(pieces.some(x => Math.abs(x.z - 0.03) < 1e-12), 'some pieces end at the tab top');

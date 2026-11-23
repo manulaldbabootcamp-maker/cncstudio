@@ -951,7 +951,11 @@
     // on a sheet of parts is visible as lag
     const tp = path || toolpathOf(sh);
     if (!tp || !tp.length) return null;
-    const plan = PO.tabPlan(tp, T);
+    /* The same tool and stock the post will use, so what is drawn is what gets
+       cut: the raised span is the bridge plus the cutter, and a bridge as tall
+       as the material is refused rather than shown. */
+    const tl = toolOf(sh);
+    const plan = PO.tabPlan(tp, T, tl ? tl.dia : 0, job && job.material ? job.material.thickness : Infinity);
     if (!plan.spans.length) return { marks: [], why: plan.why };
     return {
       why: null,

@@ -288,74 +288,120 @@ const POST = (() => {
      A part cut right through comes loose before the program ends: it lifts on
      the cutter, chatters, and in acrylic it breaks. Every shop answers that the
      same way - leave short bridges of material joining the part to the sheet,
-     then snap or sand them off. A tab is a stretch of the deepest pass where
-     the tool rises to leave `height` of material standing under it, with a RAMP
-     at each end, because a vertical hop at feed rate is how cutters get broken.
+     then snap or sand them off.
 
-     Tabs are placed by arc length: spread evenly round the path and offset half
-     an interval from its start, so no tab lands on the seam where the cut
-     begins and ends - the one place the edge is already least tidy. */
+     EnRoute's bridge is a SQUARE STEP, measured from a real export
+     ("Path file with bridge .5_.08h.tap", 17 Nov 2026):
+
+         G1 X9.7232        <- cutting at full depth
+         G1 Z0.08F217      <- straight up, at the CONTOUR feed, no X or Y
+         G1 X8.9732        <- across the bridge at that height
+         G1 Z0.            <- straight back down
+         G1 X0.25          <- cutting again
+
+     No ramp, no rounding, nothing interpolated. This replaces a ramped
+     trapezoid of my own invention, and also the cubic smoothstep I had read
+     out of the pre-2025 archive - those older programs were made with a
+     different bridge style on the old config, and are not what the shop does
+     now.
+
+     `height` is absolute Z, which is the thickness of material left standing.
+
+     `len` is the length of MATERIAL left, not the distance the tool travels
+     raised. The tool has to be clear of the bridge at both ends, so the raised
+     span is len + the tool diameter: a 0.5 bridge with a 0.25 cutter raises
+     for 0.75, which is exactly what the reference does. (One file, one tool
+     size - a 1.0 x 0.04 export would confirm it.)
+
+     The first raised move carries the feed word and later ones do not, because
+     the last Z move before it was the plunge at F20. Z moves track their own
+     feed, apart from the contour feed. */
   const DEFAULT_TABS = { on: false, count: 4, len: 0.3, height: 0.03 };
 
-  /* Where the tabs go on this path. `len` is the flat top of the tab; the ramps
-     are extra, one at each end, so a tab consumes len + 2*ramp of the path. The
-     ramp is three times the tab height - a 1:3 slope the cutter can climb -
-     with a floor so a paper-thin tab still gets a real ramp. */
-  function tabPlan(path, cfg) {
+  /* Where the tabs go on this path. Spread evenly round it and offset half an
+     interval from its start, so no tab lands on the seam where the cut begins
+     and ends - the one place the edge is already least tidy. `dia` is the tool
+     diameter; a span is len + dia of path, and nothing is raised outside it. */
+  function tabPlan(path, cfg, dia = 0, thickness = Infinity) {
     const t = { ...DEFAULT_TABS, ...(cfg || {}) };
     const height = Math.max(0, +t.height || 0);
     const len = Math.max(0.01, +t.len || 0);
     const count = Math.max(1, Math.round(+t.count || 1));
-    const ramp = Math.max(0.03, height * 3);
+    const span = len + Math.max(0, +dia || 0);
     const total = path.reduce((a, sg) => a + G.segLen(sg), 0);
     if (!(total > 0)) return { spans: [], total: 0, height, why: 'the path has no length' };
     if (!(height > 0)) return { spans: [], total, height, why: 'the tab height is zero - there would be nothing holding the part' };
-    const need = count * (len + ramp * 2);
+    /* A bridge as tall as the stock is not a bridge, it is an uncut part: the
+       tool would ride over the material for the whole span and leave the piece
+       attached all the way round. Say so rather than post it. */
+    if (height >= thickness - 1e-9) {
+      return { spans: [], total, height, why: `a ${fmt(height, 3)} in bridge is not shorter than the ${fmt(thickness, 3)} in material - nothing would be cut there at all` };
+    }
+    const need = count * span;
     if (need > total * 0.6) {
       return {
         spans: [], total, height,
-        why: `${count} tabs of ${fmt(len, 3)} in plus ramps need ${fmt(need, 3)} in of a ${fmt(total, 3)} in path, more than the 60% that can be left standing`,
+        why: `${count} bridges of ${fmt(len, 3)} in need ${fmt(need, 3)} in of a ${fmt(total, 3)} in path once the ${fmt(dia, 3)} in cutter is allowed for, more than the 60% that can be left standing`,
       };
     }
+    /* Placed by hand, or spread evenly. EnRoute's bridges are put wherever the
+       operator clicks - the reference file has its four at 2.9018 either side
+       of the middle of each edge, which is a choice, not a formula. So `at`,
+       a list of distances in inches along the path to the CENTRE of each
+       bridge, wins when it is given; otherwise they are spread evenly and
+       offset half an interval from the start, so none lands on the seam. */
+    const at = Array.isArray(t.at) && t.at.length
+      ? t.at.map(Number).filter(v => isFinite(v))
+      : null;
     const spans = [];
     const step = total / count;
-    for (let i = 0; i < count; i++) {
-      const c = (i + 0.5) * step;
-      spans.push({ s0: c - len / 2 - ramp, m0: c - len / 2, m1: c + len / 2, s1: c + len / 2 + ramp });
+    const centres = at || Array.from({ length: count }, (_, i) => (i + 0.5) * step);
+    for (const c of centres) {
+      const s0 = c - span / 2, s1 = c + span / 2;
+      /* A span must sit wholly inside the path: one running off either end
+         would leave the tool raised over the seam, where the part is already
+         weakest and the cut least tidy. */
+      if (s0 <= 1e-9 || s1 >= total - 1e-9) {
+        return { spans: [], total, height, why: `a ${fmt(len, 3)} in bridge at ${fmt(c, 3)} in does not fit inside a ${fmt(total, 3)} in path` };
+      }
+      spans.push({ s0, s1, m0: s0, m1: s1 });   // m0/m1 kept: the canvas draws them
     }
-    return { spans, total, height, len, ramp };
+    spans.sort((p, q) => p.s0 - q.s0);   // cut order, whatever order they were given in
+    return { spans, total, height, len, span };
   }
 
-  /* The path cut into pieces that each END where the Z stops changing slope, so
-     one G1/G2 per piece draws the ramp exactly. The Z given is the Z at the end
-     of that piece; the controller interpolates Z along the move. */
+  /* The path cut into pieces at the edges of every bridge, each piece carrying
+     the Z it is cut at. A piece of `{ zTo }` instead of `{ seg }` is a
+     straight vertical move with no X or Y - which is what makes the step
+     square rather than a ramp. */
   function tabPieces(path, plan, cutZ) {
     const tabZ = plan.height;
     const marks = [];
-    for (const sp of plan.spans) marks.push(sp.s0, sp.m0, sp.m1, sp.s1);
-    const zAt = (d) => {
-      for (const sp of plan.spans) {
-        if (d <= sp.s0 + 1e-12 || d >= sp.s1 - 1e-12) continue;
-        if (d < sp.m0) return cutZ + (tabZ - cutZ) * (d - sp.s0) / (sp.m0 - sp.s0);
-        if (d <= sp.m1) return tabZ;
-        return tabZ + (cutZ - tabZ) * (d - sp.m1) / (sp.s1 - sp.m1);
-      }
-      return cutZ;
-    };
-    const out = [];
+    for (const sp of plan.spans) marks.push(sp.s0, sp.s1);
+    const raised = (d) => plan.spans.some(sp => d > sp.s0 + 1e-9 && d < sp.s1 - 1e-9);
+    // split every segment at the bridge edges that fall inside it
+    const pieces = [];
     let d = 0;
     for (const sg of path) {
       const L = G.segLen(sg);
       if (L <= 1e-12) continue;
       const inside = marks.filter(mk => mk > d + 1e-9 && mk < d + L - 1e-9).sort((a, b) => a - b);
-      let u0 = 0;
+      let u0 = 0, d0 = d;
       for (const mk of inside) {
         const u = (mk - d) / L;
-        if (u - u0 > 1e-9) { out.push({ seg: subSegment(sg, u0, u), z: zAt(mk) }); u0 = u; }
+        if (u - u0 > 1e-9) { pieces.push({ seg: subSegment(sg, u0, u), mid: (d0 + mk) / 2 }); u0 = u; d0 = mk; }
       }
-      out.push({ seg: u0 > 1e-9 ? subSegment(sg, u0, 1) : sg, z: zAt(d + L) });
+      pieces.push({ seg: u0 > 1e-9 ? subSegment(sg, u0, 1) : sg, mid: (d0 + d + L) / 2 });
       d += L;
     }
+    const out = [];
+    let z = cutZ;
+    for (const pc of pieces) {
+      const want = raised(pc.mid) ? tabZ : cutZ;
+      if (want !== z) { out.push({ zTo: want }); z = want; }
+      out.push({ seg: pc.seg, z });
+    }
+    if (z !== cutZ) out.push({ zTo: cutZ });   // never leave a pass raised
     return out;
   }
 
@@ -447,7 +493,7 @@ const POST = (() => {
            place on every pass that reaches them, or the ramps cut each other
            away and nothing is left holding the part. */
         const tcfg = tabsFor(shape);
-        const plan = tcfg ? tabPlan(path, tcfg) : null;
+        const plan = tcfg ? tabPlan(path, tcfg, tool.dia, job.material.thickness) : null;
         // counted once per part, not once per pass - it is how many bridges will
         // be left standing, which is what the operator has to snap out
         if (plan && plan.spans.length) stats.tabs = (stats.tabs || 0) + plan.spans.length;
@@ -506,6 +552,10 @@ const POST = (() => {
              only updated by contour moves, so it cannot say whether the first
              move of a pass needs a Z word. */
           let curZ = rnd(z, dec);
+          /* The feed last commanded ON a Z move, which is not the contour feed:
+             the plunge above set F20, so the first bridge retract has to say
+             F217 and the ones after it do not. EnRoute's own files do this. */
+          let zFeed = tool.plunge;
           stats.timeMin += (safeZ - z) / tool.plunge;
           /* Tabs only exist on a pass that goes deeper than the tab itself. On a
              shallower pass there is nothing to leave standing, so that pass is
@@ -513,7 +563,21 @@ const POST = (() => {
              one, which is what keeps the EnRoute reproduction byte for byte. */
           const tabbing = plan && plan.spans.length && z < plan.height - 1e-9;
           const moves = tabbing ? tabPieces(path, plan, z) : path.map(sg => ({ seg: sg, z }));
-          for (const { seg: s, z: mz } of moves) {
+          for (const mv of moves) {
+            /* A bridge edge: straight up or down, no X or Y, so the step is
+               square. Putting the Z on a cutting move would ramp it instead. */
+            if (mv.zTo !== undefined) {
+              const tz = rnd(mv.zTo, dec);
+              if (tz !== curZ) {
+                const fw = zFeed === tool.feed ? '' : `F${tool.feed}`;
+                emit(`G1 Z${fmt(tz, dec)}${fw}`);
+                zFeed = tool.feed;
+                stats.timeMin += Math.abs(tz - curZ) / tool.feed;
+                curZ = tz; pos = { ...pos, z: tz };
+              }
+              continue;
+            }
+            const { seg: s, z: mz } = mv;
             const b = { x: rnd(s.b.x, dec), y: rnd(s.b.y, dec) };
             const bz = rnd(mz, dec);
             const zw = bz !== curZ ? `Z${fmt(bz, dec)}` : '';
