@@ -7,7 +7,7 @@ REM  the app. If the PC is offline or GitHub is unreachable it says so and
 REM  starts the copy already on disk, so the shop is never stopped by the
 REM  network.
 REM
-REM  First run on a new PC needs: Git, Node.js, and in electron\ either
+REM  First run on a new PC needs: Git, Node.js, and `npm install` in
 REM  electron. `npm run build` is only for making the .exe, and only
 REM  ever needs to be run on one machine.
 REM  See README for that one-time setup.
