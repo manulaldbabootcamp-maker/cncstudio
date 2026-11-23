@@ -48,7 +48,7 @@ REM A pull can bring in new dependencies.
 if not exist "electron\node_modules" (
   echo.
   echo   Installing dependencies, one moment...
-  pushd electron && call npm install --omit=optional && popd
+  pushd electron && call npm install && popd
 )
 
 :launch

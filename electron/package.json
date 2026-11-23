@@ -1,6 +1,6 @@
 {
   "name": "cnc-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "2D CAD/CAM for WinCNC — EnRoute replacement",
   "main": "main.js",
   "scripts": {
@@ -12,11 +12,9 @@
     "smoke": "node ../build.js && electron ../test/smoke_main.js",
     "scenarios": "node ../build.js && electron ../test/scenarios_main.js"
   },
+  "_comment_deps": "Both of these stay DEV dependencies. electron-builder as an optionalDependency is a production dependency as far as packaging goes, so it and its 7zip/code-signing tools get bundled into the app: that took the portable exe from 74 MB to 131 MB and the unpacked folder from 269 MB to 531 MB. It only ever needs to be installed on a machine that builds the installer.",
   "devDependencies": {
-    "electron": "^33.0.0"
-  },
-  "_comment_optional": "electron-builder only makes the .exe. It is optional so a shop PC that just runs the app can install with --omit=optional and skip its 120 MB of downloads and its code-signing tools, which need elevation. Machines that build the installer run a plain npm install.",
-  "optionalDependencies": {
+    "electron": "^33.0.0",
     "electron-builder": "^25.0.0"
   },
   "build": {
