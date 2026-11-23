@@ -8,8 +8,8 @@ REM  starts the copy already on disk, so the shop is never stopped by the
 REM  network.
 REM
 REM  First run on a new PC needs: Git, Node.js, and in electron\ either
-REM  `npm install --omit=optional` to just run the app, or a plain
-REM  `npm install` on a machine that also builds the .exe.
+REM  electron. `npm run build` is only for making the .exe, and only
+REM  ever needs to be run on one machine.
 REM  See README for that one-time setup.
 REM ---------------------------------------------------------------------------
 setlocal
